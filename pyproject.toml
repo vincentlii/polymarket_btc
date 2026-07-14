@@ -1,0 +1,44 @@
+[project]
+name = "polymarket-btc"
+version = "0.1.0"
+description = "BTC 15-minute Polymarket research, replay, and canary system"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "aiohttp>=3.11",
+    "bokeh>=3.6",
+    "duckdb>=1.2",
+    "httpx>=0.28",
+    "lightgbm>=4.6",
+    "nautilus-trader[polymarket,visualization]==1.226.0",
+    "numpy>=2.2",
+    "pandas>=2.2",
+    "plotly>=6.0",
+    "pyarrow>=18.0",
+    "python-dotenv>=1.0",
+    "scikit-learn>=1.6",
+    "websockets>=15.0",
+]
+
+[project.optional-dependencies]
+live = ["py-clob-client-v2>=0.1"]
+native = ["maturin>=1.12,<2"]
+dev = [
+    "ipykernel>=6.29",
+    "nbclient>=0.10",
+    "nbformat>=5.10",
+    "psutil>=6.1",
+    "py-clob-client>=0.25",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "ruff>=0.9",
+    "textual>=1.0",
+]
+docs = ["mkdocs-shadcn>=0.8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.uv]
+package = false

@@ -467,6 +467,29 @@ async def _load_trade_ticks(
     end_utc = end.tz_convert(UTC)
     all_trades: list[TradeTick] = []
     _print_trade_progress_header(market_label=market_label, start=start_utc, end=end_utc)
+    pmxt_loader = getattr(loader, "load_pmxt_trade_ticks", None)
+    if callable(pmxt_loader):
+        started_at = time.perf_counter()
+        pmxt_trades = await asyncio.to_thread(pmxt_loader, start_utc, end_utc)
+        if pmxt_trades:
+            ordered_pmxt_trades = tuple(sorted(pmxt_trades, key=_trade_record_sort_key))
+            emit_loader_event(
+                f"Loaded PMXT last_trade_price ticks for {market_label} "
+                f"({len(ordered_pmxt_trades)} rows)",
+                stage="fetch",
+                vendor="pmxt",
+                status="complete",
+                platform="polymarket",
+                data_type="book",
+                source_kind="remote",
+                market_slug=market_label,
+                condition_id=getattr(loader, "condition_id", None),
+                token_id=getattr(loader, "token_id", None),
+                rows=len(ordered_pmxt_trades),
+                trade_ticks=len(ordered_pmxt_trades),
+                elapsed_ms=(time.perf_counter() - started_at) * 1000.0,
+            )
+            return ordered_pmxt_trades
     for current_day in _trade_days_for_window(start_utc, end_utc):
         day_start = current_day
         day_end = min(current_day + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1), end_utc)

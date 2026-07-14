@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import importlib
 import threading
@@ -346,6 +347,19 @@ def test_telonex_file_workers_default_scales_with_fd_limit(
 
     monkeypatch.setenv(TELONEX_FILE_WORKERS_ENV, "invalid")
     assert RunnerPolymarketTelonexBookDataLoader._resolve_file_worker_limit() == 8
+
+
+def test_telonex_file_workers_use_default_when_resource_module_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(TELONEX_FILE_WORKERS_ENV, raising=False)
+    monkeypatch.setattr(telonex_module, "resource", None)
+
+    assert telonex_module._soft_open_file_limit() is None
+    assert (
+        RunnerPolymarketTelonexBookDataLoader._resolve_file_worker_limit()
+        == telonex_module._TELONEX_DEFAULT_FILE_WORKERS
+    )
 
 
 def test_telonex_local_prefetch_workers_default_and_env(
@@ -751,6 +765,9 @@ def test_telonex_onchain_fills_try_api_before_polymarket_fallback(
 def test_telonex_runner_api_downloads_cache_then_clear(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    if shutil.which("make") is None:
+        pytest.skip("GNU make is unavailable")
+
     cache_root = tmp_path / "telonex-cache"
     monkeypatch.setenv(TELONEX_CACHE_ROOT_ENV, str(cache_root))
     payload = _book_parquet_payload(1_768_780_800_000_000)

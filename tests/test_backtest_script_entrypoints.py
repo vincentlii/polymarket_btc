@@ -37,6 +37,7 @@ EXPECTED_PUBLIC_RUNNER_PATHS = [
     Path("backtests/polymarket_book_ema_crossover.py"),
     Path("backtests/polymarket_book_ema_optimizer.py"),
     Path("backtests/polymarket_book_joint_portfolio_runner.py"),
+    Path("backtests/polymarket_btc_15m_opening_mispricing_maker.py"),
     Path("backtests/polymarket_btc_5m_late_favorite_taker_hold.py"),
     Path("backtests/polymarket_btc_5m_pair_arbitrage.py"),
     Path("backtests/polymarket_pmxt_book_100_replay_runner.py"),
@@ -70,6 +71,16 @@ PUBLIC_NOTEBOOK_RUNNER_PATHS = [
 
 EXPECTED_PUBLIC_SCRIPT_RUNNER_PATHS = [
     path for path in EXPECTED_PUBLIC_RUNNER_PATHS if path.suffix == ".py"
+]
+
+EXPLICIT_ARTIFACT_INPUT_RUNNERS = {
+    Path("backtests/polymarket_btc_15m_opening_mispricing_maker.py"),
+}
+
+EXPERIMENT_BACKED_SCRIPT_RUNNER_PATHS = [
+    path
+    for path in EXPECTED_PUBLIC_SCRIPT_RUNNER_PATHS
+    if path not in EXPLICIT_ARTIFACT_INPUT_RUNNERS
 ]
 
 
@@ -174,7 +185,7 @@ def test_public_runner_modules_expose_metadata_contract(
     assert metadata["relative_parts"] == (relative_path.name,)
 
 
-@pytest.mark.parametrize("relative_path", EXPECTED_PUBLIC_SCRIPT_RUNNER_PATHS)
+@pytest.mark.parametrize("relative_path", EXPERIMENT_BACKED_SCRIPT_RUNNER_PATHS)
 def test_public_script_runners_attach_explicit_execution_model(
     monkeypatch: pytest.MonkeyPatch, relative_path: Path
 ) -> None:

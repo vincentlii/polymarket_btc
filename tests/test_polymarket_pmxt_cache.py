@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 from io import BytesIO
 from pathlib import Path
@@ -13,6 +14,7 @@ from nautilus_trader.adapters.polymarket.common.parsing import parse_polymarket_
 
 from prediction_market_extensions.adapters.polymarket import pmxt as pmxt_module
 from prediction_market_extensions.adapters.polymarket.pmxt import PolymarketPMXTDataLoader
+from prediction_market_extensions._runtime_log import capture_loader_events
 
 
 def _make_loader(
@@ -100,6 +102,174 @@ def test_materialized_deltas_cache_round_trips(tmp_path):
     assert len(cached) == len(records)
     assert [int(record.ts_event) for record in cached] == [100, 200]
     assert cached[1].deltas[0].order.price.raw == loader.instrument.make_price(0.105).raw
+
+
+def test_materialized_deltas_cache_serializes_same_target_replacements(tmp_path, monkeypatch):
+    loader = _make_loader(tmp_path)
+    loader._instrument = _make_instrument()
+    start = pd.Timestamp("2026-03-16T12:00:00Z")
+    end = pd.Timestamp("2026-03-16T13:00:00Z")
+    records = loader._deltas_records_from_columns(
+        {
+            "event_index": [0],
+            "action": [1],
+            "side": [1],
+            "price": [0.105],
+            "size": [10.0],
+            "flags": [0],
+            "sequence": [0],
+            "ts_event": [100],
+            "ts_init": [100],
+        }
+    )
+    write_barrier = threading.Barrier(2)
+    replacement_lock = threading.Lock()
+    active_replacements = 0
+    max_active_replacements = 0
+    original_write_table = pmxt_module.pq.write_table
+    original_replace = pmxt_module.os.replace
+
+    def write_table_with_barrier(table, where, *args, **kwargs):  # type: ignore[no-untyped-def]
+        write_barrier.wait(timeout=5)
+        return original_write_table(table, where, *args, **kwargs)
+
+    def tracked_replace(source, target):  # type: ignore[no-untyped-def]
+        nonlocal active_replacements, max_active_replacements
+        with replacement_lock:
+            active_replacements += 1
+            max_active_replacements = max(max_active_replacements, active_replacements)
+        try:
+            time.sleep(0.05)
+            return original_replace(source, target)
+        finally:
+            with replacement_lock:
+                active_replacements -= 1
+
+    monkeypatch.setattr(pmxt_module.pq, "write_table", write_table_with_barrier)
+    monkeypatch.setattr(pmxt_module.os, "replace", tracked_replace)
+    threads = [
+        threading.Thread(target=loader._write_deltas_cache_for_range, args=(records, start, end))
+        for _ in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert max_active_replacements == 1
+    assert loader._load_deltas_cache_for_range(start, end) is not None
+
+
+def test_pmxt_v2_cache_paths_do_not_reuse_prior_schema(tmp_path):
+    loader = _make_loader(tmp_path)
+    hour = pd.Timestamp("2026-03-16T12:00:00Z")
+    legacy_path = (
+        tmp_path / "condition-123" / "token-yes-123" / "polymarket_orderbook_2026-03-16T12.parquet"
+    )
+    legacy_path.parent.mkdir(parents=True)
+    pq.write_table(
+        pa.table(
+            {
+                "event_type": ["book"],
+                "timestamp_ns": [1_774_094_400_001_000_000],
+                "asset_id": ["token-yes-123"],
+                "bids": ['[["0.48","11"]]'],
+                "asks": ['[["0.52","9"]]'],
+                "price": [None],
+                "size": [None],
+                "side": [None],
+            }
+        ),
+        legacy_path,
+    )
+
+    cache_path = loader._cache_path_for_hour(hour)
+
+    assert cache_path is not None
+    assert cache_path != legacy_path
+    assert cache_path.parent.parts[-3:] == ("filtered-v2", "condition-123", "token-yes-123")
+    assert loader._load_cached_market_table(hour) is None
+    next_hour = pd.Timestamp(int(hour.value) + 3_600_000_000_000, unit="ns", tz="UTC")
+    assert loader._window_cache_path_for_range(hour, next_hour).parts[-4] == "window-v2"
+    assert loader._deltas_cache_path_for_range(hour, next_hour).parts[-4] == "book-deltas-v3"
+
+
+def test_fixed_schema_preserves_receive_time(tmp_path):
+    loader = _make_loader(tmp_path)
+    loader._instrument = _make_instrument()
+    hour = pd.Timestamp("2026-03-16T12:00:00Z")
+    source_snapshot = int(hour.value) + 1_000_000
+    source_change = int(hour.value) + 2_000_000
+    received_snapshot = int(hour.value) + 5_000_000
+    received_change = int(hour.value) + 6_000_000
+    batch = pa.record_batch(
+        [
+            pa.array(["book", "price_change"]),
+            pa.array([source_snapshot, source_change], type=pa.int64()),
+            pa.array([received_snapshot, received_change], type=pa.int64()),
+            pa.array(["token-yes-123", "token-yes-123"]),
+            pa.array(['[["0.48","11"]]', None]),
+            pa.array(['[["0.52","9"]]', None]),
+            pa.array([None, "0.49"]),
+            pa.array([None, "13.5"]),
+            pa.array([None, "BUY"]),
+            pa.array([None, None]),
+        ],
+        names=PolymarketPMXTDataLoader._PMXT_FIXED_COLUMNS,
+    )
+    start = pd.Timestamp(received_snapshot, unit="ns", tz="UTC")
+    end = pd.Timestamp(received_change, unit="ns", tz="UTC")
+
+    records = loader.load_order_book_deltas_from_hour_batches(
+        start,
+        end,
+        ((hour, [batch]),),
+    )
+
+    assert int(records[0].ts_event) == source_snapshot
+    assert int(records[0].ts_init) == received_snapshot
+    assert int(records[1].ts_event) == source_change
+    assert int(records[1].ts_init) == received_change
+
+
+def test_pmxt_last_trade_price_loads_as_millisecond_trade_tick(tmp_path):
+    loader = _make_loader(tmp_path)
+    loader._instrument = _make_instrument()
+    hour = pd.Timestamp("2026-03-16T12:00:00Z")
+    source_trade = int(hour.value) + 3_000_000
+    received_trade = int(hour.value) + 7_000_000
+    batch = pa.record_batch(
+        [
+            pa.array(["last_trade_price"]),
+            pa.array([source_trade], type=pa.int64()),
+            pa.array([received_trade], type=pa.int64()),
+            pa.array(["token-yes-123"]),
+            pa.array([None]),
+            pa.array([None]),
+            pa.array(["0.51"]),
+            pa.array(["7"]),
+            pa.array(["SELL"]),
+            pa.array(["0xtrade"]),
+        ],
+        names=PolymarketPMXTDataLoader._PMXT_FIXED_COLUMNS,
+    )
+    start = pd.Timestamp(received_trade - 1, unit="ns", tz="UTC")
+    end = pd.Timestamp(received_trade, unit="ns", tz="UTC")
+
+    loader._archive_hours = lambda _start, _end: [hour]  # type: ignore[method-assign]
+    loader._iter_market_batches = lambda _hours, *, batch_size: iter(  # type: ignore[method-assign]
+        ((hour, [batch]),)
+    )
+    trades = loader.load_pmxt_trade_ticks(start, end)
+
+    assert len(trades) == 1
+    assert float(trades[0].price) == 0.51
+    assert float(trades[0].size) == 7.0
+    assert int(trades[0].aggressor_side) == 2
+    assert len(str(trades[0].trade_id)) == 36
+    assert int(trades[0].ts_event) == source_trade
+    assert int(trades[0].ts_init) == received_trade
 
 
 def test_load_order_book_deltas_prefers_materialized_cache(monkeypatch, tmp_path):
@@ -240,7 +410,11 @@ def test_load_market_table_writes_token_filtered_cache(tmp_path):
         {"update_type": "price_change", "data": '{"token_id":"token-yes-123","payload":"keep-2"}'},
     ]
     assert loader._cache_path_for_hour(hour) == (
-        tmp_path / "condition-123" / "token-yes-123" / "polymarket_orderbook_2026-03-16T12.parquet"
+        tmp_path
+        / "filtered-v2"
+        / "condition-123"
+        / "token-yes-123"
+        / "polymarket_orderbook_2026-03-16T12.parquet"
     )
 
     cached = loader._load_cached_market_table(hour)
@@ -379,11 +553,13 @@ def test_load_remote_market_batches_downloads_to_temp_file_and_emits_progress(
         )
     )
 
-    monkeypatch.setattr(
-        pmxt_module,
-        "urlopen",
-        lambda url: _Response(remote_buffer.getvalue()),  # type: ignore[arg-type]
-    )
+    requests: list[tuple[object, float | None]] = []
+
+    def fake_urlopen(request, timeout=None):  # type: ignore[no-untyped-def]
+        requests.append((request, timeout))
+        return _Response(remote_buffer.getvalue())
+
+    monkeypatch.setattr(pmxt_module, "urlopen", fake_urlopen)
 
     batches = loader._load_remote_market_batches(hour, batch_size=1_000)
 
@@ -399,6 +575,29 @@ def test_load_remote_market_batches_downloads_to_temp_file_and_emits_progress(
     assert scan_events[-1][4] is True
     assert loader._pmxt_temp_download_root.exists()
     assert not any(loader._pmxt_temp_download_root.iterdir())
+    request, timeout = requests[0]
+    assert dict(request.header_items())["User-agent"] == "prediction-market-backtesting/1.0"
+    assert timeout == 30
+
+
+def test_remote_archive_failure_emits_error_instead_of_silent_gap(tmp_path, monkeypatch) -> None:
+    loader = _make_loader(tmp_path)
+    hour = pd.Timestamp("2026-03-16T13:00:00Z")
+
+    def fail_download(_url: str, _destination: Path) -> int:
+        raise OSError("HTTP Error 403: Forbidden")
+
+    monkeypatch.setattr(loader, "_download_to_file_with_progress", fail_download)
+
+    with capture_loader_events() as capture:
+        assert loader._load_remote_market_batches(hour, batch_size=1_000) is None
+
+    event = next(event for event in capture.events if event.stage == "raw_read")
+    assert event.level == "ERROR"
+    assert event.status == "error"
+    assert event.vendor == "pmxt"
+    assert event.source_kind == "remote"
+    assert event.attrs["error"] == "HTTP Error 403: Forbidden"
 
 
 def test_load_market_batches_prefers_local_archive_before_remote(tmp_path):

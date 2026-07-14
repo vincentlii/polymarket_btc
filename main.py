@@ -226,6 +226,9 @@ def _load_runner_metadata(path: Path) -> dict[str, Any] | None:
             name = kw_name
         if kw_description:
             description = kw_description
+    if not description:
+        docstring = ast.get_docstring(module_ast)
+        description = "" if docstring is None else docstring.splitlines()[0]
 
     return {
         "name": name,
@@ -723,6 +726,7 @@ if TEXTUAL_AVAILABLE:
 
 def _load_runner(backtest: dict[str, Any]) -> Any:
     relative_path = _relative_runner_path(backtest)
+    display_path = relative_path.as_posix()
     runner_path = PROJECT_ROOT / relative_path
     if runner_path.suffix == ".ipynb":
         from prediction_market_extensions.backtesting._notebook_runner import (
@@ -737,7 +741,7 @@ def _load_runner(backtest: dict[str, Any]) -> Any:
     module_name = backtest["module_name"]
     spec = importlib.util.spec_from_file_location(module_name, runner_path)
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"could not import {relative_path}: no module spec")
+        raise RuntimeError(f"could not import {display_path}: no module spec")
 
     module = importlib.util.module_from_spec(spec)
     prior_module = sys.modules.get(module_name)
@@ -748,7 +752,7 @@ def _load_runner(backtest: dict[str, Any]) -> Any:
         sys.modules[module_name] = module
         spec.loader.exec_module(module)
     except Exception as exc:
-        raise RuntimeError(f"could not import {relative_path}: {exc}") from exc
+        raise RuntimeError(f"could not import {display_path}: {exc}") from exc
     finally:
         sys.path[:] = prior_sys_path
         if prior_module is None:
@@ -762,7 +766,7 @@ def _load_runner(backtest: dict[str, Any]) -> Any:
 
     experiment = getattr(module, "EXPERIMENT", None)
     if experiment is None:
-        raise RuntimeError(f"{relative_path} does not expose EXPERIMENT or run()")
+        raise RuntimeError(f"{display_path} does not expose EXPERIMENT or run()")
 
     from prediction_market_extensions.backtesting._experiments import run_experiment
 

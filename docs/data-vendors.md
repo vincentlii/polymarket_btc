@@ -131,6 +131,7 @@ Raw PMXT archive parquet may use the legacy payload schema:
 or the fixed-column schema:
 
 - `timestamp`
+- `timestamp_received`
 - `market`
 - `event_type`
 - `asset_id`
@@ -139,11 +140,15 @@ or the fixed-column schema:
 - `price`
 - `size`
 - `side`
+- `transaction_hash`
 
 For the legacy schema, the loader filters raw hours to `market_id` at parquet
 scan time, then filters the remaining rows to `token_id` inside the JSON
 payload. For the fixed-column schema, it filters `decode(market)` and
 `asset_id`, then sends the selected columns directly to the Rust PMXT converter.
+The converter preserves `timestamp` as event time and `timestamp_received` as
+the data-availability time; `last_trade_price` rows are retained for execution
+`TradeTick` replay.
 
 `PMXT_PREFETCH_WORKERS` controls how many archive hours are read ahead while a
 single market window is loading. The repo data-source wrapper defaults local
@@ -227,7 +232,7 @@ encountered without a sidecar, the loader migrates it lazily.
 Replay conversion has a separate materialized cache under:
 
 ```text
-~/.cache/nautilus_trader/telonex/book-deltas-v1
+~/.cache/nautilus_trader/telonex/book-deltas-v2
 ~/.cache/nautilus_trader/telonex/trade-ticks-v1
 ```
 

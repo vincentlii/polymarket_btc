@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import re
-import resource
 import tempfile
 import threading
 import time
@@ -19,6 +18,11 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
+try:
+    import resource
+except ModuleNotFoundError:  # Windows does not expose POSIX resource limits.
+    resource = None
+
 import duckdb
 import numpy as np
 import pandas as pd
@@ -29,6 +33,7 @@ from nautilus_trader.model.data import OrderBookDelta
 from nautilus_trader.model.data import OrderBookDeltas
 from nautilus_trader.model.data import TradeTick
 
+from prediction_market_extensions._cache_writes import cache_replace_slot
 from prediction_market_extensions._native import (
     fixed_raw_values,
     telonex_api_cache_relative_path,
@@ -96,7 +101,7 @@ _TELONEX_SOURCE_API = "api"
 _TELONEX_BLOB_DB_FILENAME = "telonex.duckdb"
 _TELONEX_DATA_SUBDIR = "data"
 _TELONEX_CACHE_SUBDIR = "api-days"
-_TELONEX_DELTAS_CACHE_SUBDIR = "book-deltas-v1"
+_TELONEX_DELTAS_CACHE_SUBDIR = "book-deltas-v2"
 _TELONEX_TRADE_TICKS_CACHE_SUBDIR = "trade-ticks-v1"
 _TELONEX_DELTAS_CACHE_COLUMN_ORDER = (
     "event_index",
@@ -136,9 +141,7 @@ def _raw_fixed_values(values: Sequence[object], precision: int) -> list[int]:
 
 
 def _unique_tmp_path(path: Path) -> Path:
-    return path.with_name(
-        f"{path.name}.tmp.{os.getpid()}.{threading.get_ident()}.{time.monotonic_ns()}"
-    )
+    return path.with_name(f".tmp.{os.getpid()}.{threading.get_ident()}.{time.monotonic_ns()}")
 
 
 @dataclass(frozen=True)
@@ -213,6 +216,8 @@ def _resolve_file_workers() -> int:
 
 
 def _soft_open_file_limit() -> int | None:
+    if resource is None:
+        return None
     try:
         soft_limit, _hard_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
     except (OSError, ValueError):
@@ -1662,7 +1667,8 @@ class RunnerPolymarketTelonexBookDataLoader(PolymarketDataLoader):
                         downloaded += len(chunk)
                         self._download_progress(progress_url, downloaded, total_bytes, False)
                     self._download_progress(progress_url, downloaded, total_bytes, True)
-                os.replace(tmp_path, cache_path)
+                with cache_replace_slot(cache_path):
+                    os.replace(tmp_path, cache_path)
             self._emit_cache_write_event(
                 cache_kind="api",
                 cache_path=cache_path,
@@ -1891,9 +1897,10 @@ class RunnerPolymarketTelonexBookDataLoader(PolymarketDataLoader):
                         parquet_file = _cached_blob_parquet_file(
                             str(cache_path), _blob_file_cache_key(str(cache_path))
                         )
+                        row_groups = list(range(parquet_file.num_row_groups))
                     else:
-                        parquet_file = pq.ParquetFile(cache_path)
-                    row_groups = list(range(parquet_file.num_row_groups))
+                        with pq.ParquetFile(cache_path) as parquet_file:
+                            row_groups = list(range(parquet_file.num_row_groups))
             except (OSError, ValueError, pa.ArrowInvalid, pa.ArrowIOError):
                 return None
             native_rows = telonex_parquet_book_snapshot_diff_rows(
@@ -2155,7 +2162,8 @@ class RunnerPolymarketTelonexBookDataLoader(PolymarketDataLoader):
             with _telonex_file_slot():
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
                 tmp_path.write_bytes(payload)
-                os.replace(tmp_path, cache_path)
+                with cache_replace_slot(cache_path):
+                    os.replace(tmp_path, cache_path)
             self._emit_cache_write_event(
                 cache_kind="api",
                 cache_path=cache_path,
@@ -2304,7 +2312,8 @@ class RunnerPolymarketTelonexBookDataLoader(PolymarketDataLoader):
             with _telonex_file_slot():
                 fast_path.parent.mkdir(parents=True, exist_ok=True)
                 fast_frame.to_parquet(tmp_path, compression="zstd", index=False)
-                os.replace(tmp_path, fast_path)
+                with cache_replace_slot(fast_path):
+                    os.replace(tmp_path, fast_path)
             self._emit_cache_write_event(
                 cache_kind="fast",
                 cache_path=fast_path,
@@ -2558,7 +2567,8 @@ class RunnerPolymarketTelonexBookDataLoader(PolymarketDataLoader):
                     tmp_path,
                     compression="zstd",
                 )
-                os.replace(tmp_path, cache_path)
+                with cache_replace_slot(cache_path):
+                    os.replace(tmp_path, cache_path)
             del table
             _release_arrow_memory()
             self._emit_cache_write_event(
@@ -2718,7 +2728,8 @@ class RunnerPolymarketTelonexBookDataLoader(PolymarketDataLoader):
                     tmp_path,
                     compression="zstd",
                 )
-                os.replace(tmp_path, cache_path)
+                with cache_replace_slot(cache_path):
+                    os.replace(tmp_path, cache_path)
             del table
             _release_arrow_memory()
             self._emit_cache_write_event(

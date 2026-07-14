@@ -28,6 +28,7 @@ from collections.abc import Mapping, Sequence
 from colorsys import hls_to_rgb, rgb_to_hls
 from functools import partial
 from itertools import cycle
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -693,8 +694,12 @@ def plot(
     """
     if not filename and not _is_notebook():
         filename = f"output/backtest_{result.strategy_name}_{result.platform.value}"
-    elif filename and not filename.startswith("output/") and not filename.startswith("/"):
-        filename = f"output/{filename}"
+    elif filename:
+        output_path = Path(filename)
+        if not output_path.is_absolute() and (
+            not output_path.parts or output_path.parts[0] != "output"
+        ):
+            filename = str(Path("output") / output_path)
     if filename:
         os.makedirs(os.path.dirname(filename) or "output", exist_ok=True)
     _bokeh_reset(filename)

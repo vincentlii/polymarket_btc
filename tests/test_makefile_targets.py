@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+pytestmark = pytest.mark.skipif(shutil.which("make") is None, reason="GNU make is unavailable")
 
 
 def test_clear_telonex_cache_does_not_delete_local_data_destination() -> None:

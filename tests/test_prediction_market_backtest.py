@@ -145,6 +145,30 @@ def test_strategy_summary_label_reports_factory() -> None:
     assert backtest._strategy_summary_label() == "a strategy factory"
 
 
+def test_strategy_summary_label_reports_joint_factory() -> None:
+    backtest = _build_backtest(joint_strategy_factory=lambda loaded_sims: loaded_sims)
+
+    assert backtest._strategy_summary_label() == "a joint strategy factory"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    (
+        (
+            {
+                "strategy_factory": lambda instrument_id: instrument_id,
+                "joint_strategy_factory": lambda loaded_sims: loaded_sims,
+            },
+            "exactly one",
+        ),
+        ({}, "exactly one"),
+    ),
+)
+def test_backtest_requires_exactly_one_strategy_mode(kwargs, message) -> None:  # type: ignore[no-untyped-def]
+    with pytest.raises(ValueError, match=message):
+        _build_backtest(**kwargs)
+
+
 def test_run_async_rejects_duplicate_instruments(monkeypatch) -> None:
     backtest = _build_backtest(strategy_factory=lambda instrument_id: instrument_id)
     duplicate = SimpleNamespace(

@@ -20,7 +20,7 @@ const TELONEX_LOCAL_PREFIX: &str = "local:";
 const TELONEX_API_PREFIX: &str = "api:";
 const TELONEX_EXCHANGE: &str = "polymarket";
 const TELONEX_CACHE_SUBDIR: &str = "api-days";
-const TELONEX_DELTAS_CACHE_SUBDIR: &str = "book-deltas-v1";
+const TELONEX_DELTAS_CACHE_SUBDIR: &str = "book-deltas-v2";
 const TELONEX_TRADE_TICKS_CACHE_SUBDIR: &str = "trade-ticks-v1";
 const ORDER_SIDE_NO_ORDER_SIDE: u8 = 0;
 const ORDER_SIDE_BUY: u8 = 1;
@@ -1525,7 +1525,7 @@ mod tests {
                 start_ns: 10,
                 end_ns: 99,
             }),
-            PathBuf::from("book-deltas-v1")
+            PathBuf::from("book-deltas-v2")
                 .join("polymarket")
                 .join("book_snapshot_full")
                 .join("slug")

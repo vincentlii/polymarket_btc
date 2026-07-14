@@ -677,6 +677,7 @@ fn pmxt_fixed_delta_rows(
     py: Python<'_>,
     event_type_columns: Vec<Py<PyAny>>,
     timestamp_ns_columns: Vec<Py<PyAny>>,
+    timestamp_received_ns_columns: Vec<Py<PyAny>>,
     asset_id_columns: Vec<Py<PyAny>>,
     bids_json_columns: Vec<Py<PyAny>>,
     asks_json_columns: Vec<Py<PyAny>>,
@@ -693,6 +694,7 @@ fn pmxt_fixed_delta_rows(
     let rows = core_pmxt_fixed_delta_rows(
         py_sequence_string_columns(py, &event_type_columns)?,
         py_sequence_i128_columns(py, &timestamp_ns_columns)?,
+        py_sequence_i128_columns(py, &timestamp_received_ns_columns)?,
         py_sequence_string_columns(py, &asset_id_columns)?,
         py_optional_string_columns(py, &bids_json_columns)?,
         py_optional_string_columns(py, &asks_json_columns)?,

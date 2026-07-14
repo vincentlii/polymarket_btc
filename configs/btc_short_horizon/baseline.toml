@@ -1,0 +1,82 @@
+data_sources = [
+  "local:../../data/pmxt_raw",
+  "archive:r2v2.pmxt.dev",
+  "archive:r2.pmxt.dev",
+]
+
+[paths]
+raw_data_root = "../../data/btc_short_horizon"
+model_root = "../../data/btc_short_horizon/models"
+artifact_root = "../../output/btc_short_horizon"
+
+[primary_market]
+name = "btc_updown_15m"
+slug_prefix = "btc-updown"
+window_seconds = 900
+collection_mode = "complete"
+
+[collection_only_market]
+name = "btc_updown_5m"
+slug_prefix = "btc-updown"
+window_seconds = 300
+collection_mode = "collection_only"
+
+[research]
+feature_cadence_ms = 250
+model_cadence_ms = 1000
+entry_start_seconds = 3
+entry_end_seconds = 180
+training_snapshot_seconds = 5
+max_feature_lookback_seconds = 14400
+
+[collection]
+flush_size = 50000
+flush_interval_seconds = 60.0
+rotation_poll_seconds = 2.0
+
+[maker]
+structure = "single"
+max_shares = 1.0
+safety_buffer = 0.01
+minimum_edge = 0.0
+maker_fee_per_share = 0.0
+entry_start_seconds = 3.0
+entry_end_seconds = 180.0
+edge_persistence_seconds = 2.0
+max_work_seconds = 60.0
+stale_after_seconds = 1.0
+cancel_probability_drop = 0.03
+price_level_tick_offsets = [0, 1, 2]
+
+[[execution_scenarios]]
+name = "zero"
+queue_position = true
+base_latency_ms = 0.0
+insert_latency_ms = 0.0
+update_latency_ms = 0.0
+cancel_latency_ms = 0.0
+prob_fill_on_limit = 0.25
+min_synthetic_book_size = 10.0
+synthetic_book_depth_multiplier = 1.0
+
+[[execution_scenarios]]
+name = "p95"
+queue_position = true
+base_latency_ms = 75.0
+insert_latency_ms = 20.0
+update_latency_ms = 10.0
+cancel_latency_ms = 40.0
+prob_fill_on_limit = 0.25
+min_synthetic_book_size = 10.0
+synthetic_book_depth_multiplier = 1.0
+
+[[execution_scenarios]]
+name = "p99_pessimistic"
+queue_position = true
+base_latency_ms = 150.0
+insert_latency_ms = 50.0
+update_latency_ms = 25.0
+cancel_latency_ms = 100.0
+prob_fill_on_limit = 0.10
+min_synthetic_book_size = 10.0
+synthetic_book_depth_multiplier = 1.0

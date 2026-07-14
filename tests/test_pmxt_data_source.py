@@ -290,6 +290,15 @@ def test_runner_loader_reads_fixed_schema_market_rows_from_local_raw_mirror(tmp_
                     ],
                     type=pa.timestamp("ns", tz="UTC"),
                 ),
+                "timestamp_received": pa.array(
+                    [
+                        pd.Timestamp("2026-03-21T12:00:00.006Z"),
+                        pd.Timestamp("2026-03-21T12:00:00.007Z"),
+                        pd.Timestamp("2026-03-21T12:00:00.008Z"),
+                        pd.Timestamp("2026-03-21T12:00:00.009Z"),
+                    ],
+                    type=pa.timestamp("ns", tz="UTC"),
+                ),
                 "market": [
                     b"condition-123",
                     b"condition-123",
@@ -308,6 +317,7 @@ def test_runner_loader_reads_fixed_schema_market_rows_from_local_raw_mirror(tmp_
                 "price": [None, "0.49", "0.51", None],
                 "size": [None, "13.5", "8.0", None],
                 "side": [None, "BUY", "SELL", None],
+                "transaction_hash": pa.array([None, None, None, None], type=pa.string()),
             }
         ),
         raw_path,
@@ -325,22 +335,26 @@ def test_runner_loader_reads_fixed_schema_market_rows_from_local_raw_mirror(tmp_
         {
             "event_type": "book",
             "timestamp_ns": 1_774_094_400_001_000_000,
+            "timestamp_received_ns": 1_774_094_400_006_000_000,
             "asset_id": "token-yes-123",
             "bids": '[["0.48","11.0"]]',
             "asks": '[["0.52","9.0"]]',
             "price": None,
             "size": None,
             "side": None,
+            "transaction_hash": None,
         },
         {
             "event_type": "price_change",
             "timestamp_ns": 1_774_094_400_002_000_000,
+            "timestamp_received_ns": 1_774_094_400_007_000_000,
             "asset_id": "token-yes-123",
             "bids": None,
             "asks": None,
             "price": "0.49",
             "size": "13.5",
             "side": "BUY",
+            "transaction_hash": None,
         },
     ]
 
@@ -446,6 +460,14 @@ def test_runner_loader_grouped_raw_hour_load_splits_requests(tmp_path) -> None:
                     ],
                     type=pa.timestamp("ms", tz="UTC"),
                 ),
+                "timestamp_received": pa.array(
+                    [
+                        pd.Timestamp("2026-03-21T12:00:01.005Z"),
+                        pd.Timestamp("2026-03-21T12:00:02.005Z"),
+                        pd.Timestamp("2026-03-21T12:00:03.005Z"),
+                    ],
+                    type=pa.timestamp("ms", tz="UTC"),
+                ),
                 "market": pa.array(
                     [
                         condition_a.encode(),
@@ -461,6 +483,7 @@ def test_runner_loader_grouped_raw_hour_load_splits_requests(tmp_path) -> None:
                 "price": ["0.40", "0.60", "0.90"],
                 "size": ["1.0", "2.0", "3.0"],
                 "side": ["BUY", "SELL", "BUY"],
+                "transaction_hash": pa.array([None, None, None], type=pa.string()),
             }
         ),
         raw_path,
@@ -512,6 +535,14 @@ def test_runner_loader_grouped_raw_hour_scopes_requests_by_row_group(
                     ],
                     type=pa.timestamp("ms", tz="UTC"),
                 ),
+                "timestamp_received": pa.array(
+                    [
+                        pd.Timestamp("2026-03-21T12:00:01.005Z"),
+                        pd.Timestamp("2026-03-21T12:00:02.005Z"),
+                        pd.Timestamp("2026-03-21T12:00:03.005Z"),
+                    ],
+                    type=pa.timestamp("ms", tz="UTC"),
+                ),
                 "market": pa.array(
                     [condition_a.encode(), condition_b.encode(), condition_c.encode()],
                     type=pa.binary(66),
@@ -523,6 +554,7 @@ def test_runner_loader_grouped_raw_hour_scopes_requests_by_row_group(
                 "price": ["0.40", "0.60", "0.90"],
                 "size": ["1.0", "2.0", "3.0"],
                 "side": ["BUY", "SELL", "BUY"],
+                "transaction_hash": pa.array([None, None, None], type=pa.string()),
             }
         ),
         raw_path,
@@ -572,6 +604,13 @@ def test_runner_loader_grouped_raw_hour_prunes_row_groups_by_token(
                     ],
                     type=pa.timestamp("ms", tz="UTC"),
                 ),
+                "timestamp_received": pa.array(
+                    [
+                        pd.Timestamp("2026-03-21T12:00:01.005Z"),
+                        pd.Timestamp("2026-03-21T12:00:02.005Z"),
+                    ],
+                    type=pa.timestamp("ms", tz="UTC"),
+                ),
                 "market": pa.array([condition.encode(), condition.encode()], type=pa.binary(66)),
                 "event_type": ["book", "book"],
                 "asset_id": ["token-a", "token-z"],
@@ -580,6 +619,7 @@ def test_runner_loader_grouped_raw_hour_prunes_row_groups_by_token(
                 "price": ["0.40", "0.90"],
                 "size": ["1.0", "3.0"],
                 "side": ["BUY", "BUY"],
+                "transaction_hash": pa.array([None, None], type=pa.string()),
             }
         ),
         raw_path,
@@ -969,7 +1009,7 @@ def test_runner_loader_honors_per_entry_explicit_source_order(monkeypatch) -> No
 
     def _record_local(self, raw_root, hour, *, batch_size):
         del self, hour, batch_size
-        calls.append(("raw-local", str(raw_root)))
+        calls.append(("raw-local", raw_root.as_posix()))
         return None
 
     def _record_remote(self, base_url, hour, *, batch_size):

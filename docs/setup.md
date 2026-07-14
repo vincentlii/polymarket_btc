@@ -197,7 +197,7 @@ Throughput and memory controls:
 - Telonex warm cache reads prefer `.fast.parquet` sidecars to avoid slow nested
   list-of-struct decoding.
 - Telonex replay also materializes converted `OrderBookDeltas` under
-  `book-deltas-v1` and non-empty converted execution `TradeTick`s under
+  `book-deltas-v2` and non-empty converted execution `TradeTick`s under
   `trade-ticks-v1`; repeated backtests can skip local/API decoding and report
   `telonex deltas cache`, `telonex onchain_fills cache`, or
   `telonex trades cache` in timing output. Trade-tick source labels include the

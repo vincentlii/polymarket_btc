@@ -711,6 +711,44 @@ def test_trade_tick_loader_reports_api_and_cache_progress(
     assert "polymarket cache 2026-01-19.parquet" in cached_output
 
 
+def test_trade_tick_loader_prefers_pmxt_last_trade_price_records(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    pmxt_trade = SimpleNamespace(ts_event=101, ts_init=103)
+
+    class FakePMXTLoader:
+        condition_id = "0xcondition"
+        token_id = "token"
+        instrument = SimpleNamespace()
+
+        def __init__(self) -> None:
+            self.pmxt_calls = 0
+
+        def load_pmxt_trade_ticks(self, start, end):  # type: ignore[no-untyped-def]
+            del start, end
+            self.pmxt_calls += 1
+            return [pmxt_trade]
+
+        async def load_trades(self, start, end):  # type: ignore[no-untyped-def]
+            del start, end
+            raise AssertionError("PMXT trade ticks should bypass the public trade API")
+
+    loader = FakePMXTLoader()
+    monkeypatch.setattr(replay_adapters, "_cache_home", lambda: tmp_path)
+
+    trades = asyncio.run(
+        replay_adapters._load_trade_ticks(
+            loader,
+            start=pd.Timestamp("2026-01-19T00:00:00Z"),
+            end=pd.Timestamp("2026-01-19T23:59:59Z"),
+            market_label="demo-market",
+        )
+    )
+
+    assert trades == (pmxt_trade,)
+    assert loader.pmxt_calls == 1
+
+
 def test_trade_tick_loader_fails_when_polymarket_offset_ceiling_is_final_fallback(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:

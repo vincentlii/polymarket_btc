@@ -39,6 +39,8 @@ class ReplayExperiment:
     replays: Sequence[ReplaySpec]
     strategy_configs: Sequence[StrategyConfigSpec] = ()
     strategy_factory: Callable[..., Any] | None = None
+    joint_strategy_factory: Callable[..., Any] | None = None
+    auxiliary_data_factory: Callable[..., Sequence[Any]] | None = None
     initial_cash: float = 100.0
     probability_window: int = 30
     min_book_events: int = 0
@@ -78,6 +80,8 @@ def build_backtest_for_experiment(experiment: ReplayExperiment) -> PredictionMar
         replays=tuple(experiment.replays),
         strategy_configs=tuple(experiment.strategy_configs),
         strategy_factory=experiment.strategy_factory,
+        joint_strategy_factory=experiment.joint_strategy_factory,
+        auxiliary_data_factory=experiment.auxiliary_data_factory,
         initial_cash=experiment.initial_cash,
         probability_window=experiment.probability_window,
         min_book_events=experiment.min_book_events,
@@ -101,6 +105,8 @@ def build_replay_experiment(
     replays: Sequence[ReplaySpec],
     strategy_configs: Sequence[StrategyConfigSpec] = (),
     strategy_factory: Callable[..., Any] | None = None,
+    joint_strategy_factory: Callable[..., Any] | None = None,
+    auxiliary_data_factory: Callable[..., Sequence[Any]] | None = None,
     initial_cash: float = 100.0,
     probability_window: int = 30,
     min_book_events: int = 0,
@@ -125,6 +131,8 @@ def build_replay_experiment(
         replays=tuple(replays),
         strategy_configs=tuple(strategy_configs),
         strategy_factory=strategy_factory,
+        joint_strategy_factory=joint_strategy_factory,
+        auxiliary_data_factory=auxiliary_data_factory,
         initial_cash=initial_cash,
         probability_window=probability_window,
         min_book_events=min_book_events,
@@ -160,6 +168,8 @@ def replay_experiment_from_backtest(
         replays=backtest.replays,
         strategy_configs=backtest.strategy_configs,
         strategy_factory=backtest.strategy_factory,
+        joint_strategy_factory=backtest.joint_strategy_factory,
+        auxiliary_data_factory=backtest.auxiliary_data_factory,
         initial_cash=backtest.initial_cash,
         probability_window=backtest.probability_window,
         min_book_events=backtest.min_book_events,

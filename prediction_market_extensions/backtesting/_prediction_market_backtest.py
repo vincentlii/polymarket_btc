@@ -68,6 +68,8 @@ PolymarketPMXTDataLoader = RunnerPolymarketPMXTDataLoader
 
 
 type StrategyFactory = Callable[[InstrumentId], Strategy]
+type JointStrategyFactory = Callable[[Sequence[LoadedReplay]], Strategy]
+type AuxiliaryDataFactory = Callable[[Sequence[LoadedReplay]], Sequence[Any]]
 
 LARGE_DATA_GAP_NS = 4 * 60 * 60 * 1_000_000_000
 REPO_STATUS_TOPIC = "prediction_market.backtest.status"
@@ -170,6 +172,8 @@ class PredictionMarketBacktest:
         replays: Sequence[ReplaySpec],
         strategy_configs: Sequence[StrategyConfigSpec] = (),
         strategy_factory: StrategyFactory | None = None,
+        joint_strategy_factory: JointStrategyFactory | None = None,
+        auxiliary_data_factory: AuxiliaryDataFactory | None = None,
         initial_cash: float,
         probability_window: int,
         min_book_events: int = 0,
@@ -183,10 +187,17 @@ class PredictionMarketBacktest:
         chart_resample_rule: str | None = None,
         return_summary_series: bool = False,
     ) -> None:
-        if strategy_factory is not None and strategy_configs:
-            raise ValueError("Use strategy_factory or strategy_configs, not both.")
-        if strategy_factory is None and not strategy_configs:
-            raise ValueError("strategy_configs is required when strategy_factory is not provided.")
+        strategy_mode_count = sum(
+            (
+                bool(strategy_configs),
+                strategy_factory is not None,
+                joint_strategy_factory is not None,
+            )
+        )
+        if strategy_mode_count != 1:
+            raise ValueError(
+                "Use exactly one of strategy_configs, strategy_factory, or joint_strategy_factory."
+            )
         if not replays:
             raise ValueError("replays is required.")
 
@@ -195,6 +206,8 @@ class PredictionMarketBacktest:
         self.replays = self._normalize_replays(tuple(replays))
         self.strategy_configs = tuple(strategy_configs)
         self.strategy_factory = strategy_factory
+        self.joint_strategy_factory = joint_strategy_factory
+        self.auxiliary_data_factory = auxiliary_data_factory
         if initial_cash <= 0:
             raise ValueError(f"initial_cash must be positive, got {initial_cash}")
         self.initial_cash = float(initial_cash)
@@ -215,6 +228,8 @@ class PredictionMarketBacktest:
             return f"{len(self.strategy_configs)} strategy config(s)"
         if self.strategy_factory is not None:
             return "a strategy factory"
+        if self.joint_strategy_factory is not None:
+            return "a joint strategy factory"
         return "0 strategy config(s)"
 
     def run(self) -> list[dict[str, Any]]:
@@ -251,7 +266,13 @@ class PredictionMarketBacktest:
                 engine.add_instrument(loaded_sim.instrument)
                 add_engine_data_by_type(engine, list(loaded_sim.records))
 
-            if self.strategy_factory is not None:
+            if self.auxiliary_data_factory is not None:
+                auxiliary_records = tuple(self.auxiliary_data_factory(tuple(loaded_sims)))
+                add_engine_data_by_type(engine, auxiliary_records)
+
+            if self.joint_strategy_factory is not None:
+                engine.add_strategy(self.joint_strategy_factory(tuple(loaded_sims)))
+            elif self.strategy_factory is not None:
                 for loaded_sim in loaded_sims:
                     engine.add_strategy(self.strategy_factory(loaded_sim.instrument.id))
             else:

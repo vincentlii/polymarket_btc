@@ -125,7 +125,7 @@ def test_telonex_source_helpers_use_native_planning_and_labels(tmp_path) -> None
         start_ns=APR_21_2026_NS,
         end_ns=APR_21_2026_NS + NANOS_PER_HOUR,
     ) == Path(
-        "book-deltas-v1/polymarket/book_snapshot_full/demo%20market/outcome=Yes/"
+        "book-deltas-v2/polymarket/book_snapshot_full/demo%20market/outcome=Yes/"
         f"instrument=inst123/2026-04-21.{APR_21_2026_NS}-{APR_21_2026_NS + NANOS_PER_HOUR}.parquet"
     )
 
@@ -306,10 +306,8 @@ def test_float_seconds_to_ms_string_matches_existing_pmxt_format() -> None:
 
 
 def test_fixed_raw_values_matches_existing_loader_rounding() -> None:
-    assert native.fixed_raw_values([0.105, 1009.1234564], 2) == [
-        1_000_000_000_000_000,
-        10_091_200_000_000_000_000,
-    ]
+    assert native.fixed_raw_values([0.105], 2) == [100_000_000]
+    assert native.fixed_raw_values([1009.1234564], 6) == [1_009_123_456_000]
 
 
 def test_pmxt_payload_sort_key_uses_native_timestamp_extraction() -> None:
@@ -397,6 +395,10 @@ def test_pmxt_fixed_delta_rows_builds_book_delta_columns() -> None:
             [1_771_767_624_001_296_000],
             [1_771_767_624_001_295_000],
         ],
+        timestamp_received_ns_columns=[
+            [1_771_767_624_001_298_000],
+            [1_771_767_624_001_297_000],
+        ],
         asset_id_columns=[["token-yes-123"], ["token-yes-123"]],
         bids_json_columns=[[None], ['[["0.48","11.0"]]']],
         asks_json_columns=[[None], ['[["0.52","9.0"]]']],
@@ -404,8 +406,8 @@ def test_pmxt_fixed_delta_rows_builds_book_delta_columns() -> None:
         size_columns=[["13.5"], [None]],
         side_columns=[["BUY"], [None]],
         token_id="token-yes-123",
-        start_ns=1_771_767_624_001_295_000,
-        end_ns=1_771_767_624_001_296_000,
+        start_ns=1_771_767_624_001_297_000,
+        end_ns=1_771_767_624_001_298_000,
         has_snapshot=False,
         last_payload_key=None,
     )
@@ -413,14 +415,25 @@ def test_pmxt_fixed_delta_rows_builds_book_delta_columns() -> None:
     assert rows is not None
     has_snapshot, last_payload_key, delta_columns = rows
     assert has_snapshot is True
-    assert last_payload_key == (1_771_767_624_001_296_000, 1)
+    assert last_payload_key == (1_771_767_624_001_298_000, 1)
     assert delta_columns["event_index"] == [0, 0, 0, 1]
     assert delta_columns["action"] == [4, 1, 1, 2]
     assert delta_columns["side"] == [0, 1, 2, 1]
     assert delta_columns["price"] == [0.0, 0.48, 0.52, 0.49]
     assert delta_columns["size"] == [0.0, 11.0, 9.0, 13.5]
     assert delta_columns["flags"] == [0, 0, 128, 128]
-    assert delta_columns["ts_init"] == delta_columns["ts_event"]
+    assert delta_columns["ts_event"] == [
+        1_771_767_624_001_295_000,
+        1_771_767_624_001_295_000,
+        1_771_767_624_001_295_000,
+        1_771_767_624_001_296_000,
+    ]
+    assert delta_columns["ts_init"] == [
+        1_771_767_624_001_297_000,
+        1_771_767_624_001_297_000,
+        1_771_767_624_001_297_000,
+        1_771_767_624_001_298_000,
+    ]
 
 
 def test_polymarket_trade_helpers_use_native_sort_and_id_logic() -> None:

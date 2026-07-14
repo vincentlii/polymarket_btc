@@ -430,6 +430,7 @@ def pmxt_fixed_delta_rows(
     *,
     event_type_columns: Sequence[Sequence[str]],
     timestamp_ns_columns: Sequence[Sequence[int]],
+    timestamp_received_ns_columns: Sequence[Sequence[int]],
     asset_id_columns: Sequence[Sequence[str]],
     bids_json_columns: Sequence[Sequence[object]],
     asks_json_columns: Sequence[Sequence[object]],
@@ -464,6 +465,7 @@ def pmxt_fixed_delta_rows(
     ) = fixed_delta_rows(
         event_type_columns,
         timestamp_ns_columns,
+        timestamp_received_ns_columns,
         asset_id_columns,
         bids_json_columns,
         asks_json_columns,

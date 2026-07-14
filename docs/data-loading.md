@@ -119,7 +119,7 @@ Telonex is the full-depth daily snapshot path. Public Telonex runners use the
 Book lookup order for a market/outcome/day:
 
 1. Materialized `OrderBookDeltas` cache under
-   `~/.cache/nautilus_trader/telonex/book-deltas-v1`.
+   `~/.cache/nautilus_trader/telonex/book-deltas-v2`.
 2. Explicit `api:` entries.
 3. Explicit `local:` Telonex mirror entries.
 4. Confirmed miss.
@@ -146,7 +146,7 @@ cache under `~/.cache/nautilus_trader/telonex/api-days`. API cache files have a
 raw nested form and, when available, a `.fast.parquet` sidecar optimized for
 replay reads. A first API miss downloads the daily payload, writes the API-day
 cache, converts snapshots to `OrderBookDeltas`, then writes the materialized
-`book-deltas-v1` cache for warm replays.
+`book-deltas-v2` cache for warm replays.
 
 Execution ticks follow the same realism rule: use the best configured Telonex
 source first, but do not stop early on empty `onchain_fills`. The loader tries
@@ -162,17 +162,20 @@ PMXT has one main replay-speed cache:
 ```
 
 It stores compact filtered parquet slices keyed by condition id, token id, and
-hour. Warm PMXT cache loads avoid scanning the raw hourly archive entirely.
+hour under `filtered-v2`; optional window and materialized-delta caches use
+their own v2 namespaces. The version boundary prevents older caches without
+PMXT v2 receive timestamps from being reused. Warm PMXT cache loads avoid
+scanning the raw hourly archive entirely.
 
 Telonex has three cache families:
 
 ```text
 ~/.cache/nautilus_trader/telonex/api-days
-~/.cache/nautilus_trader/telonex/book-deltas-v1
+~/.cache/nautilus_trader/telonex/book-deltas-v2
 ~/.cache/nautilus_trader/telonex/trade-ticks-v1
 ```
 
-`api-days` avoids refetching daily Telonex API payloads. `book-deltas-v1` and
+`api-days` avoids refetching daily Telonex API payloads. `book-deltas-v2` and
 `trade-ticks-v1` avoid reconverting source payloads into Nautilus records.
 
 Polymarket public trade fallback has its own cache:

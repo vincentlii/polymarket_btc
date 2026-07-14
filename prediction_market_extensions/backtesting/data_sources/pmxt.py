@@ -872,6 +872,7 @@ class RunnerPolymarketPMXTDataLoader(PolymarketPMXTDataLoader):
         raw_columns = [
             "event_type",
             "timestamp",
+            "timestamp_received",
             "market",
             "asset_id",
             "bids",
@@ -879,9 +880,10 @@ class RunnerPolymarketPMXTDataLoader(PolymarketPMXTDataLoader):
             "price",
             "size",
             "side",
+            "transaction_hash",
         ]
         market_type = parquet_file.schema_arrow.field("market").type
-        event_type_value_set = pa.array(["book", "price_change"])
+        event_type_value_set = pa.array(PolymarketPMXTDataLoader._PMXT_FIXED_EVENT_TYPES)
 
         chunk_size = self._resolve_row_group_chunk_size()
         scan_workers = self._resolve_row_group_scan_workers()
@@ -902,7 +904,7 @@ class RunnerPolymarketPMXTDataLoader(PolymarketPMXTDataLoader):
             chunk_market_value_set = pa.array(chunk_market_values, type=market_type)
             chunk_token_value_set = pa.array(chunk_token_ids)
             with _bounded_pmxt_row_group_scan(scan_workers):
-                raw_table = filtered = table = split = timestamp_ns = None
+                raw_table = filtered = table = split = timestamp_ns = timestamp_received_ns = None
                 market_mask = event_type_mask = token_mask = mask = None
                 try:
                     raw_table = parquet_file.read_row_groups(chunk, columns=raw_columns)
@@ -933,17 +935,26 @@ class RunnerPolymarketPMXTDataLoader(PolymarketPMXTDataLoader):
                         pc.cast(filtered.column("timestamp"), pa.timestamp("ns", tz="UTC")),
                         pa.int64(),
                     )
+                    timestamp_received_ns = pc.cast(
+                        pc.cast(
+                            filtered.column("timestamp_received"),
+                            pa.timestamp("ns", tz="UTC"),
+                        ),
+                        pa.int64(),
+                    )
                     table = pa.Table.from_arrays(
                         [
                             filtered.column("market"),
                             filtered.column("event_type"),
                             timestamp_ns,
+                            timestamp_received_ns,
                             filtered.column("asset_id"),
                             filtered.column("bids"),
                             filtered.column("asks"),
                             pc.cast(filtered.column("price"), pa.string()),
                             pc.cast(filtered.column("size"), pa.string()),
                             filtered.column("side"),
+                            filtered.column("transaction_hash"),
                         ],
                         names=("market", *PolymarketPMXTDataLoader._PMXT_FIXED_COLUMNS),
                     )
@@ -956,7 +967,7 @@ class RunnerPolymarketPMXTDataLoader(PolymarketPMXTDataLoader):
                         if batches:
                             result[request_id].extend(batches)
                 finally:
-                    del raw_table, filtered, table, split, timestamp_ns
+                    del raw_table, filtered, table, split, timestamp_ns, timestamp_received_ns
                     del market_mask, event_type_mask, token_mask, mask
                     _release_arrow_memory()
             if request_count > 8:
@@ -1001,15 +1012,17 @@ class RunnerPolymarketPMXTDataLoader(PolymarketPMXTDataLoader):
                     "decode(market) AS market_id, "
                     "event_type, "
                     "CAST(epoch_ns(timestamp) AS BIGINT) AS timestamp_ns, "
+                    "CAST(epoch_ns(timestamp_received) AS BIGINT) AS timestamp_received_ns, "
                     "asset_id, "
                     "bids, "
                     "asks, "
                     "CAST(price AS VARCHAR) AS price, "
                     "CAST(size AS VARCHAR) AS size, "
-                    "side "
+                    "side, "
+                    "transaction_hash "
                     "FROM read_parquet(?) "
                     f"WHERE decode(market) IN ({market_placeholders}) "
-                    "AND event_type IN ('book', 'price_change') "
+                    "AND event_type IN ('book', 'price_change', 'last_trade_price') "
                     f"AND asset_id IN ({token_placeholders})"
                 )
                 params: list[object] = [str(raw_path), *condition_ids, *token_ids]

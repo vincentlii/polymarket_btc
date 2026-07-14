@@ -1,5 +1,5 @@
 const NANOS_PER_SECOND: i128 = 1_000_000_000;
-const NAUTILUS_FIXED_SCALAR: f64 = 10_000_000_000_000_000.0;
+const NAUTILUS_FIXED_SCALAR: f64 = 1_000_000_000.0;
 
 pub fn decimal_seconds_to_ns(value: &str) -> Result<i128, String> {
     let trimmed = value.trim();
@@ -164,8 +164,12 @@ mod tests {
     #[test]
     fn converts_fixed_raw_values_with_precision_rounding() {
         assert_eq!(
-            fixed_raw_values(&[0.105, 1009.1234564], 2).unwrap(),
-            vec![1_000_000_000_000_000_i128, 10_091_200_000_000_000_000_i128]
+            fixed_raw_values(&[0.105], 2).unwrap(),
+            vec![100_000_000_i128]
+        );
+        assert_eq!(
+            fixed_raw_values(&[1009.1234564], 6).unwrap(),
+            vec![1_009_123_456_000_i128]
         );
     }
 }

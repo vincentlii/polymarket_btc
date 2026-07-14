@@ -16,11 +16,13 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC
+from hashlib import sha256
 from pathlib import Path
 from typing import ClassVar
 from urllib.request import Request, urlopen
 
 import duckdb
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -29,7 +31,9 @@ import pyarrow.parquet as pq
 from nautilus_trader.adapters.polymarket.loaders import PolymarketDataLoader
 from nautilus_trader.model.data import OrderBookDelta
 from nautilus_trader.model.data import OrderBookDeltas
+from nautilus_trader.model.data import TradeTick
 
+from prediction_market_extensions._cache_writes import cache_replace_slot
 from prediction_market_extensions._native import (
     decimal_seconds_to_ns,
     fixed_raw_values,
@@ -51,7 +55,7 @@ def _raw_fixed_values(values: Sequence[object], precision: int) -> list[int]:
 
 
 def _unique_tmp_path(path: Path) -> Path:
-    return path.with_name(f"{path.name}.tmp.{os.getpid()}.{time.monotonic_ns()}")
+    return path.with_name(f".tmp.{os.getpid()}.{time.monotonic_ns()}")
 
 
 @dataclass
@@ -75,6 +79,7 @@ class PolymarketPMXTDataLoader(PolymarketDataLoader):
     _PMXT_COLUMNS: ClassVar[list[str]] = ["update_type", "data"]
     _PMXT_FIXED_RAW_REQUIRED_COLUMNS: ClassVar[set[str]] = {
         "timestamp",
+        "timestamp_received",
         "market",
         "event_type",
         "asset_id",
@@ -83,16 +88,19 @@ class PolymarketPMXTDataLoader(PolymarketDataLoader):
         "price",
         "size",
         "side",
+        "transaction_hash",
     }
     _PMXT_FIXED_COLUMNS: ClassVar[list[str]] = [
         "event_type",
         "timestamp_ns",
+        "timestamp_received_ns",
         "asset_id",
         "bids",
         "asks",
         "price",
         "size",
         "side",
+        "transaction_hash",
     ]
     _PMXT_CACHE_DIR_ENV = "PMXT_CACHE_DIR"
     _PMXT_DISABLE_CACHE_ENV = "PMXT_DISABLE_CACHE"
@@ -101,8 +109,16 @@ class PolymarketPMXTDataLoader(PolymarketDataLoader):
     _PMXT_SCAN_BATCH_SIZE_ENV = "PMXT_SCAN_BATCH_SIZE"
     _PMXT_WRITE_MATERIALIZED_CACHE_ENV = "PMXT_WRITE_MATERIALIZED_CACHE"
     _PMXT_WRITE_WINDOW_CACHE_ENV = "PMXT_WRITE_WINDOW_CACHE"
-    _PMXT_WINDOW_CACHE_SUBDIR = "window-v1"
-    _PMXT_DELTAS_CACHE_SUBDIR = "book-deltas-v1"
+    _PMXT_CACHE_SCHEMA_VERSION = "v2"
+    _PMXT_DELTAS_CACHE_SCHEMA_VERSION = "v3"
+    _PMXT_FILTERED_CACHE_SUBDIR = f"filtered-{_PMXT_CACHE_SCHEMA_VERSION}"
+    _PMXT_WINDOW_CACHE_SUBDIR = f"window-{_PMXT_CACHE_SCHEMA_VERSION}"
+    _PMXT_DELTAS_CACHE_SUBDIR = f"book-deltas-{_PMXT_DELTAS_CACHE_SCHEMA_VERSION}"
+    _PMXT_FIXED_EVENT_TYPES: ClassVar[tuple[str, ...]] = (
+        "book",
+        "price_change",
+        "last_trade_price",
+    )
     _PMXT_DELTAS_CACHE_COLUMN_ORDER: ClassVar[list[str]] = [
         "event_index",
         "action",
@@ -118,6 +134,8 @@ class PolymarketPMXTDataLoader(PolymarketDataLoader):
     _PMXT_DEFAULT_PREFETCH_WORKERS = 16
     _PMXT_DEFAULT_SCAN_BATCH_SIZE = 100_000
     _PMXT_DOWNLOAD_CHUNK_SIZE = 4 * 1024 * 1024
+    _PMXT_HTTP_USER_AGENT = "prediction-market-backtesting/1.0"
+    _PMXT_HTTP_TIMEOUT_SECONDS = 30
     _PMXT_TEMP_DOWNLOAD_ROOT = Path(tempfile.gettempdir()) / "nautilus_trader" / "pmxt-downloads"
     _PMXT_TEMP_DOWNLOAD_STALE_SECONDS = 24 * 60 * 60
 
@@ -269,7 +287,13 @@ class PolymarketPMXTDataLoader(PolymarketDataLoader):
     def _market_cache_path_for_hour(
         cls, cache_dir: Path, condition_id: str, token_id: str, hour: pd.Timestamp
     ) -> Path:
-        return cache_dir / condition_id / token_id / cls._archive_filename_for_hour(hour)
+        return (
+            cache_dir
+            / cls._PMXT_FILTERED_CACHE_SUBDIR
+            / condition_id
+            / token_id
+            / cls._archive_filename_for_hour(hour)
+        )
 
     def _cache_path_for_hour(self, hour: pd.Timestamp) -> Path | None:
         if self._pmxt_cache_dir is None or self.condition_id is None or self.token_id is None:
@@ -463,7 +487,7 @@ class PolymarketPMXTDataLoader(PolymarketDataLoader):
             elif self._is_fixed_schema(filtered_batch.schema.names):
                 event_type_mask = pc.is_in(
                     filtered_batch.column("event_type"),
-                    value_set=pa.array(["book", "price_change"]),
+                    value_set=pa.array(self._PMXT_FIXED_EVENT_TYPES),
                 )
                 event_type_mask = pc.fill_null(event_type_mask, False)
                 filtered_batch = filtered_batch.filter(event_type_mask)
@@ -639,7 +663,8 @@ class PolymarketPMXTDataLoader(PolymarketDataLoader):
         try:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             pq.write_table(table, tmp_path, compression="zstd")
-            os.replace(tmp_path, cache_path)
+            with cache_replace_slot(cache_path):
+                os.replace(tmp_path, cache_path)
             emit_loader_event(
                 f"Wrote PMXT materialized deltas cache ({len(records)} events)",
                 stage="cache_write",
@@ -691,7 +716,8 @@ class PolymarketPMXTDataLoader(PolymarketDataLoader):
         tmp_path = _unique_tmp_path(cache_path)
         try:
             pq.write_table(table, tmp_path)
-            os.replace(tmp_path, cache_path)
+            with cache_replace_slot(cache_path):
+                os.replace(tmp_path, cache_path)
         finally:
             tmp_path.unlink(missing_ok=True)
 
@@ -845,6 +871,7 @@ class PolymarketPMXTDataLoader(PolymarketDataLoader):
         raw_columns = [
             "event_type",
             "timestamp",
+            "timestamp_received",
             "market",
             "asset_id",
             "bids",
@@ -852,6 +879,7 @@ class PolymarketPMXTDataLoader(PolymarketDataLoader):
             "price",
             "size",
             "side",
+            "transaction_hash",
         ]
         raw_table = parquet_file.read_row_groups(row_groups, columns=raw_columns)
         market_value = self._market_stats_value(
@@ -859,7 +887,7 @@ class PolymarketPMXTDataLoader(PolymarketDataLoader):
         )
         market_mask = pc.equal(raw_table.column("market"), pa.scalar(market_value))
         event_type_mask = pc.is_in(
-            raw_table.column("event_type"), value_set=pa.array(["book", "price_change"])
+            raw_table.column("event_type"), value_set=pa.array(self._PMXT_FIXED_EVENT_TYPES)
         )
         mask = pc.and_(pc.fill_null(market_mask, False), pc.fill_null(event_type_mask, False))
         if self.token_id is not None:
@@ -871,16 +899,22 @@ class PolymarketPMXTDataLoader(PolymarketDataLoader):
             pc.cast(filtered.column("timestamp"), pa.timestamp("ns", tz="UTC")),
             pa.int64(),
         )
+        timestamp_received_ns = pc.cast(
+            pc.cast(filtered.column("timestamp_received"), pa.timestamp("ns", tz="UTC")),
+            pa.int64(),
+        )
         table = pa.Table.from_arrays(
             [
                 filtered.column("event_type"),
                 timestamp_ns,
+                timestamp_received_ns,
                 filtered.column("asset_id"),
                 filtered.column("bids"),
                 filtered.column("asks"),
                 pc.cast(filtered.column("price"), pa.string()),
                 pc.cast(filtered.column("size"), pa.string()),
                 filtered.column("side"),
+                filtered.column("transaction_hash"),
             ],
             names=self._PMXT_FIXED_COLUMNS,
         )
@@ -928,15 +962,17 @@ class PolymarketPMXTDataLoader(PolymarketDataLoader):
                     "SELECT "
                     "event_type, "
                     "CAST(epoch_ns(timestamp) AS BIGINT) AS timestamp_ns, "
+                    "CAST(epoch_ns(timestamp_received) AS BIGINT) AS timestamp_received_ns, "
                     "asset_id, "
                     "bids, "
                     "asks, "
                     "CAST(price AS VARCHAR) AS price, "
                     "CAST(size AS VARCHAR) AS size, "
-                    "side "
+                    "side, "
+                    "transaction_hash "
                     "FROM read_parquet(?) "
                     "WHERE decode(market) = ? "
-                    "AND event_type IN ('book', 'price_change')"
+                    "AND event_type IN ('book', 'price_change', 'last_trade_price')"
                 )
                 params: list[object] = [str(parquet_path), self.condition_id]
                 if self.token_id is not None:
@@ -1004,9 +1040,28 @@ class PolymarketPMXTDataLoader(PolymarketDataLoader):
         except OSError as exc:
             if "404" in str(exc):
                 return None
+            self._emit_remote_archive_load_error(archive_url, exc)
             return None
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - preserve the replay gap boundary
+            self._emit_remote_archive_load_error(archive_url, exc)
             return None
+
+    def _emit_remote_archive_load_error(self, archive_url: str, error: Exception) -> None:
+        emit_loader_event(
+            "Failed to load PMXT archive hour",
+            level="ERROR",
+            stage="raw_read",
+            status="error",
+            vendor="pmxt",
+            platform="polymarket",
+            data_type="book",
+            source_kind="remote",
+            source=archive_url,
+            condition_id=getattr(self, "condition_id", None),
+            token_id=getattr(self, "token_id", None),
+            attrs={"error": str(error)},
+            stacklevel=3,
+        )
 
     def _load_local_archive_market_batches(
         self, hour: pd.Timestamp, *, batch_size: int
@@ -1164,7 +1219,14 @@ class PolymarketPMXTDataLoader(PolymarketDataLoader):
         total_bytes: int | None = None
         if "://" in source:
             try:
-                with urlopen(Request(source, method="HEAD")) as response:
+                with urlopen(
+                    Request(
+                        source,
+                        headers={"User-Agent": self._PMXT_HTTP_USER_AGENT},
+                        method="HEAD",
+                    ),
+                    timeout=self._PMXT_HTTP_TIMEOUT_SECONDS,
+                ) as response:
                     total_bytes = self._content_length_from_response(response)
             except Exception:
                 total_bytes = None
@@ -1179,7 +1241,11 @@ class PolymarketPMXTDataLoader(PolymarketDataLoader):
 
     def _download_to_file_with_progress(self, url: str, destination: Path) -> int | None:
         destination.parent.mkdir(parents=True, exist_ok=True)
-        with urlopen(url) as response, destination.open("wb") as handle:
+        request = Request(url, headers={"User-Agent": self._PMXT_HTTP_USER_AGENT})
+        with (
+            urlopen(request, timeout=self._PMXT_HTTP_TIMEOUT_SECONDS) as response,
+            destination.open("wb") as handle,
+        ):
             total_bytes = self._content_length_from_response(response)
             downloaded_bytes = 0
             last_emit = 0.0
@@ -1227,7 +1293,8 @@ class PolymarketPMXTDataLoader(PolymarketDataLoader):
         return total_bytes
 
     def _download_payload_with_progress(self, url: str) -> bytes | None:
-        with urlopen(url) as response:
+        request = Request(url, headers={"User-Agent": self._PMXT_HTTP_USER_AGENT})
+        with urlopen(request, timeout=self._PMXT_HTTP_TIMEOUT_SECONDS) as response:
             total_bytes = self._content_length_from_response(response)
             downloaded_bytes = 0
             last_emit = 0.0
@@ -1429,7 +1496,145 @@ class PolymarketPMXTDataLoader(PolymarketDataLoader):
     def _event_sort_key(record: OrderBookDeltas) -> tuple[int, int]:
         ts_event = int(getattr(record, "ts_event", getattr(record, "ts_init", 0)))
         ts_init = int(getattr(record, "ts_init", ts_event))
-        return (ts_event, ts_init)
+        return (ts_init, ts_event)
+
+    @staticmethod
+    def _trade_sort_key(record: TradeTick) -> tuple[int, int, str]:
+        return (int(record.ts_init), int(record.ts_event), str(record.trade_id))
+
+    def _trade_ticks_from_fixed_batches(
+        self,
+        batches: Sequence[pa.RecordBatch],
+        *,
+        start_ns: int,
+        end_ns: int,
+    ) -> list[TradeTick]:
+        prices: list[float] = []
+        sizes: list[float] = []
+        aggressor_sides: list[int] = []
+        trade_ids: list[str] = []
+        ts_events: list[int] = []
+        ts_inits: list[int] = []
+        row_index = 0
+
+        for batch in batches:
+            if not self._is_fixed_schema(batch.schema.names):
+                continue
+            event_types = batch.column("event_type").to_pylist()
+            event_timestamps = batch.column("timestamp_ns").to_pylist()
+            receive_timestamps = batch.column("timestamp_received_ns").to_pylist()
+            asset_ids = batch.column("asset_id").to_pylist()
+            raw_prices = batch.column("price").to_pylist()
+            raw_sizes = batch.column("size").to_pylist()
+            raw_sides = batch.column("side").to_pylist()
+            transaction_hashes = batch.column("transaction_hash").to_pylist()
+            for (
+                event_type,
+                ts_event,
+                ts_init,
+                asset_id,
+                raw_price,
+                raw_size,
+                raw_side,
+                tx_hash,
+            ) in zip(
+                event_types,
+                event_timestamps,
+                receive_timestamps,
+                asset_ids,
+                raw_prices,
+                raw_sizes,
+                raw_sides,
+                transaction_hashes,
+                strict=True,
+            ):
+                current_row_index = row_index
+                row_index += 1
+                if event_type != "last_trade_price" or ts_event is None or ts_init is None:
+                    continue
+                event_ns = int(ts_event)
+                receive_ns = int(ts_init)
+                if receive_ns < start_ns or receive_ns > end_ns:
+                    continue
+                try:
+                    price = float(raw_price)
+                    size = float(raw_size)
+                except (TypeError, ValueError):
+                    continue
+                if not 0.0 < price < 1.0 or not size > 0.0:
+                    continue
+                side = str(raw_side or "").strip().upper()
+                aggressor_side = 1 if side == "BUY" else 2 if side == "SELL" else 0
+                transaction_hash = str(tx_hash or "missing")
+                prices.append(price)
+                sizes.append(size)
+                aggressor_sides.append(aggressor_side)
+                trade_ids.append(
+                    "pmxt"
+                    + sha256(
+                        f"{transaction_hash}:{asset_id}:{event_ns}:{receive_ns}:{current_row_index}".encode()
+                    ).hexdigest()[:32]
+                )
+                ts_events.append(event_ns)
+                ts_inits.append(receive_ns)
+
+        if not prices:
+            return []
+
+        instrument = self.instrument
+        price_precision = int(instrument.price_precision)
+        size_precision = int(instrument.size_precision)
+        records = list(
+            TradeTick.from_raw_arrays_to_list(
+                instrument.id,
+                price_precision,
+                size_precision,
+                np.round(np.asarray(prices, dtype=np.float64), decimals=price_precision),
+                np.round(np.asarray(sizes, dtype=np.float64), decimals=size_precision),
+                np.asarray(aggressor_sides, dtype=np.uint8),
+                trade_ids,
+                np.asarray(ts_events, dtype=np.uint64),
+                np.asarray(ts_inits, dtype=np.uint64),
+            )
+        )
+        records.sort(key=self._trade_sort_key)
+        return records
+
+    def load_pmxt_trade_ticks(
+        self,
+        start: pd.Timestamp,
+        end: pd.Timestamp,
+        *,
+        batch_size: int | None = None,
+    ) -> list[TradeTick]:
+        """Load PMXT v2 ``last_trade_price`` records as millisecond TradeTicks."""
+        if self.condition_id is None:
+            raise ValueError("condition_id is required for PMXT loading")
+        if self.token_id is None:
+            raise ValueError("token_id is required for PMXT loading")
+
+        start_ts = self._normalize_timestamp(start)
+        end_ts = self._normalize_timestamp(end)
+        if start_ts is None or end_ts is None or end_ts <= start_ts:
+            return []
+
+        resolved_batch_size = (
+            max(1, int(batch_size))
+            if batch_size is not None
+            else int(getattr(self, "_pmxt_scan_batch_size", self._PMXT_DEFAULT_SCAN_BATCH_SIZE))
+        )
+        batches: list[pa.RecordBatch] = []
+        for _hour, hour_batches in self._iter_market_batches(
+            self._archive_hours(start_ts, end_ts),
+            batch_size=resolved_batch_size,
+        ):
+            if hour_batches:
+                batches.extend(hour_batches)
+        return self._trade_ticks_from_fixed_batches(
+            batches,
+            start_ns=int(start_ts.value),
+            end_ns=int(end_ts.value),
+        )
 
     def _deltas_records_from_columns(self, data: dict[str, list[object]]) -> list[OrderBookDeltas]:
         event_indexes = data["event_index"]
@@ -1525,6 +1730,9 @@ class PolymarketPMXTDataLoader(PolymarketDataLoader):
                 native_rows = pmxt_fixed_delta_rows(
                     event_type_columns=[batch.column("event_type") for batch in batches],
                     timestamp_ns_columns=[batch.column("timestamp_ns") for batch in batches],
+                    timestamp_received_ns_columns=[
+                        batch.column("timestamp_received_ns") for batch in batches
+                    ],
                     asset_id_columns=[batch.column("asset_id") for batch in batches],
                     bids_json_columns=[batch.column("bids") for batch in batches],
                     asks_json_columns=[batch.column("asks") for batch in batches],

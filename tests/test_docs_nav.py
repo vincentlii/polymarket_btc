@@ -38,7 +38,7 @@ def _iter_nav_targets(node) -> list[str]:  # type: ignore[no-untyped-def]
 
 
 def _heading_slugs_for_doc(doc_path: Path) -> set[str]:
-    text = doc_path.read_text()
+    text = doc_path.read_text(encoding="utf-8")
     return {_slugify(match.group("title")) for match in HEADING_RE.finditer(text)}
 
 
@@ -66,7 +66,7 @@ def _nav_doc_targets(node) -> set[str]:  # type: ignore[no-untyped-def]
 
 
 def test_mkdocs_nav_anchor_targets_exist() -> None:
-    config = yaml.safe_load(MKDOCS_PATH.read_text())
+    config = yaml.safe_load(MKDOCS_PATH.read_text(encoding="utf-8"))
     nav_targets = _iter_nav_targets(config["nav"])
 
     for target in nav_targets:
@@ -83,7 +83,7 @@ def test_mkdocs_nav_anchor_targets_exist() -> None:
 
 
 def test_mkdocs_nav_uses_relative_doc_anchors() -> None:
-    config = yaml.safe_load(MKDOCS_PATH.read_text())
+    config = yaml.safe_load(MKDOCS_PATH.read_text(encoding="utf-8"))
     nav_targets = _iter_nav_targets(config["nav"])
 
     for target in nav_targets:
@@ -95,7 +95,7 @@ def test_mkdocs_nav_uses_relative_doc_anchors() -> None:
 
 
 def test_mkdocs_nav_records_all_docs_pages() -> None:
-    config = yaml.safe_load(MKDOCS_PATH.read_text())
+    config = yaml.safe_load(MKDOCS_PATH.read_text(encoding="utf-8"))
     nav_targets = _nav_doc_targets(config["nav"])
 
     for doc_path in sorted(DOCS_ROOT.glob("*.md")):
@@ -104,7 +104,7 @@ def test_mkdocs_nav_records_all_docs_pages() -> None:
 
 
 def test_root_readme_records_all_docs_and_subheaders() -> None:
-    readme_text = README_PATH.read_text()
+    readme_text = README_PATH.read_text(encoding="utf-8")
 
     docs_index_url = README_DOCS_URL_PREFIX
     assert docs_index_url in readme_text, "missing docs index link in root README"
@@ -114,7 +114,7 @@ def test_root_readme_records_all_docs_and_subheaders() -> None:
             page_url = f"{README_DOCS_URL_PREFIX}{doc_path.stem}/"
             assert page_url in readme_text, f"missing docs page link in root README: {page_url}"
 
-        for match in HEADING_RE.finditer(doc_path.read_text()):
+        for match in HEADING_RE.finditer(doc_path.read_text(encoding="utf-8")):
             level = len(match.group("level"))
             if level not in {2, 3}:
                 continue
@@ -126,7 +126,7 @@ def test_root_readme_records_all_docs_and_subheaders() -> None:
 
 
 def test_plotting_docs_distinguish_portfolio_and_comparison_summary_panels() -> None:
-    plotting_text = (DOCS_ROOT / "plotting.md").read_text()
+    plotting_text = (DOCS_ROOT / "plotting.md").read_text(encoding="utf-8")
     normalized = re.sub(r"\s+", " ", plotting_text)
 
     assert (
@@ -159,6 +159,6 @@ def test_plotting_docs_distinguish_portfolio_and_comparison_summary_panels() -> 
 
 def test_docs_do_not_link_to_removed_main_branch() -> None:
     for doc_path in sorted(DOCS_ROOT.glob("*.md")):
-        text = doc_path.read_text()
+        text = doc_path.read_text(encoding="utf-8")
         assert "blob/main/" not in text, f"stale GitHub blob link in {doc_path}"
         assert "tree/main/" not in text, f"stale GitHub tree link in {doc_path}"

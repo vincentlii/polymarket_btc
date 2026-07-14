@@ -176,6 +176,9 @@ enabled unless you are intentionally testing a lower-bound execution scenario.
 - PMXT raw files are hourly Polymarket order-book archives.
 - The loader filters raw rows to market and token, decodes `book_snapshot` and
   `price_change` payloads, and emits Nautilus `OrderBookDeltas`.
+- For PMXT v2 fixed-column files, source `timestamp` becomes `ts_event` and
+  exporter `timestamp_received` becomes `ts_init`; cached v2
+  `last_trade_price` rows are converted into `TradeTick`s for L2 matching.
 - A missing PMXT hour warns and resets local book state. Subsequent
   `price_change` updates are not applied across a gap until a fresh snapshot
   rebuilds the book.
@@ -193,7 +196,7 @@ enabled unless you are intentionally testing a lower-bound execution scenario.
 - Real Polymarket trade ticks are interleaved with Telonex book deltas for
   matching and queue-position updates.
 - After the first conversion for a market/token/day/window, the loader writes a
-  materialized `OrderBookDeltas` cache under `book-deltas-v1`. Warm runs can
+  materialized `OrderBookDeltas` cache under `book-deltas-v2`. Warm runs can
   load `telonex-deltas-cache::...` directly and avoid re-diffing full-book
   snapshots.
 - `local:/Volumes/storage/telonex_data` reads the Hive-partitioned blob mirror

@@ -1,5 +1,37 @@
 # Project Status
 
+## BTC 15-Minute Short-Horizon Project
+
+This independent BTC-only project is implemented under `btc_short_horizon/`.
+It reuses the framework's L2 BookReplay, matching, fees, latency, settlement,
+and reporting plumbing without importing archived BTC strategy logic.
+
+- Complete code paths: causal data contracts, storage/manifests, multi-venue
+  opening features, fair-probability models, post-only dual-side maker planning,
+  dual-token replay, required artifacts, shadow/canary safety, and Go/No-Go gates.
+- Data boundary: 15m is the only trading family; 5m is collection-only.
+- Forward collection: `btc_forward_collector.py --follow-current` refreshes
+  exact Gamma metadata at each window boundary and persists a rule-hash-specific
+  catalog before subscribing to a new token pair.
+- Evidence boundary: no profitability or deployability claim exists until real
+  data passes the documented holdout and pessimistic queue/latency gates.
+- Preliminary opening fair-probability proxy (2026-04-28 through 2026-07-12,
+  7,295 resolved markets): the group-safe 1-second Binance study selected
+  `lightgbm-small` on development and achieved sealed-holdout log loss 0.65099
+  and Brier 0.22951, versus rolling prior 0.69341 and 0.25013. This is evidence
+  for continuing outcome-model research only: it has no Polymarket price,
+  Chainlink-reference, queue, fill, fee, rebate, or latency evidence. Its 1,345
+  sealed markets also fall below the project's 2,500-market direction-gate
+  minimum, so it is explicitly not a Go decision.
+- Legacy pre-open/revalidation strategy, historical script, runner, generic
+  feature state, and their tests were removed. The only BTC 15m strategy path
+  is now Opening Mispricing over `t0+3s` through `t0+180s`.
+- Current local prerequisite: Windows PMXT native verification requires the
+  Visual Studio C++ workload and Windows SDK in addition to Rust.
+
+See [BTC Short-Horizon Architecture](btc-short-horizon-architecture.md) for
+the input/output contract and operational commands.
+
 ## Roadmap
 
 - [x] multi-market support within strategies [PR#30](https://github.com/evan-kolberg/prediction-market-backtesting/pull/30), [PR#53](https://github.com/evan-kolberg/prediction-market-backtesting/pull/53), [PR#54](https://github.com/evan-kolberg/prediction-market-backtesting/pull/54), [PR#64](https://github.com/evan-kolberg/prediction-market-backtesting/pull/64)
@@ -46,7 +78,7 @@
   skipping existing local files
   [PR#119](https://github.com/evan-kolberg/prediction-market-backtesting/pull/119)
 - [x] PR#119 now also materializes Telonex `OrderBookDeltas` under
-  `book-deltas-v1`, prints richer terminal statistics from per-market result
+  `book-deltas-v2`, prints richer terminal statistics from per-market result
   payloads plus portfolio-level Nautilus `BacktestResult` stats, and keeps
   public Python runner inputs inline inside `run()` instead of module-level
   constants [PR#119](https://github.com/evan-kolberg/prediction-market-backtesting/pull/119)

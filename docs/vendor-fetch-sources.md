@@ -77,7 +77,7 @@ MarketDataConfig(
 
 The effective lookup order for converted replay records is:
 
-1. Telonex materialized replay caches under `book-deltas-v1` and
+1. Telonex materialized replay caches under `book-deltas-v2` and
    `trade-ticks-v1`.
 2. Explicit entries in `MarketDataConfig.sources`, left to right.
 3. For execution trade ticks only, Polymarket's public trades cache/API remains

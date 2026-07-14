@@ -70,6 +70,7 @@ struct PmxtParsedPayload {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PmxtFixedEvent {
     pub timestamp_ns: i128,
+    pub timestamp_received_ns: i128,
     pub priority: u8,
     pub event_type: String,
     pub asset_id: String,
@@ -388,6 +389,7 @@ pub fn payload_delta_rows(
 pub fn fixed_delta_rows(
     event_type_columns: Vec<Vec<String>>,
     timestamp_ns_columns: Vec<Vec<i128>>,
+    timestamp_received_ns_columns: Vec<Vec<i128>>,
     asset_id_columns: Vec<Vec<String>>,
     bids_json_columns: Vec<Vec<Option<String>>>,
     asks_json_columns: Vec<Vec<Option<String>>>,
@@ -404,6 +406,7 @@ pub fn fixed_delta_rows(
     let fixed_events = sort_fixed_columns(
         event_type_columns,
         timestamp_ns_columns,
+        timestamp_received_ns_columns,
         asset_id_columns,
         bids_json_columns,
         asks_json_columns,
@@ -420,7 +423,7 @@ pub fn fixed_delta_rows(
     let mut output_event_index: i32 = 0;
 
     for event in fixed_events {
-        let event_key = (event.timestamp_ns, event.priority);
+        let event_key = (event.timestamp_received_ns, event.priority);
         if let (Some(last_timestamp_ns), Some(last_priority)) =
             (rows.last_timestamp_ns, rows.last_priority)
             && event_key < (last_timestamp_ns, last_priority)
@@ -438,7 +441,7 @@ pub fn fixed_delta_rows(
                     start_ns,
                     end_ns,
                 )?;
-                rows.last_timestamp_ns = Some(event.timestamp_ns);
+                rows.last_timestamp_ns = Some(event.timestamp_received_ns);
                 rows.last_priority = Some(event.priority);
             }
             "price_change" => {
@@ -450,7 +453,7 @@ pub fn fixed_delta_rows(
                     start_ns,
                     end_ns,
                 )?;
-                rows.last_timestamp_ns = Some(event.timestamp_ns);
+                rows.last_timestamp_ns = Some(event.timestamp_received_ns);
                 rows.last_priority = Some(event.priority);
             }
             _ => {}
@@ -464,6 +467,7 @@ pub fn fixed_delta_rows(
 pub fn sort_fixed_columns(
     event_type_columns: Vec<Vec<String>>,
     timestamp_ns_columns: Vec<Vec<i128>>,
+    timestamp_received_ns_columns: Vec<Vec<i128>>,
     asset_id_columns: Vec<Vec<String>>,
     bids_json_columns: Vec<Vec<Option<String>>>,
     asks_json_columns: Vec<Vec<Option<String>>>,
@@ -474,6 +478,7 @@ pub fn sort_fixed_columns(
     let column_count = event_type_columns.len();
     for (name, len) in [
         ("timestamp_ns", timestamp_ns_columns.len()),
+        ("timestamp_received_ns", timestamp_received_ns_columns.len()),
         ("asset_id", asset_id_columns.len()),
         ("bids", bids_json_columns.len()),
         ("asks", asks_json_columns.len()),
@@ -495,6 +500,7 @@ pub fn sort_fixed_columns(
     for column_index in 0..column_count {
         let event_types = &event_type_columns[column_index];
         let timestamps = &timestamp_ns_columns[column_index];
+        let received_timestamps = &timestamp_received_ns_columns[column_index];
         let asset_ids = &asset_id_columns[column_index];
         let bids_json = &bids_json_columns[column_index];
         let asks_json = &asks_json_columns[column_index];
@@ -504,6 +510,7 @@ pub fn sort_fixed_columns(
         let rows = event_types.len();
         for (name, len) in [
             ("timestamp_ns", timestamps.len()),
+            ("timestamp_received_ns", received_timestamps.len()),
             ("asset_id", asset_ids.len()),
             ("bids", bids_json.len()),
             ("asks", asks_json.len()),
@@ -521,13 +528,14 @@ pub fn sort_fixed_columns(
         for row_index in 0..rows {
             let event_type = event_types[row_index].as_str();
             let priority = fixed_event_priority(event_type);
-            let event_key = (timestamps[row_index], priority);
+            let event_key = (received_timestamps[row_index], priority);
             if previous_key.is_some_and(|previous_key| event_key < previous_key) {
                 already_sorted = false;
             }
             previous_key = Some(event_key);
             events.push(PmxtFixedEvent {
                 timestamp_ns: timestamps[row_index],
+                timestamp_received_ns: received_timestamps[row_index],
                 priority,
                 event_type: event_types[row_index].clone(),
                 asset_id: asset_ids[row_index].clone(),
@@ -542,7 +550,8 @@ pub fn sort_fixed_columns(
 
     if !already_sorted {
         events.sort_by(|left, right| {
-            (left.timestamp_ns, left.priority).cmp(&(right.timestamp_ns, right.priority))
+            (left.timestamp_received_ns, left.priority)
+                .cmp(&(right.timestamp_received_ns, right.priority))
         });
     }
     Ok(events)
@@ -580,7 +589,7 @@ fn process_fixed_book_snapshot(
         return Ok(());
     }
     rows.has_snapshot = true;
-    if event.timestamp_ns < start_ns || event.timestamp_ns > end_ns {
+    if event.timestamp_received_ns < start_ns || event.timestamp_received_ns > end_ns {
         return Ok(());
     }
 
@@ -595,6 +604,7 @@ fn process_fixed_book_snapshot(
         0,
         0,
         event.timestamp_ns,
+        event.timestamp_received_ns,
     );
 
     let bids_len = bids.len();
@@ -615,6 +625,7 @@ fn process_fixed_book_snapshot(
             flags,
             0,
             event.timestamp_ns,
+            event.timestamp_received_ns,
         );
     }
     for (idx, (price_text, size_text)) in asks.into_iter().enumerate() {
@@ -633,6 +644,7 @@ fn process_fixed_book_snapshot(
             flags,
             0,
             event.timestamp_ns,
+            event.timestamp_received_ns,
         );
     }
     *output_event_index += 1;
@@ -650,7 +662,7 @@ fn process_fixed_price_change(
     if event.asset_id != token_id || !rows.has_snapshot {
         return Ok(());
     }
-    if event.timestamp_ns < start_ns || event.timestamp_ns > end_ns {
+    if event.timestamp_received_ns < start_ns || event.timestamp_received_ns > end_ns {
         return Ok(());
     }
 
@@ -692,6 +704,7 @@ fn process_fixed_price_change(
         RECORD_FLAG_LAST,
         0,
         event.timestamp_ns,
+        event.timestamp_received_ns,
     );
     *output_event_index += 1;
     Ok(())
@@ -730,6 +743,7 @@ fn process_parsed_book_snapshot_payload(
         0,
         0,
         payload.timestamp_ns,
+        payload.timestamp_ns,
     );
 
     let bids_len = bids.len();
@@ -750,6 +764,7 @@ fn process_parsed_book_snapshot_payload(
             flags,
             0,
             payload.timestamp_ns,
+            payload.timestamp_ns,
         );
     }
     for (idx, (price_text, size_text)) in asks.into_iter().enumerate() {
@@ -767,6 +782,7 @@ fn process_parsed_book_snapshot_payload(
             parse_finite_f64(size_text, "size")?,
             flags,
             0,
+            payload.timestamp_ns,
             payload.timestamp_ns,
         );
     }
@@ -812,6 +828,7 @@ fn process_parsed_price_change_payload(
         RECORD_FLAG_LAST,
         0,
         payload.timestamp_ns,
+        payload.timestamp_ns,
     );
     *output_event_index += 1;
     Ok(())
@@ -828,6 +845,7 @@ fn push_delta_row(
     flags: u8,
     sequence: i32,
     ts_event: i128,
+    ts_init: i128,
 ) {
     rows.event_index.push(event_index);
     rows.action.push(action);
@@ -837,7 +855,7 @@ fn push_delta_row(
     rows.flags.push(flags);
     rows.sequence.push(sequence);
     rows.ts_event.push(ts_event);
-    rows.ts_init.push(ts_event);
+    rows.ts_init.push(ts_init);
 }
 
 fn json_string_pair_array_field<'a>(
@@ -1416,6 +1434,7 @@ mod tests {
         let rows = fixed_delta_rows(
             vec![vec!["price_change".to_string()], vec!["book".to_string()]],
             vec![vec![101_000_000_000], vec![100_000_000_000]],
+            vec![vec![101_500_000_000], vec![100_500_000_000]],
             vec![
                 vec!["target-token".to_string()],
                 vec!["target-token".to_string()],
@@ -1426,8 +1445,8 @@ mod tests {
             vec![vec![Some("8".to_string())], vec![None]],
             vec![vec![Some("BUY".to_string())], vec![None]],
             "target-token",
-            100_000_000_000,
-            101_000_000_000,
+            100_500_000_000,
+            101_500_000_000,
             false,
             None,
             None,
@@ -1435,7 +1454,7 @@ mod tests {
         .unwrap();
 
         assert!(rows.has_snapshot);
-        assert_eq!(rows.last_timestamp_ns, Some(101_000_000_000));
+        assert_eq!(rows.last_timestamp_ns, Some(101_500_000_000));
         assert_eq!(rows.last_priority, Some(1));
         assert_eq!(rows.event_index, vec![0, 0, 0, 1]);
         assert_eq!(rows.action, vec![4, 1, 1, 2]);
@@ -1452,7 +1471,15 @@ mod tests {
                 101_000_000_000,
             ]
         );
-        assert_eq!(rows.ts_init, rows.ts_event);
+        assert_eq!(
+            rows.ts_init,
+            vec![
+                100_500_000_000,
+                100_500_000_000,
+                100_500_000_000,
+                101_500_000_000,
+            ]
+        );
     }
 
     #[test]
