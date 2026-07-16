@@ -14,11 +14,18 @@ def test_baseline_config_is_path_relative_and_has_explicit_queue_scenarios() -> 
     assert config.primary_family.window_seconds == 900
     assert config.collection_only_family.is_collection_only
     assert config.research_timing.feature_cadence_ms == 250
-    assert config.research_timing.model_cadence_ms == 1_000
+    assert config.research_timing.model_cadence_ms == 5_000
     assert config.research_timing.entry_start_seconds == 3
     assert config.research_timing.entry_end_seconds == 180
+    assert config.research_timing.max_feature_lookback_seconds == 3_600
+    assert config.maker.minimum_edge == 0.10
+    assert config.maker.entry_end_seconds == 180.0
+    assert config.maker.edge_persistence_seconds == 5.0
+    assert config.maker.max_work_seconds == 15.0
     assert config.collection.flush_size == 50_000
     assert config.collection.flush_interval_seconds == 60.0
+    assert config.collection.opening_handoff_delay_seconds == 180.0
+    assert config.collection.ingest_version == "btc-short-horizon-v6"
     assert config.require_scenario("p99_pessimistic").execution.queue_position
     assert config.paths.raw_data_root.is_absolute()
     assert config.paths.raw_data_root.name == "btc_short_horizon"

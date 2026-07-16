@@ -7,7 +7,8 @@ import pytest
 from btc_short_horizon.data.rtds import normalize_chainlink_btc_usd
 from btc_short_horizon.data.subscriptions import (
     binance_combined_stream_subscription,
-    binance_futures_combined_stream_subscription,
+    binance_futures_market_stream_subscription,
+    binance_futures_public_stream_subscription,
     okx_public_subscription,
     polymarket_market_subscription,
     polymarket_rtds_chainlink_btc_subscription,
@@ -33,10 +34,16 @@ def test_public_subscription_builders_follow_current_channel_heartbeats() -> Non
     market = polymarket_market_subscription(("up", "down"))
     rtds = polymarket_rtds_chainlink_btc_subscription()
     binance = binance_combined_stream_subscription(
-        ("btcusdt@trade", "btcusdt@depth@100ms", "btcusdt@bookTicker")
+        (
+            "btcusdt@trade",
+            "btcusdt@kline_1s",
+            "btcusdt@depth@100ms",
+            "btcusdt@bookTicker",
+        )
     )
-    futures = binance_futures_combined_stream_subscription(
-        ("btcusdt@aggTrade", "btcusdt@depth@100ms", "btcusdt@bookTicker")
+    futures_market = binance_futures_market_stream_subscription(("btcusdt@aggTrade",))
+    futures_public = binance_futures_public_stream_subscription(
+        ("btcusdt@depth@100ms", "btcusdt@bookTicker")
     )
     okx = okx_public_subscription(
         (
@@ -48,9 +55,16 @@ def test_public_subscription_builders_follow_current_channel_heartbeats() -> Non
     assert market.heartbeat_payload == "PING"
     assert market.heartbeat_interval_seconds == 10.0
     assert rtds.heartbeat_interval_seconds == 5.0
-    assert "streams=btcusdt@trade/btcusdt@depth@100ms/btcusdt@bookTicker" in binance.endpoint
-    assert "fstream.binance.com" in futures.endpoint
-    assert futures.subscribe_payload is None
+    assert (
+        "streams=btcusdt@trade/btcusdt@kline_1s/btcusdt@depth@100ms/btcusdt@bookTicker"
+        in binance.endpoint
+    )
+    assert futures_market.endpoint.endswith("/market/stream?streams=btcusdt@aggTrade")
+    assert futures_public.endpoint.endswith(
+        "/public/stream?streams=btcusdt@depth@100ms/btcusdt@bookTicker"
+    )
+    assert futures_market.subscribe_payload is None
+    assert futures_public.subscribe_payload is None
     assert okx.subscribe_payload == {
         "op": "subscribe",
         "args": [

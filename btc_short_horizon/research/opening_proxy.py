@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from math import erf, log, sqrt
-from typing import Sequence
+from typing import Mapping, Sequence
 
 import numpy as np
 
@@ -18,6 +19,78 @@ from btc_short_horizon.research.walk_forward import ResearchSample
 
 _NANOS_PER_SECOND = 1_000_000_000
 _WINDOWS_SECONDS = (5, 15, 30, 60, 180, 300, 900, 1_800, 3_600)
+
+
+class OpeningRegime(StrEnum):
+    """Named slices of the frozen post-open three-minute research protocol."""
+
+    EARLY = "early_3s_to_30s"
+    PRICE_DISCOVERY = "price_discovery_35s_to_90s"
+    MID_EARLY = "mid_early_95s_to_180s"
+
+
+OPENING_REGIMES = tuple(OpeningRegime)
+
+
+def opening_regime_for_elapsed_seconds(elapsed_seconds: float) -> OpeningRegime:
+    """Return the pre-registered regime for one 3--180 second decision."""
+
+    if 3.0 <= elapsed_seconds <= 30.0:
+        return OpeningRegime.EARLY
+    if 30.0 < elapsed_seconds <= 90.0:
+        return OpeningRegime.PRICE_DISCOVERY
+    if 90.0 < elapsed_seconds <= 180.0:
+        return OpeningRegime.MID_EARLY
+    raise ValueError("elapsed_seconds falls outside the frozen three-minute protocol")
+
+
+def opening_proxy_protocol(
+    *,
+    entry_start_seconds: int,
+    entry_end_seconds: int,
+    snapshot_seconds: int,
+) -> dict[str, object]:
+    """Return serializable timing metadata that makes an artifact runnable safely."""
+
+    offsets_ms = opening_proxy_decision_offsets_ms(
+        cadence_ms=snapshot_seconds * 1_000,
+        entry_start_seconds=entry_start_seconds,
+        entry_end_seconds=entry_end_seconds,
+    )
+    return {
+        "version": 1,
+        "entry_start_seconds": entry_start_seconds,
+        "entry_end_seconds": entry_end_seconds,
+        "snapshot_seconds": snapshot_seconds,
+        "decision_offsets_ms": list(offsets_ms),
+        "regimes": [
+            {
+                "name": OpeningRegime.EARLY.value,
+                "start_seconds": 3,
+                "end_seconds": 30,
+            },
+            {
+                "name": OpeningRegime.PRICE_DISCOVERY.value,
+                "start_seconds": 35,
+                "end_seconds": 90,
+            },
+            {
+                "name": OpeningRegime.MID_EARLY.value,
+                "start_seconds": 95,
+                "end_seconds": 180,
+            },
+        ],
+    }
+
+
+def validate_opening_proxy_protocol(
+    metadata_config: Mapping[str, object], *, expected: Mapping[str, object]
+) -> None:
+    """Fail closed when a model artifact was trained for another timing protocol."""
+
+    observed = metadata_config.get("opening_proxy_protocol")
+    if observed != dict(expected):
+        raise ValueError("model artifact opening-proxy protocol does not match this runtime")
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +130,27 @@ def opening_proxy_feature_schema(interval_seconds: int) -> FeatureSchema:
         version=f"btc-opening-proxy-kline-{interval_seconds}s-v1",
         names=tuple(names),
     )
+
+
+def opening_proxy_decision_offsets_ms(
+    *,
+    cadence_ms: int,
+    entry_start_seconds: int,
+    entry_end_seconds: int,
+) -> tuple[int, ...]:
+    """Return cadence-aligned offsets anchored to market open."""
+
+    if cadence_ms < 1:
+        raise ValueError("cadence_ms must be >= 1")
+    if entry_start_seconds < 0 or entry_end_seconds < entry_start_seconds:
+        raise ValueError("entry window is invalid")
+    start_ms = entry_start_seconds * 1_000
+    end_ms = entry_end_seconds * 1_000
+    first_ms = ((start_ms + cadence_ms - 1) // cadence_ms) * cadence_ms
+    offsets = tuple(range(first_ms, end_ms + 1, cadence_ms))
+    if not offsets:
+        raise ValueError("entry window contains no cadence-aligned decision")
+    return offsets
 
 
 def build_opening_proxy_dataset(
@@ -188,6 +282,66 @@ def build_opening_proxy_dataset(
     )
 
 
+def opening_proxy_feature_values_at(
+    *,
+    klines: BinanceKlineHistory,
+    market_start: datetime,
+    decision_time: datetime,
+    availability_delay: timedelta = timedelta(seconds=1),
+) -> dict[str, float]:
+    """Build one runtime vector with the exact historical proxy semantics."""
+
+    if market_start.tzinfo is None or decision_time.tzinfo is None:
+        raise ValueError("market_start and decision_time must be timezone-aware")
+    if availability_delay < timedelta(0):
+        raise ValueError("availability_delay must be non-negative")
+    market_start_ns = _datetime_to_ns(market_start)
+    decision_ns = _datetime_to_ns(decision_time)
+    elapsed_seconds = (decision_ns - market_start_ns) / _NANOS_PER_SECOND
+    if elapsed_seconds <= 0.0 or elapsed_seconds >= 900.0:
+        raise ValueError("decision_time must fall inside the BTC 15m market window")
+    interval_ns = klines.interval_seconds * _NANOS_PER_SECOND
+    available_ts_ns = (
+        klines.open_ts_ns
+        + interval_ns
+        + round(availability_delay.total_seconds() * _NANOS_PER_SECOND)
+    )
+    reference_index = int(np.searchsorted(available_ts_ns, market_start_ns, side="right")) - 1
+    if reference_index < 0:
+        raise ValueError("no causally available opening reference")
+    windows = _windows_for_interval(klines.interval_seconds)
+    max_window_ns = max(windows) * _NANOS_PER_SECOND
+    start = int(np.searchsorted(available_ts_ns, decision_ns - max_window_ns, side="left"))
+    end = int(np.searchsorted(available_ts_ns, decision_ns, side="right"))
+    if (
+        start >= end
+        or reference_index >= end
+        or not _has_full_history(
+            available_ts_ns=available_ts_ns,
+            start=start,
+            decision_ns=decision_ns,
+            max_window_ns=max_window_ns,
+            interval_ns=interval_ns,
+        )
+    ):
+        raise ValueError("incomplete causal Binance history at decision_time")
+    if np.any(np.diff(klines.open_ts_ns[start:end]) != interval_ns):
+        raise ValueError("causal Binance history contains a kline gap")
+    schema = opening_proxy_feature_schema(klines.interval_seconds)
+    vector = _feature_vector(
+        klines=klines,
+        available_ts_ns=available_ts_ns,
+        start=start,
+        end=end,
+        reference_index=reference_index,
+        decision_ns=decision_ns,
+        elapsed_seconds=elapsed_seconds,
+        schema=schema,
+        windows=windows,
+    )
+    return schema.mapping_from(vector)
+
+
 def _feature_vector(
     *,
     klines: BinanceKlineHistory,
@@ -196,7 +350,7 @@ def _feature_vector(
     end: int,
     reference_index: int,
     decision_ns: int,
-    elapsed_seconds: int,
+    elapsed_seconds: float,
     schema: FeatureSchema,
     windows: Sequence[int],
 ) -> tuple[float, ...]:
@@ -274,8 +428,14 @@ def _has_full_history(
 def _snapshot_offsets(
     *, snapshot_seconds: int, entry_start_seconds: int, entry_end_seconds: int
 ) -> tuple[int, ...]:
-    first = ((entry_start_seconds + snapshot_seconds - 1) // snapshot_seconds) * snapshot_seconds
-    return tuple(range(first, entry_end_seconds + 1, snapshot_seconds))
+    return tuple(
+        offset_ms // 1_000
+        for offset_ms in opening_proxy_decision_offsets_ms(
+            cadence_ms=snapshot_seconds * 1_000,
+            entry_start_seconds=entry_start_seconds,
+            entry_end_seconds=entry_end_seconds,
+        )
+    )
 
 
 def _windows_for_interval(interval_seconds: int) -> tuple[int, ...]:
@@ -311,7 +471,14 @@ def _datetime_to_ns(value: datetime) -> int:
 
 
 __all__ = [
+    "OPENING_REGIMES",
+    "OpeningRegime",
     "OpeningProxyDatasetBuild",
     "build_opening_proxy_dataset",
+    "opening_proxy_decision_offsets_ms",
+    "opening_proxy_feature_values_at",
     "opening_proxy_feature_schema",
+    "opening_proxy_protocol",
+    "opening_regime_for_elapsed_seconds",
+    "validate_opening_proxy_protocol",
 ]

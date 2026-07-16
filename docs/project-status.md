@@ -9,25 +9,74 @@ and reporting plumbing without importing archived BTC strategy logic.
 - Complete code paths: causal data contracts, storage/manifests, multi-venue
   opening features, fair-probability models, post-only dual-side maker planning,
   dual-token replay, required artifacts, shadow/canary safety, and Go/No-Go gates.
+- Pre-VPS runtime: a public forward-collector supervisor now persists atomic
+  status/control files, stops safely on a local kill request, exposes a
+  loopback-only read-only dashboard, and has Docker Compose assets with host
+  data/output mounts. The dashboard now has a validated projection seam for
+  account equity/PnL, an equity curve, recent market-level trades, connection
+  and order-latency health, active alerts, and the Research-to-Live lifecycle.
+  Missing projections stay visibly empty; research Proxy and Shadow output are
+  never rendered as real profit. An optional post-window Shadow scheduler
+  writes one SHA-versioned causal pass per completed window. This is
+  collection/observability plumbing only; Docker build verification still
+  requires a Docker Engine, and it does not authorize Paper, Canary, or live
+  orders.
 - Data boundary: 15m is the only trading family; 5m is collection-only.
-- Forward collection: `btc_forward_collector.py --follow-current` refreshes
-  exact Gamma metadata at each window boundary and persists a rule-hash-specific
-  catalog before subscribing to a new token pair.
+- Forward collection: `btc_forward_collector.py --follow-current` now discovers
+  current and next exact Gamma slugs, persists separate rule-hash catalogs, and
+  pre-subscribes both token pairs before the next opening window. It retains the
+  old pair through `t0+180s` so the entire research window has one connection.
 - Evidence boundary: no profitability or deployability claim exists until real
   data passes the documented holdout and pessimistic queue/latency gates.
-- Preliminary opening fair-probability proxy (2026-04-28 through 2026-07-12,
-  7,295 resolved markets): the group-safe 1-second Binance study selected
-  `lightgbm-small` on development and achieved sealed-holdout log loss 0.65099
-  and Brier 0.22951, versus rolling prior 0.69341 and 0.25013. This is evidence
-  for continuing outcome-model research only: it has no Polymarket price,
-  Chainlink-reference, queue, fill, fee, rebate, or latency evidence. Its 1,345
-  sealed markets also fall below the project's 2,500-market direction-gate
-  minimum, so it is explicitly not a Go decision.
+- Three-minute fair-probability proxy: the reproducible exact `stride=1` run
+  used all 7,295 resolved markets and 262,620 causal five-second snapshots.
+  Paired daily-block candidate selection retained `logistic-c0.1` because
+  neither LightGBM candidate improved both log loss and Brier with positive
+  95% confidence lower bounds. Its 1,345-market holdout achieved log
+  loss/Brier 0.65249/0.23008 versus 0.69341/0.25013 for the frozen training prior;
+  calibration slope was 0.993. The formal direction gate remains No-Go because
+  the holdout has fewer than 2,500 markets, the available 76-day history cannot
+  run the full 90/21/14/28-day protocol, and no causally available Polymarket
+  implied-probability baseline exists for this period. Gamma coverage is also
+  one market short of the requested 7,296. Confidence-band sample and
+  calibration checks now pass. Artifacts are in
+  `output/btc_short_horizon/research/opening-proxy-1s-postopen180-gated-20260428-20260713-v5/`.
+- Sparse Polymarket price-history proxy: frozen development thresholds produced
+  1,098 holdout entries at 2.56c/share (95% CI 0.38c to 4.75c) with price age
+  capped at 15 seconds. Adding another 1c entry cost leaves 935 entries at
+  1.67c/share, but its 95% CI crosses zero (-0.59c to 4.17c). One-minute price
+  history is not BBO, queue, fill, fee, rebate, or latency evidence, so this
+  result prioritizes Shadow only and cannot authorize maker deployment.
 - Legacy pre-open/revalidation strategy, historical script, runner, generic
   feature state, and their tests were removed. The only BTC 15m strategy path
-  is now Opening Mispricing over `t0+3s` through `t0+180s`.
-- Current local prerequisite: Windows PMXT native verification requires the
-  Visual Studio C++ workload and Windows SDK in addition to Rust.
+  is Opening Mispricing with 36 decisions at `t0+5/10/.../180s`, two
+  consecutive signals, per-regime research reporting, and a conservative
+  10c maker minimum edge plus a separate 1c safety buffer.
+- PMXT native extension has now been built locally and its focused native suite
+  passed (21 tests). A bounded v2 audit found zero rows for all four
+  Gamma-verified BTC 15m conditions in the downloaded 2026-07-13T04 raw hour.
+  Empty PMXT coverage is therefore a hard data failure, not a replay result.
+- Forward raw collection writes canonical JSON and readers fail closed on
+  malformed payloads. Version v5 made closed Binance Spot `kline_1s` the
+  lightweight default. Current v6 pre-subscribes the next CLOB pair and
+  namespaces epochs by market start; readers select one ingest version exactly.
+  Follow catalogs preserve their first pre-open `collected_at` timestamp and
+  reject same-path metadata conflicts instead of overwriting provenance.
+- The v6 collector completed a fresh 180-second audit on
+  `btc-updown-15m-1784214900`. The dual-token Shadow reconstructed all 36
+  decisions with zero submitted orders. The enhanced multi-venue audit observed
+  all 36 decisions; 32 were quality-eligible and four correctly failed closed
+  because Binance Spot trade/BBO evidence was older than one second. The
+  enhanced audit explicitly opted into the current Binance Futures `/public`
+  route for trade and Book Ticker. The deploy default remains Spot closed
+  `kline_1s` only, and the runtime reports the look-ahead market as active after
+  handoff.
+- The runtime model path uses the same feature schema as training and bootstraps
+  at most four Binance REST pages. A full three-minute shadow needs 3,782 closed
+  one-second bars instead of downloading another historical archive.
+- The resolved-label dataset seam now enforces whole-market quality exclusion,
+  a five-second training cadence, one total sample weight per market, one rule
+  epoch per dataset, and the existing group-safe `DirectionDataset` pipeline.
 
 See [BTC Short-Horizon Architecture](btc-short-horizon-architecture.md) for
 the input/output contract and operational commands.
@@ -54,6 +103,29 @@ the input/output contract and operational commands.
 
 ## Known Issues
 
+- A single fresh 36-decision Shadow window proves runtime compatibility, not
+  statistical stability. Promotion still requires accumulated forward windows,
+  target holdout counts, synchronized executable L2/TradeTick evidence, and the
+  pessimistic queue/P99 latency maker gate.
+- The forward raw parts written on 2026-07-13 contain malformed `payload_json`
+  because their JSON field delimiter was incorrect. They must not be used for
+  feature generation, market evidence, model fitting, or replay. The reader
+  fails closed on these parts, and later valid collection is a separate epoch.
+- CLOB data collected before the `btc-short-horizon-v2` cutover on 2026-07-14
+  is excluded from opening-market research because small source-timestamp
+  jitter produced false epoch gaps. The raw parts are retained, not migrated;
+  only a window passing the current versioned coverage audit can establish
+  synchronized evidence.
+- Forward data collected under `btc-short-horizon-v2` is excluded from joined
+  feature research because Binance trade, depth, and Book Ticker events shared
+  one ordering validator. Normal cross-stream interleaving therefore created
+  false epoch transitions. Version v3 scopes epochs per logical stream; v2 raw
+  remains immutable and is not repaired in place.
+- Forward data collected under `btc-short-horizon-v3` is excluded from joined
+  feature research because Binance moved Futures aggregate trades to
+  `/market/stream` while depth and Book Ticker use `/public/stream`. The old
+  single endpoint produced no perpetual `aggTrade` rows. Version v4 uses both
+  official connections; v3 raw remains immutable.
 - Kalshi is not currently exposed as a public runnable backtest path. The repo
   still contains Kalshi instrument, trade/candlestick loader, fee-model, and
   research helper components, but the built-in replay adapter registry only

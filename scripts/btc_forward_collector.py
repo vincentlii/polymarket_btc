@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from collections.abc import Callable, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from math import isfinite
 from pathlib import Path
 
@@ -20,9 +20,19 @@ ensure_repo_root(__file__)
 
 from btc_short_horizon.config import BtcProjectConfig, load_btc_project_config  # noqa: E402
 from btc_short_horizon.data.catalog_io import read_market_catalog, write_market_catalog  # noqa: E402
-from btc_short_horizon.data.contracts import BtcMarketFamily, MarketWindow  # noqa: E402
-from btc_short_horizon.data.forward import BtcForwardCollector, DEFAULT_BINANCE_STREAMS  # noqa: E402
+from btc_short_horizon.data.contracts import (  # noqa: E402
+    BtcMarketFamily,
+    MarketValidationError,
+    MarketWindow,
+)
+from btc_short_horizon.data.forward import (  # noqa: E402
+    DEFAULT_BINANCE_FUTURES_MARKET_STREAMS,
+    DEFAULT_BINANCE_FUTURES_PUBLIC_STREAMS,
+    DEFAULT_BINANCE_STREAMS,
+    BtcForwardCollector,
+)
 from btc_short_horizon.data.gamma import GammaMarketClient  # noqa: E402
+from btc_short_horizon.data.market_catalog import MarketCatalog  # noqa: E402
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -73,13 +83,33 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Override the configured Gamma retry interval while a new market is unavailable.",
     )
     parser.add_argument(
+        "--opening-handoff-delay-seconds",
+        type=float,
+        help=(
+            "Keep the current+lookahead subscription alive this long after rotation; "
+            "defaults to the configured shadow-safe handoff delay."
+        ),
+    )
+    parser.add_argument(
         "--binance-stream",
         action="append",
         default=None,
         help=(
-            "Binance combined-stream name. Defaults to BTCUSDT trade, 100ms diff-depth, "
-            "and Book Ticker streams."
+            "Binance Spot combined-stream name. Defaults only to BTCUSDT kline_1s; "
+            "repeat explicitly for additional research streams."
         ),
+    )
+    parser.add_argument(
+        "--binance-futures-market-stream",
+        action="append",
+        default=None,
+        help="Binance Futures market-stream name; disabled unless repeated explicitly.",
+    )
+    parser.add_argument(
+        "--binance-futures-public-stream",
+        action="append",
+        default=None,
+        help="Binance Futures public-stream name; disabled unless repeated explicitly.",
     )
     parser.add_argument(
         "--flush-size",
@@ -107,6 +137,7 @@ def build_collector(
         polymarket_token_ids=token_ids,
         flush_size=flush_size,
         flush_interval_seconds=flush_interval_seconds,
+        ingest_version=config.collection.ingest_version,
     )
 
 
@@ -131,9 +162,20 @@ def _token_ids(args: argparse.Namespace) -> tuple[str, ...]:
 async def collect(args: argparse.Namespace) -> None:
     config = load_btc_project_config(args.config)
     streams = tuple(args.binance_stream or DEFAULT_BINANCE_STREAMS)
+    futures_market_streams = tuple(
+        args.binance_futures_market_stream or DEFAULT_BINANCE_FUTURES_MARKET_STREAMS
+    )
+    futures_public_streams = tuple(
+        args.binance_futures_public_stream or DEFAULT_BINANCE_FUTURES_PUBLIC_STREAMS
+    )
     flush_size, flush_interval_seconds, rotation_poll_seconds = _collection_settings(args, config)
     if args.follow_current:
         _validate_follow_current_args(args)
+        opening_handoff_delay_seconds = (
+            args.opening_handoff_delay_seconds
+            if args.opening_handoff_delay_seconds is not None
+            else config.collection.opening_handoff_delay_seconds
+        )
         await collect_current_market_windows(
             family=_follow_family(config, args.family),
             rule_epoch=args.rule_epoch,
@@ -144,14 +186,23 @@ async def collect(args: argparse.Namespace) -> None:
             ),
             flush_size=flush_size,
             flush_interval_seconds=flush_interval_seconds,
+            ingest_version=config.collection.ingest_version,
             binance_streams=streams,
+            binance_futures_market_streams=futures_market_streams,
+            binance_futures_public_streams=futures_public_streams,
             rotation_poll_seconds=rotation_poll_seconds,
+            opening_handoff_delay_seconds=opening_handoff_delay_seconds,
             stop_event=asyncio.Event(),
         )
         return
     collector = build_collector(args, config=config)
     stop_event = asyncio.Event()
-    await collector.collect_forever(stop_event=stop_event, binance_streams=streams)
+    await collector.collect_forever(
+        stop_event=stop_event,
+        binance_streams=streams,
+        binance_futures_market_streams=futures_market_streams,
+        binance_futures_public_streams=futures_public_streams,
+    )
 
 
 async def collect_current_market_windows(
@@ -162,31 +213,40 @@ async def collect_current_market_windows(
     catalog_directory: Path,
     flush_size: int,
     flush_interval_seconds: float,
+    ingest_version: str,
     binance_streams: Sequence[str],
+    binance_futures_market_streams: Sequence[str],
+    binance_futures_public_streams: Sequence[str],
     rotation_poll_seconds: float,
+    opening_handoff_delay_seconds: float,
     stop_event: asyncio.Event,
     gamma_client: GammaMarketClient | None = None,
-    collector_factory: Callable[[Path, tuple[str, str], int, float], BtcForwardCollector]
+    collector_factory: Callable[[Path, tuple[str, ...], int, float, str, int], BtcForwardCollector]
+    | None = None,
+    on_market_active: Callable[[MarketWindow, MarketWindow | None, BtcForwardCollector], None]
     | None = None,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> None:
-    """Collect the active BTC market and switch only after its validated window ends."""
+    """Collect current+next BTC tokens and rotate only after the next opening window."""
 
     if not rule_epoch:
         raise ValueError("rule_epoch is required")
     if not isfinite(rotation_poll_seconds) or rotation_poll_seconds <= 0.0:
         raise ValueError("rotation_poll_seconds must be finite and > 0")
+    if not isfinite(opening_handoff_delay_seconds) or opening_handoff_delay_seconds <= 0.0:
+        raise ValueError("opening_handoff_delay_seconds must be finite and > 0")
     client = gamma_client or GammaMarketClient()
     factory = collector_factory or _build_window_collector
     while not stop_event.is_set():
         current_time = _as_utc(now())
         slug = current_market_slug(family, current_time)
+        lookahead_slug = next_market_slug(family, current_time)
         try:
             catalog = await client.discover_catalog(
                 family=family,
                 rule_epoch=rule_epoch,
                 closed=False,
-                slugs=(slug,),
+                slugs=(slug, lookahead_slug),
             )
         except httpx.HTTPError as exc:
             print(f"Gamma discovery failed for {slug}: {exc}; retrying.")
@@ -200,28 +260,59 @@ async def collect_current_market_windows(
         if market.t1 <= current_time:
             await _wait_or_stop(stop_event, rotation_poll_seconds)
             continue
-        catalog_path = catalog_directory / f"{market.slug}-{market.rule_hash}.json"
-        write_market_catalog(path=catalog_path, catalog=catalog)
+        lookahead = catalog.get(lookahead_slug)
+        if lookahead is not None and lookahead.t0 != market.t1:
+            raise ValueError("Gamma lookahead market does not start at the current window end")
+        catalog_path = _write_single_market_catalog(
+            directory=catalog_directory,
+            family=family,
+            market=market,
+        )
+        token_ids = (market.up_token_id, market.down_token_id)
+        if lookahead is not None:
+            _write_single_market_catalog(
+                directory=catalog_directory,
+                family=family,
+                market=lookahead,
+            )
+            token_ids = (
+                *token_ids,
+                lookahead.up_token_id,
+                lookahead.down_token_id,
+            )
         collector_stop = asyncio.Event()
         collector = factory(
             raw_data_root,
-            (market.up_token_id, market.down_token_id),
+            token_ids,
             flush_size,
             flush_interval_seconds,
+            ingest_version,
+            int(market.t0.timestamp()),
         )
+        if on_market_active is not None:
+            on_market_active(market, lookahead, collector)
         worker = asyncio.create_task(
             collector.collect_forever(
                 stop_event=collector_stop,
                 binance_streams=binance_streams,
+                binance_futures_market_streams=binance_futures_market_streams,
+                binance_futures_public_streams=binance_futures_public_streams,
             ),
             name=f"btc-forward-{market.slug}",
         )
-        print(f"Collecting {market.slug} until {market.t1.isoformat()} using {catalog_path}.")
+        handoff_delay = opening_handoff_delay_seconds if lookahead is not None else 0.0
+        print(
+            f"Collecting {market.slug}"
+            f"{' + ' + lookahead.slug if lookahead is not None else ''} "
+            f"until {(market.t1 + timedelta(seconds=handoff_delay)).isoformat()} "
+            f"using {catalog_path}."
+        )
         try:
             await _wait_for_market_rotation(
                 stop_event=stop_event,
                 worker=worker,
                 market=market,
+                handoff_delay_seconds=handoff_delay,
                 now=now,
             )
         finally:
@@ -234,6 +325,31 @@ def current_market_slug(family: BtcMarketFamily, now: datetime) -> str:
     epoch_seconds = int(current_time.timestamp())
     window_start = epoch_seconds - epoch_seconds % family.window_seconds
     return family.slug_for(datetime.fromtimestamp(window_start, UTC))
+
+
+def next_market_slug(family: BtcMarketFamily, now: datetime) -> str:
+    current_time = _as_utc(now)
+    epoch_seconds = int(current_time.timestamp())
+    next_start = epoch_seconds - epoch_seconds % family.window_seconds + family.window_seconds
+    return family.slug_for(datetime.fromtimestamp(next_start, UTC))
+
+
+def _write_single_market_catalog(
+    *, directory: Path, family: BtcMarketFamily, market: MarketWindow
+) -> Path:
+    path = directory / f"{market.slug}-{market.rule_hash}.json"
+    if path.exists():
+        existing = read_market_catalog(path)
+        if existing.families != (family,) or existing.windows() != (market,):
+            raise MarketValidationError(
+                f"existing follow-current catalog conflicts with Gamma metadata: {path}"
+            )
+        return path
+    write_market_catalog(
+        path=path,
+        catalog=MarketCatalog(families=(family,), windows=(market,)),
+    )
+    return path
 
 
 def _validate_follow_current_args(args: argparse.Namespace) -> None:
@@ -273,15 +389,19 @@ def _collection_settings(
 
 def _build_window_collector(
     raw_data_root: Path,
-    token_ids: tuple[str, str],
+    token_ids: tuple[str, ...],
     flush_size: int,
     flush_interval_seconds: float,
+    ingest_version: str,
+    epoch_id_offset: int,
 ) -> BtcForwardCollector:
     return BtcForwardCollector(
         raw_data_root=raw_data_root,
         polymarket_token_ids=token_ids,
         flush_size=flush_size,
         flush_interval_seconds=flush_interval_seconds,
+        ingest_version=ingest_version,
+        epoch_id_offset=epoch_id_offset,
     )
 
 
@@ -297,9 +417,11 @@ async def _wait_for_market_rotation(
     stop_event: asyncio.Event,
     worker: asyncio.Task[None],
     market: MarketWindow,
+    handoff_delay_seconds: float,
     now: Callable[[], datetime],
 ) -> None:
-    seconds_until_end = max(0.0, (market.t1 - _as_utc(now())).total_seconds())
+    handoff_end = market.t1 + timedelta(seconds=handoff_delay_seconds)
+    seconds_until_end = max(0.0, (handoff_end - _as_utc(now())).total_seconds())
     stopper = asyncio.create_task(stop_event.wait())
     try:
         done, _ = await asyncio.wait(
@@ -310,7 +432,9 @@ async def _wait_for_market_rotation(
         if worker in done:
             await worker
             if not stop_event.is_set():
-                raise RuntimeError(f"collector stopped before {market.slug} reached its window end")
+                raise RuntimeError(
+                    f"collector stopped before {market.slug} reached its handoff end"
+                )
     finally:
         stopper.cancel()
         await asyncio.gather(stopper, return_exceptions=True)

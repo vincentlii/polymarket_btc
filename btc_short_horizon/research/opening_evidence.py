@@ -1,0 +1,655 @@
+"""Causal market-price evidence shared by forward collection and PMXT research."""
+
+from __future__ import annotations
+
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+import json
+from math import isfinite
+from pathlib import Path
+from urllib.parse import quote
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+from nautilus_trader.model.book import OrderBook
+from nautilus_trader.model.data import OrderBookDeltas
+from nautilus_trader.model.enums import BookType
+
+from btc_short_horizon.data import MarketWindow
+from btc_short_horizon.data.polymarket import PolymarketL2Normalizer, PolymarketL2Status
+from btc_short_horizon.features.events import BtcBookTop
+
+
+_NANOS_PER_SECOND = 1_000_000_000
+_RAW_COLUMNS = (
+    "source_ts_ns",
+    "collector_receive_ts_ns",
+    "available_ts_ns",
+    "sequence_or_hash",
+    "source",
+    "instrument",
+    "ingest_version",
+    "event_type",
+    "epoch_id",
+    "payload_json",
+)
+
+
+class RawPayloadError(ValueError):
+    """Raised when an immutable raw part cannot safely reproduce its source payload."""
+
+
+@dataclass(frozen=True, slots=True)
+class TokenBookStateEvent:
+    """One causal state transition for a token's reconstructed L2 book."""
+
+    token_id: str
+    source_ts_ns: int
+    available_ts_ns: int
+    epoch_id: int
+    collector_receive_ts_ns: int | None = None
+    book: BtcBookTop | None = None
+    reset_book: bool = False
+    tick_size_changed: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.token_id:
+            raise ValueError("token_id is required")
+        if self.source_ts_ns < 0 or self.available_ts_ns < 0:
+            raise ValueError("book state timestamps must be non-negative")
+        if self.available_ts_ns < self.source_ts_ns:
+            raise ValueError("available_ts_ns cannot precede source_ts_ns")
+        if self.collector_receive_ts_ns is not None and self.collector_receive_ts_ns < 0:
+            raise ValueError("collector_receive_ts_ns must be non-negative when provided")
+        if self.epoch_id < 0:
+            raise ValueError("epoch_id must be non-negative")
+        if self.book is not None:
+            if self.book.instrument != self.token_id:
+                raise ValueError("book instrument must equal token_id")
+            if (
+                self.book.source_ts_ns != self.source_ts_ns
+                or self.book.available_ts_ns != self.available_ts_ns
+            ):
+                raise ValueError("book timestamps must equal its state-event timestamps")
+
+
+@dataclass(frozen=True, slots=True)
+class ForwardBookEventLoad:
+    """Forward raw-data load result, including evidence that a snapshot was unavailable."""
+
+    token_id: str
+    events: tuple[TokenBookStateEvent, ...]
+    raw_part_count: int
+    raw_row_count: int
+    duplicate_row_count: int
+    awaiting_snapshot_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class PmxtBookEventLoad:
+    """PMXT L2 reconstruction result for one token without inventing FIFO data."""
+
+    token_id: str
+    events: tuple[TokenBookStateEvent, ...]
+    source_book_event_count: int
+    gap_hour_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class OpeningMarketObservation:
+    """Observed dual-token market probability at one causally valid decision time."""
+
+    market_slug: str
+    decision_ts_ns: int
+    p_market_mid_up: float
+    data_age_seconds: float
+    up_available_ts_ns: int
+    down_available_ts_ns: int
+    up_epoch_id: int
+    down_epoch_id: int
+    has_data_gap: bool
+    structure_valid: bool
+    tick_unchanged: bool
+
+    def __post_init__(self) -> None:
+        if not self.market_slug:
+            raise ValueError("market_slug is required")
+        if self.decision_ts_ns < 0:
+            raise ValueError("decision_ts_ns must be non-negative")
+        if not isfinite(self.p_market_mid_up) or not 0.0 < self.p_market_mid_up < 1.0:
+            raise ValueError("p_market_mid_up must be finite and in (0, 1)")
+        if not isfinite(self.data_age_seconds) or self.data_age_seconds < 0.0:
+            raise ValueError("data_age_seconds must be finite and >= 0")
+        if min(self.up_available_ts_ns, self.down_available_ts_ns) < 0:
+            raise ValueError("book availability timestamps must be non-negative")
+        if min(self.up_epoch_id, self.down_epoch_id) < 0:
+            raise ValueError("book epochs must be non-negative")
+
+
+@dataclass(frozen=True, slots=True)
+class ForwardRawEvent:
+    """One validated, causally ordered raw event from the immutable forward store."""
+
+    path: Path
+    row_index: int
+    source_ts_ns: int
+    collector_receive_ts_ns: int | None
+    available_ts_ns: int
+    sequence_or_hash: str
+    source: str
+    instrument: str
+    ingest_version: str
+    event_type: str
+    epoch_id: int
+    payload: Mapping[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class ForwardRawEventLoad:
+    """Strict raw-event load result before a source-specific normalizer is applied."""
+
+    source: str
+    instrument: str
+    ingest_version: str | None
+    events: tuple[ForwardRawEvent, ...]
+    raw_part_count: int
+    raw_row_count: int
+
+
+def load_forward_raw_events(
+    *,
+    raw_data_root: Path,
+    source: str,
+    instrument: str,
+    start_time: datetime,
+    end_time: datetime,
+    ingest_version: str | None = None,
+) -> ForwardRawEventLoad:
+    """Load one forward stream without repairing malformed rows or mixing versions."""
+
+    if not source or not instrument:
+        raise ValueError("source and instrument are required")
+    start_ns, end_ns = _window_ns(start_time=start_time, end_time=end_time)
+    if ingest_version is not None and not ingest_version.strip():
+        raise ValueError("ingest_version must be non-empty when provided")
+    expected_ingest_version = ingest_version.strip() if ingest_version is not None else None
+    raw_part_count = 0
+    raw_row_count = 0
+    events: list[ForwardRawEvent] = []
+    for path in _raw_part_paths(
+        raw_data_root=raw_data_root,
+        source=source,
+        instrument=instrument,
+        start_time=start_time,
+        end_time=end_time,
+    ):
+        raw_part_count += 1
+        for row_index, row in _raw_rows(path):
+            available_ts_ns = _required_int(row, "available_ts_ns", path, row_index)
+            if not start_ns <= available_ts_ns <= end_ns:
+                continue
+            _validate_raw_identity(
+                row,
+                expected_source=source,
+                expected_instrument=instrument,
+                path=path,
+                row_index=row_index,
+            )
+            row_ingest_version = _required_text(row, "ingest_version", path, row_index)
+            if (
+                expected_ingest_version is not None
+                and row_ingest_version != expected_ingest_version
+            ):
+                continue
+            raw_row_count += 1
+            events.append(
+                ForwardRawEvent(
+                    path=path,
+                    row_index=row_index,
+                    source_ts_ns=_required_int(row, "source_ts_ns", path, row_index),
+                    collector_receive_ts_ns=_optional_int(
+                        row, "collector_receive_ts_ns", path, row_index
+                    ),
+                    available_ts_ns=available_ts_ns,
+                    sequence_or_hash=_required_text(row, "sequence_or_hash", path, row_index),
+                    source=source,
+                    instrument=instrument,
+                    ingest_version=row_ingest_version,
+                    event_type=_required_text(row, "event_type", path, row_index),
+                    epoch_id=_required_int(row, "epoch_id", path, row_index),
+                    payload=_payload_mapping(row, path=path, row_index=row_index),
+                )
+            )
+    return ForwardRawEventLoad(
+        source=source,
+        instrument=instrument,
+        ingest_version=expected_ingest_version,
+        events=tuple(sorted(events, key=_raw_payload_sort_key)),
+        raw_part_count=raw_part_count,
+        raw_row_count=raw_row_count,
+    )
+
+
+def load_forward_polymarket_book_events(
+    *,
+    raw_data_root: Path,
+    token_id: str,
+    start_time: datetime,
+    end_time: datetime,
+    ingest_version: str | None = None,
+) -> ForwardBookEventLoad:
+    """Rebuild one token's causal L2 state from valid append-only raw events.
+
+    Invalid JSON is an evidence failure, not a recoverable data value: a caller
+    must exclude that part rather than attempting lossy repair.
+    """
+
+    raw_load = load_forward_raw_events(
+        raw_data_root=raw_data_root,
+        source="polymarket_clob",
+        instrument=token_id,
+        start_time=start_time,
+        end_time=end_time,
+        ingest_version=ingest_version,
+    )
+    normalizer = PolymarketL2Normalizer(token_id=token_id)
+    events: list[TokenBookStateEvent] = []
+    seen_sequences: set[tuple[int, str]] = set()
+    current_epoch: int | None = None
+    duplicate_row_count = 0
+    awaiting_snapshot_count = 0
+    for raw in raw_load.events:
+        if raw.payload.get("event_type") != raw.event_type:
+            raise RawPayloadError(f"raw payload event_type mismatch at {raw.path}:{raw.row_index}")
+        sequence_key = (raw.epoch_id, raw.sequence_or_hash)
+        if sequence_key in seen_sequences:
+            duplicate_row_count += 1
+            continue
+        seen_sequences.add(sequence_key)
+        if current_epoch is not None and raw.epoch_id < current_epoch:
+            raise RawPayloadError(
+                "raw epoch regressed in causal event order at "
+                f"{raw.path}:{raw.row_index}: {raw.epoch_id} < {current_epoch}"
+            )
+        reset_book = current_epoch is not None and raw.epoch_id != current_epoch
+        if reset_book:
+            normalizer.reset()
+        current_epoch = raw.epoch_id
+        receive_ts_ns = raw.collector_receive_ts_ns or raw.available_ts_ns
+        try:
+            result = normalizer.apply(
+                raw.payload,
+                collector_receive_ts=_datetime_from_ns(receive_ts_ns),
+            )
+        except ValueError as exc:
+            raise RawPayloadError(
+                f"invalid CLOB payload at {raw.path}:{raw.row_index}: {exc}"
+            ) from exc
+        if result.status is PolymarketL2Status.AWAITING_SNAPSHOT:
+            awaiting_snapshot_count += 1
+        if result.status is PolymarketL2Status.INVALID:
+            reset_book = True
+        if result.book_top is not None:
+            top = result.book_top
+            events.append(
+                TokenBookStateEvent(
+                    token_id=token_id,
+                    source_ts_ns=raw.source_ts_ns,
+                    available_ts_ns=raw.available_ts_ns,
+                    epoch_id=raw.epoch_id,
+                    collector_receive_ts_ns=raw.collector_receive_ts_ns,
+                    book=BtcBookTop(
+                        source_ts_ns=raw.source_ts_ns,
+                        available_ts_ns=raw.available_ts_ns,
+                        bid=top.bid,
+                        ask=top.ask,
+                        bid_size=top.bid_size,
+                        ask_size=top.ask_size,
+                        source="polymarket_clob",
+                        instrument=token_id,
+                    ),
+                    reset_book=reset_book,
+                    tick_size_changed=result.tick_size_changed,
+                )
+            )
+        elif reset_book or result.tick_size_changed:
+            events.append(
+                TokenBookStateEvent(
+                    token_id=token_id,
+                    source_ts_ns=raw.source_ts_ns,
+                    available_ts_ns=raw.available_ts_ns,
+                    epoch_id=raw.epoch_id,
+                    collector_receive_ts_ns=raw.collector_receive_ts_ns,
+                    reset_book=reset_book,
+                    tick_size_changed=result.tick_size_changed,
+                )
+            )
+
+    return ForwardBookEventLoad(
+        token_id=token_id,
+        events=tuple(sorted(events, key=_state_event_sort_key)),
+        raw_part_count=raw_load.raw_part_count,
+        raw_row_count=raw_load.raw_row_count,
+        duplicate_row_count=duplicate_row_count,
+        awaiting_snapshot_count=awaiting_snapshot_count,
+    )
+
+
+def build_opening_market_observations(
+    *,
+    market: MarketWindow,
+    up_events: Sequence[TokenBookStateEvent],
+    down_events: Sequence[TokenBookStateEvent],
+    decision_ts_ns: Sequence[int],
+    initial_data_gap: bool = False,
+) -> tuple[OpeningMarketObservation, ...]:
+    """Join two token books only at decision times after both states were available."""
+
+    _validate_token_events(up_events, expected_token_id=market.up_token_id)
+    _validate_token_events(down_events, expected_token_id=market.down_token_id)
+    decisions = tuple(sorted(set(int(value) for value in decision_ts_ns)))
+    start_ns = _datetime_to_ns(market.t0)
+    end_ns = _datetime_to_ns(market.t1)
+    if any(value < start_ns or value > end_ns for value in decisions):
+        raise ValueError("decision timestamps must lie within the market window")
+
+    events = tuple(sorted((*up_events, *down_events), key=_state_event_sort_key))
+    latest: dict[str, TokenBookStateEvent | None] = {
+        market.up_token_id: None,
+        market.down_token_id: None,
+    }
+    baseline_epochs: dict[str, int | None] = {
+        market.up_token_id: None,
+        market.down_token_id: None,
+    }
+    gap_seen = initial_data_gap
+    tick_changed = False
+    event_index = 0
+    observations: list[OpeningMarketObservation] = []
+
+    for decision in decisions:
+        while event_index < len(events) and events[event_index].available_ts_ns <= decision:
+            event = events[event_index]
+            event_index += 1
+            previous = latest[event.token_id]
+            if event.reset_book:
+                if previous is not None:
+                    gap_seen = True
+                latest[event.token_id] = None
+            if event.book is not None:
+                baseline = baseline_epochs[event.token_id]
+                if baseline is None:
+                    baseline_epochs[event.token_id] = event.epoch_id
+                elif baseline != event.epoch_id:
+                    gap_seen = True
+                latest[event.token_id] = event
+            if event.tick_size_changed:
+                tick_changed = True
+
+        up = latest[market.up_token_id]
+        down = latest[market.down_token_id]
+        if up is None or down is None or up.book is None or down.book is None:
+            continue
+        up_midpoint = (up.book.bid + up.book.ask) / 2.0
+        down_midpoint = (down.book.bid + down.book.ask) / 2.0
+        p_market_mid_up = (up_midpoint + 1.0 - down_midpoint) / 2.0
+        data_age_seconds = max(
+            0.0,
+            (decision - min(up.available_ts_ns, down.available_ts_ns)) / _NANOS_PER_SECOND,
+        )
+        observations.append(
+            OpeningMarketObservation(
+                market_slug=market.slug,
+                decision_ts_ns=decision,
+                p_market_mid_up=p_market_mid_up,
+                data_age_seconds=data_age_seconds,
+                up_available_ts_ns=up.available_ts_ns,
+                down_available_ts_ns=down.available_ts_ns,
+                up_epoch_id=up.epoch_id,
+                down_epoch_id=down.epoch_id,
+                has_data_gap=gap_seen,
+                structure_valid=True,
+                tick_unchanged=not tick_changed,
+            )
+        )
+    return tuple(observations)
+
+
+def pmxt_order_book_state_events(
+    *,
+    token_id: str,
+    records: Sequence[OrderBookDeltas],
+    gap_hours: Sequence[object] = (),
+) -> PmxtBookEventLoad:
+    """Derive causal L1 observations by replaying PMXT L2 deltas through Nautilus."""
+
+    book: OrderBook | None = None
+    events: list[TokenBookStateEvent] = []
+    for record in sorted(records, key=lambda item: (int(item.ts_init), int(item.ts_event))):
+        if book is None:
+            book = OrderBook(record.instrument_id, book_type=BookType.L2_MBP)
+        elif record.instrument_id != book.instrument_id:
+            raise ValueError("PMXT records must contain one instrument per token")
+        source_ts_ns = int(record.ts_event)
+        available_ts_ns = int(record.ts_init)
+        if available_ts_ns < source_ts_ns:
+            raise ValueError("PMXT receive timestamp cannot precede source timestamp")
+        book.apply_deltas(record)
+        bid = _as_float(book.best_bid_price())
+        ask = _as_float(book.best_ask_price())
+        bid_size = _as_float(book.best_bid_size())
+        ask_size = _as_float(book.best_ask_size())
+        if None in {bid, ask, bid_size, ask_size}:
+            continue
+        assert bid is not None and ask is not None and bid_size is not None and ask_size is not None
+        try:
+            top = BtcBookTop(
+                source_ts_ns=source_ts_ns,
+                available_ts_ns=available_ts_ns,
+                bid=bid,
+                ask=ask,
+                bid_size=bid_size,
+                ask_size=ask_size,
+                source="pmxt",
+                instrument=token_id,
+            )
+        except ValueError:
+            continue
+        events.append(
+            TokenBookStateEvent(
+                token_id=token_id,
+                source_ts_ns=source_ts_ns,
+                available_ts_ns=available_ts_ns,
+                epoch_id=0,
+                collector_receive_ts_ns=available_ts_ns,
+                book=top,
+            )
+        )
+    return PmxtBookEventLoad(
+        token_id=token_id,
+        events=tuple(sorted(events, key=_state_event_sort_key)),
+        source_book_event_count=len(records),
+        gap_hour_count=len(tuple(gap_hours)),
+    )
+
+
+def _raw_part_paths(
+    *,
+    raw_data_root: Path,
+    source: str,
+    instrument: str,
+    start_time: datetime,
+    end_time: datetime,
+) -> Iterator[Path]:
+    instrument_path = quote(
+        instrument,
+        safe="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._=-",
+    )
+    for hour in _hours_between(start_time=start_time, end_time=end_time):
+        directory = (
+            raw_data_root
+            / "raw"
+            / source
+            / instrument_path
+            / f"date={hour:%Y-%m-%d}"
+            / f"hour={hour:%H}"
+        )
+        yield from sorted(directory.glob("part-*.parquet"))
+
+
+def _raw_rows(path: Path) -> Iterator[tuple[int, dict[str, object]]]:
+    try:
+        parquet = pq.ParquetFile(path)
+        if not set(_RAW_COLUMNS).issubset(parquet.schema_arrow.names):
+            raise RawPayloadError(f"raw part has no supported event schema: {path}")
+        row_index = 0
+        for batch in parquet.iter_batches(columns=list(_RAW_COLUMNS)):
+            for row in batch.to_pylist():
+                yield row_index, row
+                row_index += 1
+    except RawPayloadError:
+        raise
+    except (OSError, ValueError, pa.ArrowException) as exc:
+        raise RawPayloadError(f"cannot read raw part {path}: {exc}") from exc
+
+
+def _validate_raw_identity(
+    row: Mapping[str, object],
+    *,
+    expected_source: str,
+    expected_instrument: str,
+    path: Path,
+    row_index: int,
+) -> None:
+    source = _required_text(row, "source", path, row_index)
+    instrument = _required_text(row, "instrument", path, row_index)
+    if source != expected_source or instrument != expected_instrument:
+        raise RawPayloadError(
+            f"raw event identity mismatch at {path}:{row_index}: {source}/{instrument}"
+        )
+
+
+def _payload_mapping(
+    row: Mapping[str, object], *, path: Path, row_index: int
+) -> Mapping[str, object]:
+    payload_text = _required_text(row, "payload_json", path, row_index)
+    try:
+        payload = json.loads(payload_text)
+    except json.JSONDecodeError as exc:
+        raise RawPayloadError(f"invalid payload_json at {path}:{row_index}: {exc.msg}") from exc
+    if not isinstance(payload, Mapping):
+        raise RawPayloadError(f"payload_json must contain an object at {path}:{row_index}")
+    return payload
+
+
+def _validate_token_events(
+    events: Sequence[TokenBookStateEvent], *, expected_token_id: str
+) -> None:
+    if any(event.token_id != expected_token_id for event in events):
+        raise ValueError("token events do not match the selected market")
+
+
+def _state_event_sort_key(event: TokenBookStateEvent) -> tuple[int, int, int, str, int]:
+    return (
+        event.available_ts_ns,
+        event.collector_receive_ts_ns or event.available_ts_ns,
+        event.source_ts_ns,
+        event.token_id,
+        event.epoch_id,
+    )
+
+
+def _raw_payload_sort_key(row: ForwardRawEvent) -> tuple[int, int, int, str, str, int]:
+    return (
+        row.available_ts_ns,
+        row.collector_receive_ts_ns or row.available_ts_ns,
+        row.source_ts_ns,
+        row.sequence_or_hash,
+        str(row.path),
+        row.row_index,
+    )
+
+
+def _window_ns(*, start_time: datetime, end_time: datetime) -> tuple[int, int]:
+    start = _as_utc(start_time, "start_time")
+    end = _as_utc(end_time, "end_time")
+    if end < start:
+        raise ValueError("end_time cannot precede start_time")
+    return _datetime_to_ns(start), _datetime_to_ns(end)
+
+
+def _hours_between(*, start_time: datetime, end_time: datetime) -> Iterator[datetime]:
+    current = _as_utc(start_time, "start_time").replace(minute=0, second=0, microsecond=0)
+    end = _as_utc(end_time, "end_time").replace(minute=0, second=0, microsecond=0)
+    while current <= end:
+        yield current
+        current += timedelta(hours=1)
+
+
+def _required_text(row: Mapping[str, object], name: str, path: Path, row_index: int) -> str:
+    value = row.get(name)
+    if not isinstance(value, str) or not value.strip():
+        raise RawPayloadError(f"raw {name} must be a non-empty string at {path}:{row_index}")
+    return value.strip()
+
+
+def _required_int(row: Mapping[str, object], name: str, path: Path, row_index: int) -> int:
+    value = _optional_int(row, name, path, row_index)
+    if value is None:
+        raise RawPayloadError(f"raw {name} is required at {path}:{row_index}")
+    return value
+
+
+def _optional_int(row: Mapping[str, object], name: str, path: Path, row_index: int) -> int | None:
+    value = row.get(name)
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise RawPayloadError(f"raw {name} must be an integer at {path}:{row_index}")
+    try:
+        integer = int(value)
+    except (TypeError, ValueError) as exc:
+        raise RawPayloadError(f"raw {name} must be an integer at {path}:{row_index}") from exc
+    if integer < 0:
+        raise RawPayloadError(f"raw {name} must be non-negative at {path}:{row_index}")
+    return integer
+
+
+def _as_utc(value: datetime, name: str) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{name} must be timezone-aware")
+    return value.astimezone(UTC)
+
+
+def _datetime_to_ns(value: datetime) -> int:
+    return int(value.timestamp() * _NANOS_PER_SECOND)
+
+
+def _datetime_from_ns(value: int) -> datetime:
+    return datetime.fromtimestamp(value / _NANOS_PER_SECOND, tz=UTC)
+
+
+def _as_float(value: object | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if isfinite(result) else None
+
+
+__all__ = [
+    "ForwardBookEventLoad",
+    "ForwardRawEvent",
+    "ForwardRawEventLoad",
+    "OpeningMarketObservation",
+    "PmxtBookEventLoad",
+    "RawPayloadError",
+    "TokenBookStateEvent",
+    "build_opening_market_observations",
+    "load_forward_raw_events",
+    "load_forward_polymarket_book_events",
+    "pmxt_order_book_state_events",
+]

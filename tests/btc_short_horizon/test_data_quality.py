@@ -60,6 +60,20 @@ def test_quality_validator_deduplicates_within_one_event_schema() -> None:
     assert second.accepted
 
 
+def test_quality_validator_tolerates_bounded_source_clock_lead() -> None:
+    validator = EventQualityValidator(max_transport_delay=timedelta(seconds=1))
+
+    bounded = validator.observe(
+        _event(sequence="bounded", receive_offset_ms=-100, available_offset_ms=1)
+    )
+    excessive = validator.observe(
+        _event(sequence="excessive", receive_offset_ms=-1_100, available_offset_ms=2)
+    )
+
+    assert bounded.accepted and not bounded.stale
+    assert excessive.accepted and excessive.stale
+
+
 def test_raw_event_writer_outputs_immutable_partition_and_timing_columns(tmp_path) -> None:  # type: ignore[no-untyped-def]
     event = RawCollectorEvent(
         timing=_event(sequence="one"),

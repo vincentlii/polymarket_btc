@@ -23,27 +23,29 @@ collection_mode = "collection_only"
 
 [research]
 feature_cadence_ms = 250
-model_cadence_ms = 1000
+model_cadence_ms = 5000
 entry_start_seconds = 3
 entry_end_seconds = 180
 training_snapshot_seconds = 5
-max_feature_lookback_seconds = 14400
+max_feature_lookback_seconds = 3600
 
 [collection]
 flush_size = 50000
 flush_interval_seconds = 60.0
 rotation_poll_seconds = 2.0
+opening_handoff_delay_seconds = 180.0
+ingest_version = "btc-short-horizon-v6"
 
 [maker]
 structure = "single"
 max_shares = 1.0
 safety_buffer = 0.01
-minimum_edge = 0.0
+minimum_edge = 0.10
 maker_fee_per_share = 0.0
 entry_start_seconds = 3.0
 entry_end_seconds = 180.0
-edge_persistence_seconds = 2.0
-max_work_seconds = 60.0
+edge_persistence_seconds = 5.0
+max_work_seconds = 15.0
 stale_after_seconds = 1.0
 cancel_probability_drop = 0.03
 price_level_tick_offsets = [0, 1, 2]

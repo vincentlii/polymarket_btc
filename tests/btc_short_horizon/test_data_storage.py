@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
 from datetime import UTC, datetime
+import json
+from pathlib import Path
 
 import pyarrow as pa
 import pytest
@@ -150,3 +151,34 @@ def test_raw_event_writer_does_not_mix_schema_versions_in_one_manifest(tmp_path:
 
     assert {manifest.schema_version for manifest in manifests} == {"schema-v1", "schema-v2"}
     assert {manifest.row_count for manifest in manifests} == {1}
+
+
+def test_raw_event_payload_json_round_trips_without_losing_nested_values() -> None:
+    timestamp = datetime(2026, 7, 11, 12, tzinfo=UTC)
+    payload: dict[str, object] = {
+        "event_type": "price_change",
+        "asset_id": "up-token",
+        "price_changes": [
+            {"price": "0.49", "side": "BUY", "size": "10"},
+            {"price": "0.51", "side": "SELL", "size": "12"},
+        ],
+    }
+    event = RawCollectorEvent(
+        timing=TimedMarketEvent(
+            source_ts=timestamp,
+            collector_receive_ts=timestamp,
+            available_ts=timestamp,
+            sequence_or_hash="event-1",
+            source="polymarket_clob",
+            instrument="up-token",
+            schema_version="polymarket-market-ws-v1",
+            ingest_version="ingest-v1",
+        ),
+        event_type="price_change",
+        payload=payload,
+        epoch_id=0,
+    )
+
+    row = event.as_row()
+
+    assert json.loads(str(row["payload_json"])) == payload

@@ -15,6 +15,8 @@ from nautilus_trader.trading.strategy import Strategy, StrategyConfig
 from btc_short_horizon.backtest.audit import OrderAuditTrail
 from btc_short_horizon.backtest.signals import (
     BtcOpeningMispricingSignal,
+    opening_signal_data_age_seconds,
+    opening_signal_entry_rejection_reason,
     validate_opening_mispricing_signal,
 )
 from btc_short_horizon.strategy import (
@@ -216,6 +218,15 @@ class BtcOpeningMispricingStrategy(Strategy):
     def _submit_plan_if_actionable(
         self, *, signal: BtcOpeningMispricingSignal, now_ts_ns: int
     ) -> None:
+        rejection_reason = opening_signal_entry_rejection_reason(
+            signal,
+            now_ts_ns=now_ts_ns,
+            stale_after_seconds=self._maker_config.stale_after_seconds,
+        )
+        if rejection_reason is not None:
+            self._candidate_side = None
+            self._candidate_since_ts_ns = None
+            return
         books = self._outcome_books()
         if books is None:
             return
@@ -273,7 +284,7 @@ class BtcOpeningMispricingStrategy(Strategy):
             plan=plan,
             now_ts_ns=now_ts_ns,
             selected_probability=selected_probability,
-            data_age_seconds=float(signal.data_age_seconds),
+            data_age_seconds=opening_signal_data_age_seconds(signal, now_ts_ns=now_ts_ns),
             has_data_gap=bool(signal.has_data_gap),
             structure_valid=bool(signal.structure_valid),
             tick_unchanged=bool(signal.tick_unchanged),

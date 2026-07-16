@@ -3,6 +3,7 @@
 
 # Environment
 .env
+deploy/.env
 .uv-cache/
 
 # Python
@@ -22,11 +23,12 @@ wheels/
 site/
 
 # Data (contents come from submodule; symlink is tracked)
-data/
+/data/
 
 # Output
 output/
 kalshi_catalog/
+deploy/runtime/
 
 # Live runner/scaffold files are tracked; private artifacts are ignored in live/.gitignore.
 

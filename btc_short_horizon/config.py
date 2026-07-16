@@ -38,6 +38,8 @@ class ForwardCollectionConfig:
     flush_size: int
     flush_interval_seconds: float
     rotation_poll_seconds: float
+    opening_handoff_delay_seconds: float
+    ingest_version: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +98,8 @@ def load_btc_project_config(path: Path) -> BtcProjectConfig:
         raise ValueError("research.model_cadence_ms must not be below feature_cadence_ms")
     if timing.entry_end_seconds <= timing.entry_start_seconds:
         raise ValueError("research.entry_end_seconds must exceed entry_start_seconds")
+    if timing.model_cadence_ms != timing.training_snapshot_seconds * 1_000:
+        raise ValueError("research model cadence must match training_snapshot_seconds")
     maker_section = _mapping(raw, "maker")
     maker = MakerStrategyConfig(
         structure=LayerStructure(_text(maker_section, "structure")),
@@ -113,6 +117,12 @@ def load_btc_project_config(path: Path) -> BtcProjectConfig:
             _nonnegative_int_list(maker_section, "price_level_tick_offsets")
         ),
     )
+    if maker.entry_start_seconds != float(
+        timing.entry_start_seconds
+    ) or maker.entry_end_seconds != float(timing.entry_end_seconds):
+        raise ValueError("maker entry window must match research entry window")
+    if collection.opening_handoff_delay_seconds < timing.entry_end_seconds:
+        raise ValueError("opening handoff must cover the complete research entry window")
     sources = _data_sources(root, raw)
     scenarios = tuple(_scenario(item) for item in _mapping_list(raw, "execution_scenarios"))
     if not scenarios:
@@ -158,6 +168,8 @@ def _forward_collection(section: Mapping[str, object]) -> ForwardCollectionConfi
         flush_size=_positive_int(section, "flush_size"),
         flush_interval_seconds=_positive_float(section, "flush_interval_seconds"),
         rotation_poll_seconds=_positive_float(section, "rotation_poll_seconds"),
+        opening_handoff_delay_seconds=_positive_float(section, "opening_handoff_delay_seconds"),
+        ingest_version=_text(section, "ingest_version"),
     )
 
 

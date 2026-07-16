@@ -11,6 +11,14 @@ features from the NautilusTrader documentation.
 
 - Expect a dirty worktree. Never revert or overwrite existing changes you did
   not make unless the user explicitly asks.
+- Before changing the BTC-only project, read
+  `docs/btc-short-horizon-architecture.md`; it defines the causal, replay, and
+  live-safety boundaries that project code must preserve.
+- Before changing the BTC dashboard or observability projection, also read
+  `docs/btc-dashboard-research.md`; it records the information hierarchy,
+  evidence labeling, lifecycle cadence, and primary-source references.
+- Before changing BTC live authentication, order submission, heartbeat, or the
+  execution hot path, also read `docs/btc-execution-latency-research.md`.
 - Keep changes tightly scoped to the request. Avoid unrelated refactors and
   formatting churn.
 - Do not add backwards-compatibility shims for old dependency APIs or old repo

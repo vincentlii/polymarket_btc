@@ -7,10 +7,117 @@ import httpx
 import pyarrow.parquet as pq
 import pytest
 
-from btc_short_horizon.data.forward import BtcForwardCollector
+from btc_short_horizon.data.forward import (
+    DEFAULT_BINANCE_FUTURES_MARKET_STREAMS,
+    DEFAULT_BINANCE_FUTURES_PUBLIC_STREAMS,
+    DEFAULT_BINANCE_STREAMS,
+    DEFAULT_OKX_SUBSCRIPTIONS,
+    BtcForwardCollector,
+)
 
 
 SOURCE_TIME = datetime(2026, 4, 13, tzinfo=UTC)
+
+
+def test_default_forward_collection_is_lightweight_for_bounded_vps_storage() -> None:
+    assert DEFAULT_BINANCE_STREAMS == ("btcusdt@kline_1s",)
+    assert DEFAULT_BINANCE_FUTURES_MARKET_STREAMS == ()
+    assert DEFAULT_BINANCE_FUTURES_PUBLIC_STREAMS == ()
+    assert DEFAULT_OKX_SUBSCRIPTIONS == ()
+
+
+def test_forward_collector_feed_health_fails_closed_for_silent_and_stale_required_feeds(
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    collector = BtcForwardCollector(
+        raw_data_root=tmp_path,
+        polymarket_token_ids=("up-token",),
+    )
+    collector.configure_required_feeds(
+        binance_streams=("btcusdt@kline_1s",),
+        binance_futures_market_streams=(),
+        binance_futures_public_streams=(),
+    )
+
+    silent = collector.feed_health(now=SOURCE_TIME, stale_after_seconds=30.0)
+
+    assert not silent.healthy
+    assert silent.reason == "required_feed_silent"
+    assert {item["key"] for item in silent.feeds} == {
+        "binance_spot:BTCUSDT:kline_1s",
+        "polymarket_clob:up-token:market",
+        "polymarket_rtds_chainlink:btc/usd:price",
+    }
+
+    collector.handle_binance(
+        {
+            "stream": "btcusdt@kline_1s",
+            "data": {
+                "e": "kline",
+                "E": int((SOURCE_TIME + timedelta(seconds=1)).timestamp() * 1_000),
+                "s": "BTCUSDT",
+                "k": {
+                    "t": int(SOURCE_TIME.timestamp() * 1_000),
+                    "T": int(SOURCE_TIME.timestamp() * 1_000) + 999,
+                    "s": "BTCUSDT",
+                    "i": "1s",
+                    "o": "100000",
+                    "c": "100001",
+                    "h": "100002",
+                    "l": "99999",
+                    "v": "2",
+                    "q": "200001",
+                    "V": "1.25",
+                    "Q": "125001",
+                    "n": 10,
+                    "x": True,
+                },
+            },
+        },
+        collector_receive_ts=SOURCE_TIME + timedelta(seconds=1),
+    )
+
+    stale = collector.feed_health(now=SOURCE_TIME + timedelta(seconds=32), stale_after_seconds=30.0)
+
+    binance = next(item for item in stale.feeds if item["source"] == "binance_spot")
+    assert binance["age_seconds"] == 31.0
+    assert binance["state"] == "stale"
+
+
+def test_forward_collector_feed_health_reports_gap_count(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    collector = BtcForwardCollector(raw_data_root=tmp_path, polymarket_token_ids=("up-token",))
+    collector.mark_gap(
+        source="polymarket_clob",
+        instrument="up-token",
+        stream_id="market",
+        reason="disconnect",
+    )
+
+    feed = next(
+        item
+        for item in collector.feed_health(now=SOURCE_TIME, stale_after_seconds=30.0).feeds
+        if item["source"] == "polymarket_clob"
+    )
+
+    assert feed["gap_count"] == 1
+
+
+def test_forward_collector_rotates_required_clob_tokens_without_old_market_staleness(
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    collector = BtcForwardCollector(
+        raw_data_root=tmp_path,
+        polymarket_token_ids=("old-up", "old-down", "next-up", "next-down"),
+    )
+
+    collector.configure_required_polymarket_tokens(("next-up", "next-down"))
+    clob_feeds = {
+        item["instrument"]
+        for item in collector.feed_health(now=SOURCE_TIME, stale_after_seconds=30.0).feeds
+        if item["source"] == "polymarket_clob"
+    }
+
+    assert clob_feeds == {"next-up", "next-down"}
 
 
 def test_forward_collector_persists_unique_clob_and_binance_events_by_epoch(tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -58,7 +165,85 @@ def test_forward_collector_persists_unique_clob_and_binance_events_by_epoch(tmp_
         manifest for manifest in manifests if manifest.source == "polymarket_clob"
     )
     assert polymarket_manifest.duplicate_count == 1
-    assert collector.quality_stats[("polymarket_clob", "up-token")].duplicate_events == 1
+    assert collector.quality_stats[("polymarket_clob", "up-token", "market")].duplicate_events == 1
+
+
+def test_forward_collector_keeps_clob_source_timestamp_jitter_in_one_epoch(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    collector = BtcForwardCollector(raw_data_root=tmp_path, polymarket_token_ids=("up-token",))
+    snapshot = collector.handle_polymarket(
+        {
+            "event_type": "book",
+            "asset_id": "up-token",
+            "timestamp": int((SOURCE_TIME + timedelta(milliseconds=100)).timestamp() * 1_000),
+            "bids": [{"price": "0.48", "size": "11"}],
+            "asks": [{"price": "0.52", "size": "9"}],
+            "hash": "book-jitter",
+        },
+        collector_receive_ts=SOURCE_TIME + timedelta(milliseconds=10),
+    )
+    changed = collector.handle_polymarket(
+        {
+            "event_type": "price_change",
+            "timestamp": int((SOURCE_TIME + timedelta(milliseconds=50)).timestamp() * 1_000),
+            "price_changes": [
+                {"asset_id": "up-token", "price": "0.49", "size": "12", "side": "BUY"}
+            ],
+        },
+        collector_receive_ts=SOURCE_TIME + timedelta(milliseconds=20),
+    )
+
+    stats = collector.quality_stats[("polymarket_clob", "up-token", "market")]
+    assert snapshot.accepted_events == 1
+    assert changed.accepted_events == 1
+    assert stats.gap_events == 0
+    assert stats.epochs == 1
+
+
+def test_forward_collector_writes_the_configured_ingest_version(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    collector = BtcForwardCollector(
+        raw_data_root=tmp_path,
+        polymarket_token_ids=("up-token",),
+        ingest_version="test-v2",
+    )
+    result = collector.handle_polymarket(
+        {
+            "event_type": "book",
+            "asset_id": "up-token",
+            "timestamp": int(SOURCE_TIME.timestamp() * 1_000),
+            "bids": [{"price": "0.48", "size": "11"}],
+            "asks": [{"price": "0.52", "size": "9"}],
+            "hash": "book-versioned",
+        },
+        collector_receive_ts=SOURCE_TIME,
+    )
+    manifest = collector.flush()[0]
+
+    row = pq.read_table(tmp_path / manifest.data_path).to_pylist()[0]
+    assert result.accepted_events == 1
+    assert row["ingest_version"] == "test-v2"
+
+
+def test_forward_collector_namespaces_epochs_across_follow_rotations(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    collector = BtcForwardCollector(
+        raw_data_root=tmp_path,
+        polymarket_token_ids=("up-token",),
+        epoch_id_offset=1_776_038_400,
+    )
+    collector.handle_polymarket(
+        {
+            "event_type": "book",
+            "asset_id": "up-token",
+            "timestamp": int(SOURCE_TIME.timestamp() * 1_000),
+            "bids": [{"price": "0.48", "size": "11"}],
+            "asks": [{"price": "0.52", "size": "9"}],
+            "hash": "book-namespaced",
+        },
+        collector_receive_ts=SOURCE_TIME,
+    )
+    manifest = collector.flush()[0]
+
+    row = pq.read_table(tmp_path / manifest.data_path).to_pylist()[0]
+    assert row["epoch_id"] == 1_776_038_400
 
 
 @pytest.mark.asyncio
@@ -97,7 +282,12 @@ def test_forward_collector_assigns_gap_to_first_post_gap_partition(tmp_path) -> 
         raw_data_root=tmp_path,
         polymarket_token_ids=("up-token",),
     )
-    collector.mark_gap(source="binance_spot", instrument="BTCUSDT", reason="disconnect")
+    collector.mark_gap(
+        source="binance_spot",
+        instrument="BTCUSDT",
+        stream_id="trade",
+        reason="disconnect",
+    )
 
     result = collector.handle_binance(
         {
@@ -115,7 +305,7 @@ def test_forward_collector_assigns_gap_to_first_post_gap_partition(tmp_path) -> 
 
     assert result.accepted_events == 1
     assert manifest.gap_count == 1
-    assert collector.quality_stats[("binance_spot", "BTCUSDT")].gap_events == 1
+    assert collector.quality_stats[("binance_spot", "BTCUSDT", "trade")].gap_events == 1
 
 
 def test_forward_collector_persists_binance_depth_and_receive_only_book_ticker(tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -172,6 +362,93 @@ def test_forward_collector_persists_binance_depth_and_receive_only_book_ticker(t
         "binance-depth-update-v1",
         "binance-book-ticker-receive-v1",
     }
+
+
+def test_forward_collector_persists_only_final_one_second_binance_klines(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    collector = BtcForwardCollector(raw_data_root=tmp_path, polymarket_token_ids=("up-token",))
+    payload = {
+        "stream": "btcusdt@kline_1s",
+        "data": {
+            "e": "kline",
+            "E": int((SOURCE_TIME + timedelta(seconds=1)).timestamp() * 1_000),
+            "s": "BTCUSDT",
+            "k": {
+                "t": int(SOURCE_TIME.timestamp() * 1_000),
+                "T": int(SOURCE_TIME.timestamp() * 1_000) + 999,
+                "s": "BTCUSDT",
+                "i": "1s",
+                "o": "100000",
+                "c": "100001",
+                "h": "100002",
+                "l": "99999",
+                "v": "2",
+                "q": "200001",
+                "V": "1.25",
+                "Q": "125001",
+                "n": 10,
+                "x": True,
+            },
+        },
+    }
+
+    accepted = collector.handle_binance(
+        payload,
+        collector_receive_ts=SOURCE_TIME + timedelta(seconds=1, milliseconds=10),
+    )
+    payload["data"]["k"]["x"] = False  # type: ignore[index]
+    ignored = collector.handle_binance(
+        payload,
+        collector_receive_ts=SOURCE_TIME + timedelta(seconds=1, milliseconds=20),
+    )
+    manifest = collector.flush()[0]
+    row = pq.read_table(tmp_path / manifest.data_path).to_pylist()[0]
+
+    assert accepted.accepted_events == 1
+    assert ignored == type(ignored)()
+    assert row["event_type"] == "kline_1s"
+    assert row["schema_version"] == "binance-kline-1s-v1"
+
+
+def test_forward_collector_does_not_compare_ordering_across_binance_streams(
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    collector = BtcForwardCollector(
+        raw_data_root=tmp_path,
+        polymarket_token_ids=("up-token",),
+    )
+    later_trade = collector.handle_binance(
+        {
+            "stream": "btcusdt@trade",
+            "data": {
+                "e": "trade",
+                "s": "BTCUSDT",
+                "T": int((SOURCE_TIME + timedelta(seconds=2)).timestamp() * 1_000),
+                "p": "100000",
+                "q": "0.01",
+                "m": False,
+                "t": 9001,
+            },
+        },
+        collector_receive_ts=SOURCE_TIME + timedelta(seconds=2),
+    )
+    earlier_book_ticker = collector.handle_binance(
+        {
+            "stream": "btcusdt@bookTicker",
+            "data": {
+                "s": "BTCUSDT",
+                "u": 9002,
+                "b": "99999",
+                "B": "2",
+                "a": "100001",
+                "A": "3",
+            },
+        },
+        collector_receive_ts=SOURCE_TIME + timedelta(seconds=1),
+    )
+
+    assert later_trade.accepted_events == 1
+    assert earlier_book_ticker.accepted_events == 1
+    assert earlier_book_ticker.rejected_events == 0
 
 
 @pytest.mark.asyncio

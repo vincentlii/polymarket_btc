@@ -11,6 +11,7 @@ from btc_short_horizon.data.binance import (
     normalize_binance_book_ticker,
     normalize_binance_depth_snapshot,
     normalize_binance_depth_update,
+    normalize_binance_kline,
     normalize_binance_trade,
 )
 
@@ -40,6 +41,38 @@ def test_event_time_only_history_gets_conservative_available_delay() -> None:
     assert record.timing.is_event_time_only
     assert record.timing.available_ts - record.timing.source_ts == timedelta(seconds=2)
     assert record.trade.aggressor_side == "buy"
+
+
+def test_final_one_second_kline_preserves_live_availability_and_training_fields() -> None:
+    timing = normalize_binance_kline(
+        {
+            "e": "kline",
+            "E": 1_776_038_401_010,
+            "s": "BTCUSDT",
+            "k": {
+                "t": 1_776_038_400_000,
+                "T": 1_776_038_400_999,
+                "s": "BTCUSDT",
+                "i": "1s",
+                "o": "100000",
+                "c": "100001",
+                "h": "100002",
+                "l": "99999",
+                "v": "2",
+                "q": "200001",
+                "V": "1.25",
+                "Q": "125001",
+                "n": 10,
+                "x": True,
+            },
+        },
+        collector_receive_ts=RECEIVE + timedelta(milliseconds=20),
+    )
+
+    assert timing.instrument == "BTCUSDT"
+    assert timing.available_ts == RECEIVE + timedelta(milliseconds=20)
+    assert timing.sequence_or_hash == "kline:1776038400000"
+    assert timing.schema_version == "binance-kline-1s-v1"
 
 
 def test_diff_depth_requires_snapshot_detects_gap_and_rebuilds_top_of_book() -> None:

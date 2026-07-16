@@ -1,19 +1,72 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from btc_short_horizon.data import BTC_15M_MARKET_FAMILY, MarketOutcome, MarketWindow
 from btc_short_horizon.research.binance_history import BinanceKlineHistory
 from btc_short_horizon.research.opening_proxy import (
+    OpeningRegime,
     build_opening_proxy_dataset,
+    opening_proxy_protocol,
+    opening_proxy_decision_offsets_ms,
+    opening_proxy_feature_values_at,
     opening_proxy_feature_schema,
+    opening_regime_for_elapsed_seconds,
+    validate_opening_proxy_protocol,
 )
+from scripts import btc_opening_mispricing_proxy as proxy_script
 
 
 _SECOND = 1_000_000_000
+
+
+def test_opening_decisions_align_to_market_cadence_not_entry_window_start() -> None:
+    assert opening_proxy_decision_offsets_ms(
+        cadence_ms=5_000,
+        entry_start_seconds=3,
+        entry_end_seconds=180,
+    ) == tuple(range(5_000, 180_001, 5_000))
+
+
+def test_opening_regimes_cover_the_frozen_three_minute_protocol() -> None:
+    assert [opening_regime_for_elapsed_seconds(value) for value in (5, 30, 35, 90, 95, 180)] == [
+        OpeningRegime.EARLY,
+        OpeningRegime.EARLY,
+        OpeningRegime.PRICE_DISCOVERY,
+        OpeningRegime.PRICE_DISCOVERY,
+        OpeningRegime.MID_EARLY,
+        OpeningRegime.MID_EARLY,
+    ]
+    with pytest.raises(ValueError, match="three-minute"):
+        opening_regime_for_elapsed_seconds(181)
+
+
+def test_opening_proxy_protocol_rejects_an_early_30_second_artifact() -> None:
+    expected = opening_proxy_protocol(
+        entry_start_seconds=3,
+        entry_end_seconds=180,
+        snapshot_seconds=5,
+    )
+    early_30 = opening_proxy_protocol(
+        entry_start_seconds=3,
+        entry_end_seconds=30,
+        snapshot_seconds=5,
+    )
+
+    validate_opening_proxy_protocol(
+        {"opening_proxy_protocol": expected},
+        expected=expected,
+    )
+    with pytest.raises(ValueError, match="protocol"):
+        validate_opening_proxy_protocol(
+            {"opening_proxy_protocol": early_30},
+            expected=expected,
+        )
 
 
 def _market(start: datetime) -> MarketWindow:
@@ -89,6 +142,25 @@ def test_opening_proxy_never_reads_a_kline_unavailable_at_decision_time() -> Non
     assert mutated.dataset.vectors[0] == pytest.approx(baseline.dataset.vectors[0])
 
 
+def test_single_runtime_feature_vector_matches_the_training_dataset() -> None:
+    start = datetime(2026, 1, 1, 2, tzinfo=UTC)
+    history = _history(start)
+    build = build_opening_proxy_dataset(
+        markets=(_market(start),),
+        klines=history,
+        entry_start_seconds=5,
+        entry_end_seconds=5,
+    )
+
+    values = opening_proxy_feature_values_at(
+        klines=history,
+        market_start=start,
+        decision_time=start + timedelta(seconds=5),
+    )
+
+    assert build.dataset.schema.vector_from(values) == pytest.approx(build.dataset.vectors[0])
+
+
 def test_opening_proxy_excludes_a_market_with_a_lookback_gap() -> None:
     start = datetime(2026, 1, 1, 2, tzinfo=UTC)
     history = _history(start)
@@ -110,3 +182,162 @@ def test_minute_proxy_schema_only_uses_resolvable_windows() -> None:
 
     assert "binance_spot_return_60s" in schema.names
     assert "binance_spot_return_5s" not in schema.names
+
+
+def test_materialized_proxy_loader_filters_entry_window_and_reweights_markets(
+    tmp_path: Path,
+) -> None:
+    loader = proxy_script.load_materialized_opening_proxy_dataset
+    schema = opening_proxy_feature_schema(1)
+    path = tmp_path / "dataset.parquet"
+    rows: list[dict[str, object]] = []
+    for market_index in range(2):
+        market_start = datetime(2026, 1, 1, market_index, tzinfo=UTC)
+        for elapsed_seconds in (5, 10, 15, 20, 25, 30, 35):
+            row = {name: 0.0 for name in schema.names}
+            row.update(
+                {
+                    "sample_id": (
+                        f"market-{market_index}@"
+                        f"{int((market_start + timedelta(seconds=elapsed_seconds)).timestamp() * _SECOND)}"
+                    ),
+                    "feature_ts": market_start + timedelta(seconds=elapsed_seconds),
+                    "label_available_ts": market_start + timedelta(minutes=16),
+                    "label": market_index,
+                    "sample_weight": 1.0 / 7.0,
+                    "elapsed_seconds": float(elapsed_seconds),
+                }
+            )
+            rows.append(row)
+    pd.DataFrame(rows).to_parquet(path, index=False)
+
+    dataset = loader(
+        path=path,
+        interval_seconds=1,
+        snapshot_seconds=5,
+        entry_start_seconds=3,
+        entry_end_seconds=30,
+    )
+
+    assert len(dataset.samples) == 12
+    assert [sample.group_id for sample in dataset.samples] == [
+        "market-0",
+    ] * 6 + ["market-1"] * 6
+    assert dataset.sample_weights == pytest.approx([1.0 / 6.0] * 12)
+
+
+def test_materialized_proxy_loader_rejects_unordered_parts(tmp_path: Path) -> None:
+    schema = opening_proxy_feature_schema(1)
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    rows: list[dict[str, object]] = []
+    for elapsed_seconds in (10, 5):
+        row = {name: 0.0 for name in schema.names}
+        row.update(
+            {
+                "sample_id": (
+                    f"market@{int((start + timedelta(seconds=elapsed_seconds)).timestamp() * _SECOND)}"
+                ),
+                "feature_ts": start + timedelta(seconds=elapsed_seconds),
+                "label_available_ts": start + timedelta(minutes=16),
+                "label": 1,
+                "sample_weight": 0.5,
+                "elapsed_seconds": float(elapsed_seconds),
+            }
+        )
+        rows.append(row)
+    path = tmp_path / "unordered.parquet"
+    pd.DataFrame(rows).to_parquet(path, index=False)
+
+    with pytest.raises(ValueError, match="chronological"):
+        proxy_script.load_materialized_opening_proxy_dataset(
+            path=path,
+            interval_seconds=1,
+            snapshot_seconds=5,
+            entry_start_seconds=3,
+            entry_end_seconds=10,
+        )
+
+
+def test_materialized_proxy_loader_does_not_bulk_materialize_with_pandas(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    schema = opening_proxy_feature_schema(1)
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    rows: list[dict[str, object]] = []
+    for elapsed_seconds in (5, 10):
+        row = {name: 0.0 for name in schema.names}
+        row.update(
+            {
+                "sample_id": (
+                    f"market@{int((start + timedelta(seconds=elapsed_seconds)).timestamp() * _SECOND)}"
+                ),
+                "feature_ts": start + timedelta(seconds=elapsed_seconds),
+                "label_available_ts": start + timedelta(minutes=16),
+                "label": 1,
+                "sample_weight": 0.5,
+                "elapsed_seconds": float(elapsed_seconds),
+            }
+        )
+        rows.append(row)
+    path = tmp_path / "streamed.parquet"
+    pd.DataFrame(rows).to_parquet(path, index=False)
+
+    def fail_bulk_read(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("materialized loader must stream Parquet batches")
+
+    monkeypatch.setattr(proxy_script.pd, "read_parquet", fail_bulk_read)
+    dataset = proxy_script.load_materialized_opening_proxy_dataset(
+        path=path,
+        interval_seconds=1,
+        snapshot_seconds=5,
+        entry_start_seconds=3,
+        entry_end_seconds=10,
+    )
+
+    assert len(dataset.samples) == 2
+    assert dataset.sample_weights == pytest.approx([0.5, 0.5])
+
+
+def test_materialized_proxy_loader_applies_a_deterministic_market_stride(
+    tmp_path: Path,
+) -> None:
+    schema = opening_proxy_feature_schema(1)
+    rows: list[dict[str, object]] = []
+    for market_index in range(3):
+        start = datetime(2026, 1, 1, market_index, tzinfo=UTC)
+        for elapsed_seconds in (5, 10):
+            row = {name: 0.0 for name in schema.names}
+            row.update(
+                {
+                    "sample_id": (
+                        f"market-{market_index}@"
+                        f"{int((start + timedelta(seconds=elapsed_seconds)).timestamp() * _SECOND)}"
+                    ),
+                    "feature_ts": start + timedelta(seconds=elapsed_seconds),
+                    "label_available_ts": start + timedelta(minutes=16),
+                    "label": market_index % 2,
+                    "sample_weight": 0.5,
+                    "elapsed_seconds": float(elapsed_seconds),
+                }
+            )
+            rows.append(row)
+    path = tmp_path / "strided.parquet"
+    pd.DataFrame(rows).to_parquet(path, index=False)
+
+    dataset = proxy_script.load_materialized_opening_proxy_dataset(
+        path=path,
+        interval_seconds=1,
+        snapshot_seconds=5,
+        entry_start_seconds=3,
+        entry_end_seconds=10,
+        market_stride=2,
+    )
+
+    assert [sample.group_id for sample in dataset.samples] == [
+        "market-0",
+        "market-0",
+        "market-2",
+        "market-2",
+    ]
+    assert dataset.sample_weights == pytest.approx([0.5] * 4)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -9,10 +9,13 @@ import pytest
 from btc_short_horizon.data import (
     BTC_15M_MARKET_FAMILY,
     MarketCatalog,
+    MarketValidationError,
     MarketWindow,
+    read_market_catalog,
     write_market_catalog,
 )
 from scripts.btc_forward_collector import (
+    _write_single_market_catalog,
     build_collector,
     collect_current_market_windows,
     current_market_slug,
@@ -31,6 +34,8 @@ def test_forward_collector_cli_builds_btc_only_collector_from_explicit_token_ids
             "down-token",
             "--binance-stream",
             "btcusdt@trade",
+            "--binance-futures-public-stream",
+            "btcusdt@bookTicker",
             "--flush-size",
             "25",
         ]
@@ -41,7 +46,9 @@ def test_forward_collector_cli_builds_btc_only_collector_from_explicit_token_ids
     assert collector.token_ids == ("up-token", "down-token")
     assert collector.flush_size == 25
     assert collector.flush_interval_seconds == 60.0
+    assert collector.ingest_version == "btc-short-horizon-v6"
     assert args.binance_stream == ["btcusdt@trade"]
+    assert args.binance_futures_public_stream == ["btcusdt@bookTicker"]
 
 
 def test_forward_collector_cli_rejects_incomplete_explicit_token_pair() -> None:
@@ -97,19 +104,41 @@ def test_follow_current_rotates_from_exact_gamma_catalog_and_persists_metadata(t
         rule_epoch="chainlink-btc-usd-v1",
         rule_hash="a" * 64,
     )
-    catalog = MarketCatalog(families=(BTC_15M_MARKET_FAMILY,), windows=(market,))
+    next_market = MarketWindow(
+        family=BTC_15M_MARKET_FAMILY,
+        slug=BTC_15M_MARKET_FAMILY.slug_for(market.t1),
+        condition_id="next-condition",
+        up_token_id="next-up-token",
+        down_token_id="next-down-token",
+        t0=market.t1,
+        t1=market.t1 + timedelta(minutes=15),
+        rule_epoch="chainlink-btc-usd-v1",
+        rule_hash="b" * 64,
+    )
+    catalog = MarketCatalog(families=(BTC_15M_MARKET_FAMILY,), windows=(market, next_market))
     gamma = _FakeGammaClient(catalog)
     started = asyncio.Event()
     outer_stop = asyncio.Event()
-    factory_calls: list[tuple[Path, tuple[str, str], int, float]] = []
+    factory_calls: list[tuple[Path, tuple[str, ...], int, float, str, int]] = []
 
     def collector_factory(
         raw_data_root: Path,
-        token_ids: tuple[str, str],
+        token_ids: tuple[str, ...],
         flush_size: int,
         flush_interval_seconds: float,
+        ingest_version: str,
+        epoch_id_offset: int,
     ) -> _FakeWindowCollector:
-        factory_calls.append((raw_data_root, token_ids, flush_size, flush_interval_seconds))
+        factory_calls.append(
+            (
+                raw_data_root,
+                token_ids,
+                flush_size,
+                flush_interval_seconds,
+                ingest_version,
+                epoch_id_offset,
+            )
+        )
         return _FakeWindowCollector(started)
 
     async def run() -> None:
@@ -125,8 +154,12 @@ def test_follow_current_rotates_from_exact_gamma_catalog_and_persists_metadata(t
             catalog_directory=tmp_path / "metadata",
             flush_size=25,
             flush_interval_seconds=60.0,
+            ingest_version="test-v2",
             binance_streams=("btcusdt@trade",),
+            binance_futures_market_streams=(),
+            binance_futures_public_streams=("btcusdt@bookTicker",),
             rotation_poll_seconds=1.0,
+            opening_handoff_delay_seconds=60.0,
             stop_event=outer_stop,
             gamma_client=gamma,
             collector_factory=collector_factory,
@@ -142,11 +175,72 @@ def test_follow_current_rotates_from_exact_gamma_catalog_and_persists_metadata(t
             "family": BTC_15M_MARKET_FAMILY,
             "rule_epoch": "chainlink-btc-usd-v1",
             "closed": False,
-            "slugs": (market.slug,),
+            "slugs": (market.slug, next_market.slug),
         }
     ]
-    assert factory_calls == [(tmp_path / "raw", ("up-token", "down-token"), 25, 60.0)]
+    assert factory_calls == [
+        (
+            tmp_path / "raw",
+            ("up-token", "down-token", "next-up-token", "next-down-token"),
+            25,
+            60.0,
+            "test-v2",
+            int(t0.timestamp()),
+        )
+    ]
     assert (tmp_path / "metadata" / f"{market.slug}-{market.rule_hash}.json").exists()
+    assert (tmp_path / "metadata" / f"{next_market.slug}-{next_market.rule_hash}.json").exists()
+
+
+def test_follow_catalog_preserves_first_discovery_timestamp(tmp_path: Path) -> None:
+    t0 = datetime(2026, 4, 13, tzinfo=UTC)
+    market = _market(t0)
+    path = tmp_path / f"{market.slug}-{market.rule_hash}.json"
+    write_market_catalog(
+        path=path,
+        catalog=MarketCatalog(families=(BTC_15M_MARKET_FAMILY,), windows=(market,)),
+        collected_at=t0 - timedelta(minutes=4),
+    )
+    first_contents = path.read_text(encoding="utf-8")
+
+    returned = _write_single_market_catalog(
+        directory=tmp_path,
+        family=BTC_15M_MARKET_FAMILY,
+        market=market,
+    )
+
+    assert returned == path
+    assert path.read_text(encoding="utf-8") == first_contents
+    assert read_market_catalog(path).require(market.slug) == market
+
+
+def test_follow_catalog_rejects_same_path_with_conflicting_metadata(tmp_path: Path) -> None:
+    t0 = datetime(2026, 4, 13, tzinfo=UTC)
+    market = _market(t0)
+    path = tmp_path / f"{market.slug}-{market.rule_hash}.json"
+    conflicting = MarketWindow(
+        family=market.family,
+        slug=market.slug,
+        condition_id=market.condition_id,
+        up_token_id="different-up-token",
+        down_token_id=market.down_token_id,
+        t0=market.t0,
+        t1=market.t1,
+        rule_epoch=market.rule_epoch,
+        rule_hash=market.rule_hash,
+    )
+    write_market_catalog(
+        path=path,
+        catalog=MarketCatalog(families=(BTC_15M_MARKET_FAMILY,), windows=(conflicting,)),
+        collected_at=t0 - timedelta(minutes=4),
+    )
+
+    with pytest.raises(MarketValidationError, match="conflicts"):
+        _write_single_market_catalog(
+            directory=tmp_path,
+            family=BTC_15M_MARKET_FAMILY,
+            market=market,
+        )
 
 
 class _FakeGammaClient:
@@ -164,8 +258,29 @@ class _FakeWindowCollector:
         self.started = started
 
     async def collect_forever(
-        self, *, stop_event: asyncio.Event, binance_streams: tuple[str, ...]
+        self,
+        *,
+        stop_event: asyncio.Event,
+        binance_streams: tuple[str, ...],
+        binance_futures_market_streams: tuple[str, ...],
+        binance_futures_public_streams: tuple[str, ...],
     ) -> None:
         assert binance_streams == ("btcusdt@trade",)
+        assert binance_futures_market_streams == ()
+        assert binance_futures_public_streams == ("btcusdt@bookTicker",)
         self.started.set()
         await stop_event.wait()
+
+
+def _market(t0: datetime) -> MarketWindow:
+    return MarketWindow(
+        family=BTC_15M_MARKET_FAMILY,
+        slug=BTC_15M_MARKET_FAMILY.slug_for(t0),
+        condition_id="condition",
+        up_token_id="up-token",
+        down_token_id="down-token",
+        t0=t0,
+        t1=t0 + BTC_15M_MARKET_FAMILY.window_seconds_as_timedelta,
+        rule_epoch="chainlink-btc-usd-v1",
+        rule_hash="c" * 64,
+    )

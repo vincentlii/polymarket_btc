@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -63,6 +63,35 @@ def test_polymarket_book_price_change_trade_and_tick_events_are_causal() -> None
     )
     assert tick.tick_size == pytest.approx(0.01)
     assert not tick.tick_size_changed
+
+
+def test_polymarket_availability_remains_monotonic_when_source_clock_jitters() -> None:
+    normalizer = PolymarketL2Normalizer(token_id=TOKEN)
+    source_start = datetime(2026, 4, 13, tzinfo=UTC)
+    snapshot = normalizer.apply(
+        {
+            "event_type": "book",
+            "asset_id": TOKEN,
+            "bids": [{"price": "0.50", "size": "10"}],
+            "asks": [{"price": "0.52", "size": "20"}],
+            "timestamp": int((source_start + timedelta(milliseconds=100)).timestamp() * 1_000),
+        },
+        collector_receive_ts=source_start + timedelta(milliseconds=10),
+    )
+    changed = normalizer.apply(
+        {
+            "event_type": "price_change",
+            "timestamp": int((source_start + timedelta(milliseconds=50)).timestamp() * 1_000),
+            "price_changes": [{"asset_id": TOKEN, "price": "0.51", "size": "5", "side": "BUY"}],
+        },
+        collector_receive_ts=source_start + timedelta(milliseconds=20),
+    )
+
+    assert snapshot.timing is not None
+    assert changed.timing is not None
+    assert changed.timing.available_ts >= snapshot.timing.available_ts
+    assert changed.book_top is not None
+    assert changed.book_top.available_ts_ns == int(changed.timing.available_ts.timestamp() * 1e9)
 
 
 def test_polymarket_delta_before_snapshot_requires_resnapshot_and_crossed_book_is_invalid() -> None:

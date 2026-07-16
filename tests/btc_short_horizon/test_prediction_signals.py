@@ -10,6 +10,8 @@ from btc_short_horizon.backtest.signal_io import (
     write_opening_mispricing_signals,
 )
 from btc_short_horizon.backtest.signals import (
+    opening_signal_data_age_seconds,
+    opening_signal_entry_rejection_reason,
     to_opening_mispricing_signal,
     validate_opening_mispricing_signal,
 )
@@ -72,3 +74,27 @@ def test_signal_parquet_round_trip_is_validated_and_timestamp_ordered(tmp_path: 
 
     assert [signal.ts_init for signal in loaded] == [1_000, 2_000]
     assert [signal.p_up for signal in loaded] == pytest.approx([0.64, 0.64])
+
+
+def test_signal_entry_rejects_quality_failure_and_ages_during_replay() -> None:
+    signal = to_opening_mispricing_signal(_prediction())
+
+    assert opening_signal_data_age_seconds(signal, now_ts_ns=500_002_000) == pytest.approx(0.75)
+    assert (
+        opening_signal_entry_rejection_reason(
+            signal,
+            now_ts_ns=1_100_002_000,
+            stale_after_seconds=1.0,
+        )
+        == "data_stale"
+    )
+
+    signal.has_data_gap = True
+    assert (
+        opening_signal_entry_rejection_reason(
+            signal,
+            now_ts_ns=2_000,
+            stale_after_seconds=1.0,
+        )
+        == "data_gap"
+    )

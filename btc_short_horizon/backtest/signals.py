@@ -69,3 +69,37 @@ def validate_opening_mispricing_signal(signal: BtcOpeningMispricingSignal) -> No
     ):
         if not isinstance(getattr(signal, name), bool):
             raise TypeError(f"{name} must be bool")
+
+
+def opening_signal_data_age_seconds(signal: BtcOpeningMispricingSignal, *, now_ts_ns: int) -> float:
+    """Return the signal's age at the decision time, including elapsed replay time."""
+
+    validate_opening_mispricing_signal(signal)
+    if now_ts_ns < signal.ts_init:
+        raise ValueError("now_ts_ns cannot precede signal ts_init")
+    return float(signal.data_age_seconds) + (now_ts_ns - int(signal.ts_init)) / 1_000_000_000
+
+
+def opening_signal_entry_rejection_reason(
+    signal: BtcOpeningMispricingSignal,
+    *,
+    now_ts_ns: int,
+    stale_after_seconds: float,
+) -> str | None:
+    """Reject unsafe input before a one-cycle passive order can be planned."""
+
+    if stale_after_seconds <= 0.0 or not isfinite(stale_after_seconds):
+        raise ValueError("stale_after_seconds must be finite and > 0")
+    if signal.has_data_gap:
+        return "data_gap"
+    if not signal.structure_valid:
+        return "structure_invalid"
+    if not signal.tick_unchanged:
+        return "tick_changed"
+    if not signal.fee_unchanged:
+        return "fee_changed"
+    if not signal.latency_healthy:
+        return "latency_unhealthy"
+    if opening_signal_data_age_seconds(signal, now_ts_ns=now_ts_ns) > stale_after_seconds:
+        return "data_stale"
+    return None

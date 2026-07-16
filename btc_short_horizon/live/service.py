@@ -8,7 +8,13 @@ from math import isfinite
 from typing import Mapping
 from uuid import uuid4
 
-from btc_short_horizon.live.gateway import LiveOrderGateway, LiveOrderRequest
+from btc_short_horizon.live.gateway import (
+    GatewayCancellationUnknownError,
+    GatewaySubmissionUnknownError,
+    LiveOrderGateway,
+    LiveOrderRequest,
+    PaperOrderGateway,
+)
 from btc_short_horizon.live.risk import AccountSnapshot, TradingSafetyConfig, evaluate_order_risk
 from btc_short_horizon.live.state import LiveOrder, LiveOrderStatus, LiveTrade, LiveTradeStatus
 from btc_short_horizon.live.wal import JsonlWriteAheadLog
@@ -70,6 +76,8 @@ class LiveExecutionService:
     ) -> None:
         if config.mode is not LiveMode.SHADOW and gateway is None:
             raise ValueError("paper and canary modes require a gateway")
+        if config.mode is LiveMode.PAPER and not isinstance(gateway, PaperOrderGateway):
+            raise ValueError("paper mode requires PaperOrderGateway")
         self.config = config
         self.wal = wal
         self.gateway = gateway
@@ -79,10 +87,17 @@ class LiveExecutionService:
         self._progress = CanaryProgress()
         self._last_heartbeat_ts_ns: int | None = None
         self._heartbeat_cancel_requested = False
+        self._heartbeat_id = ""
+        self._ambiguous_markets: set[str] = set()
+        self._halted = False
 
     @property
     def canary_progress(self) -> CanaryProgress:
         return self._progress
+
+    @property
+    def halted(self) -> bool:
+        return self._halted
 
     def submit(
         self,
@@ -103,14 +118,27 @@ class LiveExecutionService:
         )
         self.orders[client_order_id] = order
         self._write("order_decision", ts_ns, {"order": order, "mode": self.config.mode})
+        if self._halted:
+            self._block_order(order, ts_ns=ts_ns, reason="kill_switch_active")
+            return SubmitResult(False, client_order_id, "kill_switch_active")
+        if request.condition_id in self._ambiguous_markets:
+            self._block_order(order, ts_ns=ts_ns, reason="ambiguous_submission_pending")
+            return SubmitResult(False, client_order_id, "ambiguous_submission_pending")
         if self.config.mode is LiveMode.SHADOW:
             self._write("shadow_order", ts_ns, {"order": order})
             return SubmitResult(False, client_order_id, "shadow_mode")
         if self.config.mode is LiveMode.CANARY and request.size > self.config.canary_max_shares:
             self._block_order(order, ts_ns=ts_ns, reason="canary_size_limit")
             return SubmitResult(False, client_order_id, "canary_size_limit")
+        risk_config = self.config.risk
+        if self.config.mode is LiveMode.PAPER:
+            risk_config = replace(
+                risk_config,
+                trading_enabled=True,
+                require_geo_eligible=False,
+            )
         risk = evaluate_order_risk(
-            config=self.config.risk,
+            config=risk_config,
             account=account,
             order_notional=request.price * request.size,
         )
@@ -123,6 +151,12 @@ class LiveExecutionService:
         self.orders[client_order_id] = submitted
         try:
             response = self.gateway.submit_post_only_buy(request)
+        except GatewaySubmissionUnknownError as exc:
+            unknown = submitted.transition(LiveOrderStatus.UNKNOWN)
+            self.orders[client_order_id] = unknown
+            self._ambiguous_markets.add(request.condition_id)
+            self._write("order_submission_unknown", ts_ns, {"order": unknown, "error": str(exc)})
+            return SubmitResult(False, client_order_id, "gateway_submission_unknown")
         except Exception as exc:
             rejected = submitted.transition(LiveOrderStatus.REJECTED)
             self.orders[client_order_id] = rejected
@@ -150,7 +184,13 @@ class LiveExecutionService:
         requested = order.transition(LiveOrderStatus.CANCEL_REQUESTED)
         self.orders[client_order_id] = requested
         self._write("cancel_requested", ts_ns, {"order": requested})
-        self.gateway.cancel_order(order.venue_order_id)
+        try:
+            self.gateway.cancel_order(order.venue_order_id)
+        except GatewayCancellationUnknownError as exc:
+            unknown = requested.transition(LiveOrderStatus.UNKNOWN)
+            self.orders[client_order_id] = unknown
+            self._ambiguous_markets.add(order.market_id)
+            self._write("cancel_unknown", ts_ns, {"order": unknown, "error": str(exc)})
 
     def cancel_all(self, *, ts_ns: int, reason: str) -> None:
         if not reason:
@@ -162,12 +202,41 @@ class LiveExecutionService:
         self._write("cancel_all_requested", ts_ns, {"reason": reason})
         self.gateway.cancel_all()
 
+    def emergency_stop(self, *, ts_ns: int, reason: str) -> bool:
+        """Freeze new submissions before attempting cancellation of venue orders."""
+
+        if ts_ns < 0:
+            raise ValueError("ts_ns must be non-negative")
+        if not reason:
+            raise ValueError("kill-switch reason is required")
+        if self._halted:
+            return False
+        self._halted = True
+        self._write("kill_switch_activated", ts_ns, {"reason": reason})
+        try:
+            self.cancel_all(ts_ns=ts_ns, reason=reason)
+        except Exception as exc:
+            self._write("kill_switch_cancel_error", ts_ns, {"error": str(exc)})
+        return True
+
     def record_heartbeat(self, *, ts_ns: int) -> None:
         if ts_ns < 0:
             raise ValueError("ts_ns must be non-negative")
         self._last_heartbeat_ts_ns = ts_ns
         self._heartbeat_cancel_requested = False
         self._write("heartbeat", ts_ns, {})
+
+    def send_venue_heartbeat(self, *, ts_ns: int) -> str:
+        if ts_ns < 0:
+            raise ValueError("ts_ns must be non-negative")
+        if self.config.mode is LiveMode.SHADOW:
+            self.record_heartbeat(ts_ns=ts_ns)
+            return ""
+        assert self.gateway is not None
+        self._heartbeat_id = self.gateway.send_heartbeat(self._heartbeat_id)
+        self.record_heartbeat(ts_ns=ts_ns)
+        self._write("venue_heartbeat", ts_ns, {"heartbeat_id": self._heartbeat_id})
+        return self._heartbeat_id
 
     def enforce_heartbeat_timeout(self, *, now_ts_ns: int) -> bool:
         if now_ts_ns < 0:
@@ -179,7 +248,7 @@ class LiveExecutionService:
             return False
         if self._heartbeat_cancel_requested:
             return False
-        self.cancel_all(ts_ns=now_ts_ns, reason="heartbeat_timeout")
+        self.emergency_stop(ts_ns=now_ts_ns, reason="heartbeat_timeout")
         self._heartbeat_cancel_requested = True
         return True
 
@@ -189,6 +258,71 @@ class LiveExecutionService:
             self._reconcile_order(event, ts_ns=ts_ns)
         elif event_type == "trade":
             self._reconcile_trade(event, ts_ns=ts_ns)
+
+    def restore_from_wal(self) -> int:
+        """Restore the latest durable lifecycle snapshots before venue reconciliation."""
+
+        if self.orders or self.trades:
+            raise ValueError("restore_from_wal requires an empty service state")
+        restored = 0
+        for record in self.wal.read():
+            event_type = str(record.get("event_type") or "")
+            payload = record.get("payload")
+            if not isinstance(payload, Mapping):
+                continue
+            raw_order = payload.get("order")
+            if isinstance(raw_order, Mapping):
+                order = _live_order_from_json(raw_order)
+                self.orders[order.client_order_id] = order
+                if order.venue_order_id:
+                    self._client_order_by_venue[order.venue_order_id] = order.client_order_id
+                if order.status is LiveOrderStatus.UNKNOWN:
+                    self._ambiguous_markets.add(order.market_id)
+                restored += 1
+            raw_trade = payload.get("trade")
+            if isinstance(raw_trade, Mapping):
+                trade = _live_trade_from_json(raw_trade)
+                self.trades[(trade.trade_id, trade.client_order_id)] = trade
+            if event_type == "kill_switch_activated":
+                self._halted = True
+            elif event_type == "heartbeat":
+                self._last_heartbeat_ts_ns = int(record.get("ts_ns", 0))
+            elif event_type == "venue_heartbeat":
+                heartbeat_id = payload.get("heartbeat_id")
+                if isinstance(heartbeat_id, str):
+                    self._heartbeat_id = heartbeat_id
+        submitted_orders = sum(order.venue_order_id is not None for order in self.orders.values())
+        self._progress = CanaryProgress(submitted_orders=submitted_orders, fills=len(self.trades))
+        return restored
+
+    def resolve_submission_unknown(
+        self,
+        *,
+        client_order_id: str,
+        ts_ns: int,
+        venue_order_id: str | None = None,
+        confirmed_absent: bool = False,
+    ) -> LiveOrder:
+        """Apply an explicit venue reconciliation result; never guess or auto-retry."""
+
+        if ts_ns < 0:
+            raise ValueError("ts_ns must be non-negative")
+        if bool(venue_order_id) == confirmed_absent:
+            raise ValueError("provide exactly one of venue_order_id or confirmed_absent=True")
+        order = self.orders[client_order_id]
+        if order.status is not LiveOrderStatus.UNKNOWN:
+            raise ValueError("only an unknown submission can be resolved")
+        if venue_order_id:
+            resolved = order.transition(LiveOrderStatus.LIVE, venue_order_id=venue_order_id)
+            self._client_order_by_venue[venue_order_id] = client_order_id
+            event_type = "order_submission_found"
+        else:
+            resolved = order.transition(LiveOrderStatus.REJECTED)
+            event_type = "order_submission_confirmed_absent"
+        self.orders[client_order_id] = resolved
+        self._ambiguous_markets.discard(order.market_id)
+        self._write(event_type, ts_ns, {"order": resolved})
+        return resolved
 
     def _reconcile_order(self, event: Mapping[str, object], *, ts_ns: int) -> None:
         order = self._order_for_venue_event(event)
@@ -202,11 +336,14 @@ class LiveExecutionService:
                 LiveOrderStatus.LIVE,
                 LiveOrderStatus.CANCEL_REQUESTED,
                 LiveOrderStatus.NOT_CANCELED,
+                LiveOrderStatus.UNKNOWN,
             }:
                 order = order.transition(LiveOrderStatus.CANCELED)
         elif kind in {"PLACEMENT", "UPDATE"} and order.status is LiveOrderStatus.SUBMITTED:
             order = order.transition(LiveOrderStatus.LIVE)
         self.orders[order.client_order_id] = order
+        if order.status is not LiveOrderStatus.UNKNOWN:
+            self._ambiguous_markets.discard(order.market_id)
         self._write("user_order", ts_ns, {"order": order, "event": dict(event)})
 
     def _reconcile_trade(self, event: Mapping[str, object], *, ts_ns: int) -> None:
@@ -283,3 +420,31 @@ def _positive_float(value: object, name: str) -> float:
     if result <= 0.0:
         raise ValueError(f"{name} must be > 0")
     return result
+
+
+def _live_order_from_json(value: Mapping[str, object]) -> LiveOrder:
+    return LiveOrder(
+        client_order_id=str(value["client_order_id"]),
+        market_id=str(value["market_id"]),
+        token_id=str(value["token_id"]),
+        price=float(value["price"]),
+        size=float(value["size"]),
+        status=LiveOrderStatus(str(value["status"])),
+        venue_order_id=(
+            None if value.get("venue_order_id") is None else str(value["venue_order_id"])
+        ),
+        matched_size=float(value.get("matched_size", 0.0)),
+    )
+
+
+def _live_trade_from_json(value: Mapping[str, object]) -> LiveTrade:
+    return LiveTrade(
+        trade_id=str(value["trade_id"]),
+        client_order_id=str(value["client_order_id"]),
+        price=float(value["price"]),
+        size=float(value["size"]),
+        status=LiveTradeStatus(str(value["status"])),
+        transaction_hash=(
+            None if value.get("transaction_hash") is None else str(value["transaction_hash"])
+        ),
+    )
