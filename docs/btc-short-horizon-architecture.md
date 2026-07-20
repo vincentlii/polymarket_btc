@@ -295,8 +295,10 @@ The model is one continuous, time-aware model; elapsed/remaining time are
 features. It does not train a separate model per time bucket. Development-only
 calibration and threshold selection are reported separately for
 `3–30s`, `35–90s`, and `95–180s`. A regime is disabled unless its selected
-development threshold has a strictly positive 95% net-edge confidence lower
-bound. The live/replay candidate remains the earliest signal across all enabled
+development threshold has a strictly positive family-wise adjusted bootstrap
+net-edge lower bound across all 24 pre-registered regime/threshold comparisons.
+The ordinary 95% interval remains diagnostic only. The live/replay candidate
+remains the earliest signal across all enabled
 regimes, so a later regime never replaces an earlier qualifying entry. A
 candidate must appear in two consecutive model signals, five seconds apart,
 then gets one placement cycle at pre-registered passive price levels. It never
@@ -320,7 +322,11 @@ may use synchronized CLOB history only after its own held-out validation.
 The walk-forward protocol keeps every snapshot of one market in the same
 group. A train/calibration/test/holdout boundary may never split a market,
 because doing so would leak the shared final label across partitions. Each
-market's snapshots have total sample weight one. `btc_short_horizon.research.gates`
+market's snapshots have total sample weight one. LightGBM early stopping uses a
+chronological tail of complete market groups inside the training partition;
+probability calibration uses the later, disjoint calibration partition.
+Isotonic eligibility counts unique markets rather than correlated snapshots,
+and every development prediction is OOF. `btc_short_horizon.research.gates`
 encodes acceptance checks; an opening-mispricing gate requires a positive
 paired held-out net-edge confidence lower bound, and the maker gate additionally
 requires real replay fills under the pessimistic queue/P99 latency scenario.
@@ -356,7 +362,17 @@ one of every `N` chronologically ordered markets from an existing materialized
 dataset. The default `N=1` is the exact path. Any `N>1` result is explicitly
 tagged approximate and may prioritize research, but cannot satisfy a Go/No-Go
 gate or authorize a model change. The loader streams Parquet batches rather
-than materializing the source table in Pandas.
+than materializing the source table in Pandas. It also verifies the exact
+chronological catalog slug sequence; matching only the row or market count is
+not sufficient provenance.
+
+Model artifacts are published through a same-volume staging directory and an
+atomic rename. Their metadata binds the fitted schema/config, causal
+train/calibration ranges, source hash, code provenance, and final model hash.
+Opening-proxy protocol version 2 records the actual cadence-aligned decision
+and regime boundaries. Version 1 artifacts are historical evidence only and
+must be retrained before Shadow or deployment. A dirty or unknown Git state is
+recorded but is never eligible to pass the formal direction gate.
 
 Runtime bootstrap does not download another archive. It requests at most four
 1,000-row pages from Binance Spot `/api/v3/klines`, accepts closed 1-second bars
@@ -371,7 +387,10 @@ history, applies frozen development-selected thresholds independently by
 regime, chooses the earliest candidate with two consecutive five-second
 signals, and permits at most one entry per market. Those prices are not BBO,
 queue, latency, or fill evidence, so the output is a market-relative edge proxy
-only and never maker P&L.
+only and never maker P&L. An intervening failed signal resets persistence, an
+entry price at or above one is discarded rather than clipped, and stress costs
+may only worsen or remove an opportunity. The result binds SHA-256 hashes for
+the predictions, market catalog, price cache, and cache-coverage manifest.
 
 ### Opening Market Evidence Audit
 
@@ -541,8 +560,8 @@ verified.
 
 ## Current Evidence Boundary
 
-The current exact three-minute directional artifact covers all 7,295 resolved
-markets from 2026-04-28 through 2026-07-13 and 262,620 five-second snapshots.
+The historical version 1 three-minute directional artifact covers all 7,295
+resolved markets from 2026-04-28 through 2026-07-13 and 262,620 five-second snapshots.
 Paired daily-block candidate selection retained `logistic-c0.1`; LightGBM did
 not show a jointly positive held-out improvement in log loss and Brier. The
 1,345-market holdout has log loss 0.65249 and Brier 0.23008, versus 0.69341 and
@@ -551,14 +570,18 @@ still No-Go: fewer than 2,500 holdout markets are available, the 76-day source
 cannot satisfy the full 90/21/14/28-day protocol, and the period lacks a causal
 Polymarket implied-probability baseline. Gamma coverage is also one market
 short of the requested 7,296. This is useful direction evidence, not a
-profitability approval.
+profitability approval. It predates protocol version 2, independent-market
+isotonic counting, grouped LightGBM early stopping, strict artifact lineage,
+and family-wise threshold-selection controls. Its numerical results therefore
+remain historical context and must be regenerated before any promotion decision.
 
-The corresponding sparse price proxy applies frozen per-regime thresholds and
-caps observed price age at 15 seconds. The retained holdout has 1,098 entries at
+The corresponding historical sparse price proxy applies frozen per-regime
+thresholds and caps observed price age at 15 seconds. The retained holdout has 1,098 entries at
 2.56c/share (95% CI 0.38c to 4.75c). With an additional 1c cost it has 935
 entries at 1.67c/share, but the 95% CI crosses zero (-0.59c to 4.17c). These
 one-minute observations cannot establish executable prices, passive fills,
-queue position, fees, or latency-adjusted maker P&L.
+queue position, fees, or latency-adjusted maker P&L. It also predates the
+version 2 persistence-reset and non-tradeable-price rules, so it must be rerun.
 
 The historical v6 look-ahead collector completed a full opening on
 `btc-updown-15m-1784214900`. The bounded dual-token Shadow reconstructed all 36

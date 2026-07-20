@@ -1,8 +1,8 @@
 # Codebase UML Inventory
 
 This file is generated from Python AST metadata and excludes `tests/` plus git-ignored private strategy/research directories.
-Generated: 2026-07-20T13:22:39+00:00
-Modules: 199 | Classes: 350 | Functions/methods: 2535
+Generated: 2026-07-20T14:57:57+00:00
+Modules: 200 | Classes: 350 | Functions/methods: 2556
 
 ## Backtesting Data Flow
 
@@ -960,49 +960,58 @@ flowchart TD
 - Imports: `artifacts, direction, opening_mispricing`
 
 ### `btc_short_horizon/models/artifacts.py`
-- Imports: `__future__, dataclasses, direction, hashlib, joblib, json, pathlib`
-- Function L93: `_sha256_file(path: Path) -> str`
-- Class L14: `ModelArtifactMetadata`
-  - Method L26: `__post_init__(self) -> None`
-- Class L41: `ModelArtifactStore`
-  - Method L45: `save(*, directory: Path, model: FittedDirectionModel, metadata: ModelArtifactMetadata) -> ModelArtifactMetadata`
-  - Method L71: `load(*, directory: Path, expected_schema_hash: str) -> tuple[FittedDirectionModel, ModelArtifactMetadata]`
+- Imports: `__future__, dataclasses, direction, hashlib, joblib, json, numbers, os, pathlib, shutil, uuid`
+- Function L136: `_sha256_file(path: Path) -> str`
+- Function L144: `_validate_model_metadata_consistency(*, model: FittedDirectionModel, metadata: ModelArtifactMetadata) -> None`
+- Function L158: `_canonical_json(value: object) -> str`
+- Function L162: `_write_json_fsynced(path: Path, payload: object) -> None`
+- Function L170: `_fsync_file(path: Path) -> None`
+- Function L175: `_fsync_directory(path: Path) -> None`
+- Function L185: `_is_sha256(value: str) -> bool`
+- Class L18: `ModelArtifactMetadata`
+  - Method L30: `__post_init__(self) -> None`
+- Class L73: `ModelArtifactStore`
+  - Method L77: `save(*, directory: Path, model: FittedDirectionModel, metadata: ModelArtifactMetadata) -> ModelArtifactMetadata`
+  - Method L111: `load(*, directory: Path, expected_schema_hash: str) -> tuple[FittedDirectionModel, ModelArtifactMetadata]`
 
 ### `btc_short_horizon/models/direction.py`
-- Imports: `__future__, btc_short_horizon, dataclasses, math, numpy, pandas, sklearn, typing`
-- Function L123: `fit_direction_model(*, train_vectors: np.ndarray, train_labels: np.ndarray, calibration_vectors: np.ndarray, calibration_labels: np.ndarray, schema: FeatureSchema, config: DirectionModelConfig | None = None, train_weights: np.ndarray | None = None, calibration_weights: np.ndarray | None = None, early_stopping_vectors: np.ndarray | None = None, early_stopping_labels: np.ndarray | None = None, early_stopping_weights: np.ndarray | None = None) -> FittedDirectionModel`
-- Function L195: `_fit_estimator(matrix: np.ndarray, labels: np.ndarray, config: DirectionModelConfig, *, schema: FeatureSchema, sample_weights: np.ndarray | None, early_stopping_matrix: np.ndarray | None, early_stopping_target: np.ndarray | None, early_stopping_weights: np.ndarray | None) -> object`
-- Function L262: `_fit_calibrator(*, raw_probabilities: np.ndarray, labels: np.ndarray, sample_weights: np.ndarray | None, method: CalibrationMethod, random_seed: int, min_isotonic_calibration_samples: int, temperature_grid: tuple[float, ...]) -> _Calibrator`
-- Function L301: `_fit_temperature_calibrator(*, raw_probabilities: np.ndarray, labels: np.ndarray, sample_weights: np.ndarray | None, grid: tuple[float, ...]) -> _Calibrator`
-- Function L330: `_proper_scores(probabilities: np.ndarray, labels: np.ndarray, sample_weights: np.ndarray | None) -> tuple[float, float]`
-- Function L344: `_predict_positive_probability(estimator: object, matrix: np.ndarray) -> np.ndarray`
-- Function L354: `_estimator_matrix(*, matrix: np.ndarray, schema: FeatureSchema, config: DirectionModelConfig) -> np.ndarray | pd.DataFrame`
-- Function L362: `_feature_frame(*, matrix: np.ndarray, schema: FeatureSchema) -> pd.DataFrame`
-- Function L366: `_probability_logits(probabilities: np.ndarray) -> np.ndarray`
-- Function L373: `_validate_matrix(vectors: np.ndarray, *, schema: FeatureSchema) -> np.ndarray`
-- Function L388: `_validate_binary_labels(labels: np.ndarray, *, expected_rows: int, name: str) -> np.ndarray`
-- Function L398: `_validate_weights(weights: np.ndarray | None, *, expected_rows: int, name: str) -> np.ndarray | None`
-- Function L411: `_validate_early_stopping_data(*, vectors: np.ndarray | None, labels: np.ndarray | None, weights: np.ndarray | None, schema: FeatureSchema) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]`
-- Class L22: `_Calibrator(Protocol)`
-  - Method L23: `transform(self, probabilities: np.ndarray) -> np.ndarray`
-- Class L27: `DirectionModelConfig`
-  - Method L41: `__post_init__(self) -> None`
-- Class L69: `FittedDirectionModel`
-  - Method L75: `predict_up_probability(self, vectors: np.ndarray) -> np.ndarray`
-  - Method L87: `config_dict(self) -> dict[str, object]`
-- Class L92: `_IdentityCalibrator`
-  - Method L93: `transform(self, probabilities: np.ndarray) -> np.ndarray`
-- Class L98: `_SigmoidCalibrator`
-  - Method L101: `transform(self, probabilities: np.ndarray) -> np.ndarray`
-- Class L107: `_IsotonicCalibrator`
-  - Method L110: `transform(self, probabilities: np.ndarray) -> np.ndarray`
-- Class L115: `_TemperatureCalibrator`
-  - Method L118: `transform(self, probabilities: np.ndarray) -> np.ndarray`
+- Imports: `__future__, btc_short_horizon, dataclasses, math, numbers, numpy, pandas, sklearn, typing`
+- Function L166: `fit_direction_model(*, train_vectors: np.ndarray, train_labels: np.ndarray, calibration_vectors: np.ndarray, calibration_labels: np.ndarray, schema: FeatureSchema, config: DirectionModelConfig | None = None, train_weights: np.ndarray | None = None, calibration_weights: np.ndarray | None = None, early_stopping_vectors: np.ndarray | None = None, early_stopping_labels: np.ndarray | None = None, early_stopping_weights: np.ndarray | None = None, calibration_independent_sample_count: int | None = None) -> FittedDirectionModel`
+- Function L244: `_fit_estimator(matrix: np.ndarray, labels: np.ndarray, config: DirectionModelConfig, *, schema: FeatureSchema, sample_weights: np.ndarray | None, early_stopping_matrix: np.ndarray | None, early_stopping_target: np.ndarray | None, early_stopping_weights: np.ndarray | None) -> object`
+- Function L311: `_fit_calibrator(*, raw_probabilities: np.ndarray, labels: np.ndarray, sample_weights: np.ndarray | None, method: CalibrationMethod, random_seed: int, min_isotonic_calibration_samples: int, temperature_grid: tuple[float, ...], independent_sample_count: int | None) -> _Calibrator`
+- Function L355: `_fit_temperature_calibrator(*, raw_probabilities: np.ndarray, labels: np.ndarray, sample_weights: np.ndarray | None, grid: tuple[float, ...]) -> _Calibrator`
+- Function L390: `_proper_scores(probabilities: np.ndarray, labels: np.ndarray, sample_weights: np.ndarray | None) -> tuple[float, float]`
+- Function L412: `_predict_positive_probability(estimator: object, matrix: np.ndarray) -> np.ndarray`
+- Function L430: `_estimator_matrix(*, matrix: np.ndarray, schema: FeatureSchema, config: DirectionModelConfig) -> np.ndarray | pd.DataFrame`
+- Function L438: `_feature_frame(*, matrix: np.ndarray, schema: FeatureSchema) -> pd.DataFrame`
+- Function L442: `_probability_logits(probabilities: np.ndarray) -> np.ndarray`
+- Function L456: `_validate_matrix(vectors: np.ndarray, *, schema: FeatureSchema) -> np.ndarray`
+- Function L471: `_validate_binary_labels(labels: np.ndarray, *, expected_rows: int, name: str) -> np.ndarray`
+- Function L489: `_validate_independent_sample_count(value: int | None, *, maximum_rows: int) -> int | None`
+- Function L501: `_validate_probability_vector(values: np.ndarray, *, expected_rows: int, name: str) -> np.ndarray`
+- Function L514: `_stable_sigmoid(values: np.ndarray) -> np.ndarray`
+- Function L523: `_validate_weights(weights: np.ndarray | None, *, expected_rows: int, name: str) -> np.ndarray | None`
+- Function L536: `_validate_early_stopping_data(*, vectors: np.ndarray | None, labels: np.ndarray | None, weights: np.ndarray | None, schema: FeatureSchema) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]`
+- Class L23: `_Calibrator(Protocol)`
+  - Method L24: `transform(self, probabilities: np.ndarray) -> np.ndarray`
+- Class L28: `DirectionModelConfig`
+  - Method L42: `__post_init__(self) -> None`
+- Class L109: `FittedDirectionModel`
+  - Method L115: `predict_up_probability(self, vectors: np.ndarray) -> np.ndarray`
+  - Method L130: `config_dict(self) -> dict[str, object]`
+- Class L135: `_IdentityCalibrator`
+  - Method L136: `transform(self, probabilities: np.ndarray) -> np.ndarray`
+- Class L141: `_SigmoidCalibrator`
+  - Method L144: `transform(self, probabilities: np.ndarray) -> np.ndarray`
+- Class L150: `_IsotonicCalibrator`
+  - Method L153: `transform(self, probabilities: np.ndarray) -> np.ndarray`
+- Class L158: `_TemperatureCalibrator`
+  - Method L161: `transform(self, probabilities: np.ndarray) -> np.ndarray`
 
 ### `btc_short_horizon/models/opening_mispricing.py`
 - Imports: `__future__, btc_short_horizon, dataclasses, math, numpy, typing`
 - Function L19: `_probability(name: str, value: float) -> None`
-- Function L112: `fit_opening_mispricing_model(*, train_vectors: np.ndarray, train_labels: np.ndarray, calibration_vectors: np.ndarray, calibration_labels: np.ndarray, schema: FeatureSchema, config: DirectionModelConfig | None = None, train_weights: np.ndarray | None = None, calibration_weights: np.ndarray | None = None, early_stopping_vectors: np.ndarray | None = None, early_stopping_labels: np.ndarray | None = None, early_stopping_weights: np.ndarray | None = None) -> FittedOpeningMispricingModel`
+- Function L112: `fit_opening_mispricing_model(*, train_vectors: np.ndarray, train_labels: np.ndarray, calibration_vectors: np.ndarray, calibration_labels: np.ndarray, schema: FeatureSchema, config: DirectionModelConfig | None = None, train_weights: np.ndarray | None = None, calibration_weights: np.ndarray | None = None, early_stopping_vectors: np.ndarray | None = None, early_stopping_labels: np.ndarray | None = None, early_stopping_weights: np.ndarray | None = None, calibration_independent_sample_count: int | None = None) -> FittedOpeningMispricingModel`
 - Class L25: `OpeningMispricingPrediction`
   - Method L43: `__post_init__(self) -> None`
   - Method L61: `elapsed_seconds(self) -> float`
@@ -1064,31 +1073,33 @@ flowchart TD
   - Method L57: `source_hash(self) -> str`
 
 ### `btc_short_horizon/research/gates.py`
-- Imports: `__future__, dataclasses, math`
-- Function L109: `evaluate_direction_gate(evidence: DirectionGateEvidence) -> GateDecision`
-- Function L135: `evaluate_opening_mispricing_gate(evidence: OpeningMispricingGateEvidence) -> GateDecision`
-- Function L143: `evaluate_maker_gate(evidence: MakerGateEvidence) -> GateDecision`
-- Function L174: `_decision(failures: list[str]) -> GateDecision`
-- Function L178: `_require_finite(value: float, name: str) -> None`
-- Function L183: `_require_finite_nonnegative(value: float, name: str) -> None`
-- Class L25: `GateDecision`
-- Class L31: `CalibrationBinEvidence`
-  - Method L35: `__post_init__(self) -> None`
-- Class L42: `DirectionGateEvidence`
-  - Method L51: `__post_init__(self) -> None`
-- Class L67: `OpeningMispricingGateEvidence`
-  - Method L70: `__post_init__(self) -> None`
-- Class L75: `MakerGateEvidence`
-  - Method L90: `__post_init__(self) -> None`
+- Imports: `__future__, dataclasses, math, numbers`
+- Function L134: `evaluate_direction_gate(evidence: DirectionGateEvidence) -> GateDecision`
+- Function L160: `evaluate_opening_mispricing_gate(evidence: OpeningMispricingGateEvidence) -> GateDecision`
+- Function L168: `evaluate_maker_gate(evidence: MakerGateEvidence) -> GateDecision`
+- Function L199: `_decision(failures: list[str]) -> GateDecision`
+- Function L204: `_require_finite(value: float, name: str) -> None`
+- Function L209: `_require_finite_nonnegative(value: float, name: str) -> None`
+- Function L215: `_require_nonnegative_integer(value: int, name: str) -> None`
+- Class L26: `GateDecision`
+  - Method L30: `__post_init__(self) -> None`
+- Class L51: `CalibrationBinEvidence`
+  - Method L55: `__post_init__(self) -> None`
+- Class L63: `DirectionGateEvidence`
+  - Method L72: `__post_init__(self) -> None`
+- Class L93: `OpeningMispricingGateEvidence`
+  - Method L96: `__post_init__(self) -> None`
+- Class L101: `MakerGateEvidence`
+  - Method L116: `__post_init__(self) -> None`
 
 ### `btc_short_horizon/research/opening_dataset.py`
-- Imports: `__future__, btc_short_horizon, collections, dataclasses, datetime, numpy`
-- Function L34: `build_opening_direction_dataset(*, markets: Sequence[MarketWindow], observations_by_market: Mapping[str, Sequence[OpeningFeatureObservation]], snapshot_seconds: int = 5, entry_start_seconds: int = 3, entry_end_seconds: int = 180) -> OpeningDirectionDatasetBuild`
-- Function L134: `_index_market_observations(*, market: MarketWindow, observations: Sequence[OpeningFeatureObservation], expected_schema_hash: str) -> dict[int, OpeningFeatureObservation]`
-- Function L158: `_snapshot_offsets(*, snapshot_seconds: int, entry_start_seconds: int, entry_end_seconds: int) -> tuple[int, ...]`
-- Function L175: `_datetime_to_ns(value: datetime) -> int`
-- Function L179: `_datetime_from_ns(value: int) -> datetime`
-- Class L21: `OpeningDirectionDatasetBuild`
+- Imports: `__future__, btc_short_horizon, collections, dataclasses, datetime, numbers, numpy`
+- Function L35: `build_opening_direction_dataset(*, markets: Sequence[MarketWindow], observations_by_market: Mapping[str, Sequence[OpeningFeatureObservation]], snapshot_seconds: int = 5, entry_start_seconds: int = 3, entry_end_seconds: int = 180) -> OpeningDirectionDatasetBuild`
+- Function L136: `_index_market_observations(*, market: MarketWindow, observations: Sequence[OpeningFeatureObservation], expected_schema_hash: str) -> dict[int, OpeningFeatureObservation]`
+- Function L160: `_snapshot_offsets(*, snapshot_seconds: int, entry_start_seconds: int, entry_end_seconds: int) -> tuple[int, ...]`
+- Function L180: `_datetime_to_ns(value: datetime) -> int`
+- Function L189: `_datetime_from_ns(value: int) -> datetime`
+- Class L22: `OpeningDirectionDatasetBuild`
 
 ### `btc_short_horizon/research/opening_evidence.py`
 - Imports: `__future__, btc_short_horizon, collections, dataclasses, datetime, hashlib, json, math, nautilus_trader, pathlib, pyarrow`
@@ -1152,58 +1163,66 @@ flowchart TD
   - Method L93: `source_event_count(self, raw_source: str) -> int`
 
 ### `btc_short_horizon/research/opening_model_gate.py`
-- Imports: `__future__, btc_short_horizon, collections, dataclasses, datetime, math, numpy, sklearn`
-- Function L63: `select_direction_candidate(candidates: Sequence[CandidateEvaluation]) -> CandidateSelectionDecision`
-- Function L106: `paired_daily_block_bootstrap(*, candidate_predictions: Iterable[object], baseline_predictions: Iterable[object], weights: np.ndarray, baseline_name: str, iterations: int = 2000, seed: int = 17) -> CandidatePairedEvidence`
-- Function L179: `weighted_calibration_error(*, labels: np.ndarray, probabilities: np.ndarray, weights: np.ndarray) -> float`
-- Function L205: `calibration_slope(*, labels: np.ndarray, probabilities: np.ndarray, weights: np.ndarray) -> float`
-- Function L220: `target_confidence_bands(*, predictions: Iterable[object], weights: np.ndarray) -> tuple[dict[str, object], ...]`
-- Function L263: `build_direction_gate_artifact(*, sealed_holdout_markets: int, log_loss_improvement: float, log_loss_ci_lower: float, log_loss_ci_upper: float, brier_improvement: float, brier_ci_lower: float, brier_ci_upper: float, calibration_slope: float, target_bands: Sequence[Mapping[str, object]], protocol_eligible: bool, protocol_failures: Sequence[str] = ()) -> dict[str, object]`
-- Function L321: `candidate_evaluation_dict(candidate: CandidateEvaluation) -> dict[str, object]`
-- Function L327: `_binary_log_loss(labels: np.ndarray, probabilities: np.ndarray) -> np.ndarray`
-- Function L331: `_validated_arrays(labels: np.ndarray, probabilities: np.ndarray, weights: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]`
-- Function L348: `_market_id(sample_id: str) -> str`
-- Class L22: `CandidatePairedEvidence`
-- Class L35: `CandidateEvaluation`
-  - Method L45: `__post_init__(self) -> None`
-- Class L56: `CandidateSelectionDecision`
+- Imports: `__future__, btc_short_horizon, collections, dataclasses, datetime, math, numbers, numpy, sklearn`
+- Function L122: `select_direction_candidate(candidates: Sequence[CandidateEvaluation]) -> CandidateSelectionDecision`
+- Function L172: `paired_daily_block_bootstrap(*, candidate_predictions: Iterable[object], baseline_predictions: Iterable[object], weights: np.ndarray, baseline_name: str, iterations: int = 10000, seed: int = 17, block_length_days: int = 7, alpha: float = 0.05) -> CandidatePairedEvidence`
+- Function L289: `weighted_calibration_error(*, labels: np.ndarray, probabilities: np.ndarray, weights: np.ndarray) -> float`
+- Function L315: `calibration_slope(*, labels: np.ndarray, probabilities: np.ndarray, weights: np.ndarray) -> float`
+- Function L330: `target_confidence_bands(*, predictions: Iterable[object], weights: np.ndarray) -> tuple[dict[str, object], ...]`
+- Function L378: `build_direction_gate_artifact(*, sealed_holdout_markets: int, log_loss_improvement: float, log_loss_ci_lower: float, log_loss_ci_upper: float, brier_improvement: float, brier_ci_lower: float, brier_ci_upper: float, calibration_slope: float, target_bands: Sequence[Mapping[str, object]], protocol_eligible: bool, protocol_failures: Sequence[str] = (), confidence_level: float = 0.95) -> dict[str, object]`
+- Function L493: `candidate_evaluation_dict(candidate: CandidateEvaluation) -> dict[str, object]`
+- Function L499: `_binary_log_loss(labels: np.ndarray, probabilities: np.ndarray) -> np.ndarray`
+- Function L503: `_validated_arrays(labels: np.ndarray, probabilities: np.ndarray, weights: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]`
+- Function L531: `_prediction_map(predictions: Iterable[object], *, name: str) -> dict[int, object]`
+- Function L557: `_selected_weights(weights: np.ndarray, indices: np.ndarray) -> np.ndarray`
+- Function L568: `_market_id(sample_id: str) -> str`
+- Class L23: `CandidatePairedEvidence`
+  - Method L35: `__post_init__(self) -> None`
+- Class L57: `CandidateEvaluation`
+  - Method L67: `__post_init__(self) -> None`
+- Class L84: `CandidateSelectionDecision`
+  - Method L90: `__post_init__(self) -> None`
 
 ### `btc_short_horizon/research/opening_proxy.py`
-- Imports: `__future__, btc_short_horizon, dataclasses, datetime, enum, math, numpy, typing`
-- Function L35: `opening_regime_for_elapsed_seconds(elapsed_seconds: float) -> OpeningRegime`
-- Function L47: `opening_proxy_protocol(*, entry_start_seconds: int, entry_end_seconds: int, snapshot_seconds: int) -> dict[str, object]`
-- Function L86: `validate_opening_proxy_protocol(metadata_config: Mapping[str, object], *, expected: Mapping[str, object]) -> None`
-- Function L108: `opening_proxy_feature_schema(interval_seconds: int) -> FeatureSchema`
-- Function L135: `opening_proxy_decision_offsets_ms(*, cadence_ms: int, entry_start_seconds: int, entry_end_seconds: int) -> tuple[int, ...]`
-- Function L156: `build_opening_proxy_dataset(*, markets: Sequence[MarketWindow], klines: BinanceKlineHistory, snapshot_seconds: int = 5, entry_start_seconds: int = 3, entry_end_seconds: int = 180, availability_delay: timedelta = timedelta(seconds=1)) -> OpeningProxyDatasetBuild`
-- Function L285: `opening_proxy_feature_values_at(*, klines: BinanceKlineHistory, market_start: datetime, decision_time: datetime, availability_delay: timedelta = timedelta(seconds=1)) -> dict[str, float]`
-- Function L345: `_feature_vector(*, klines: BinanceKlineHistory, available_ts_ns: np.ndarray, start: int, end: int, reference_index: int, decision_ns: int, elapsed_seconds: float, schema: FeatureSchema, windows: Sequence[int]) -> tuple[float, ...]`
-- Function L417: `_has_full_history(*, available_ts_ns: np.ndarray, start: int, decision_ns: int, max_window_ns: int, interval_ns: int) -> bool`
-- Function L428: `_snapshot_offsets(*, snapshot_seconds: int, entry_start_seconds: int, entry_end_seconds: int) -> tuple[int, ...]`
-- Function L441: `_windows_for_interval(interval_seconds: int) -> tuple[int, ...]`
-- Function L449: `_validate_timing(*, snapshot_seconds: int, entry_start_seconds: int, entry_end_seconds: int, interval_seconds: int, availability_delay: timedelta) -> None`
-- Function L469: `_datetime_to_ns(value: datetime) -> int`
-- Class L24: `OpeningRegime(StrEnum)`
-- Class L97: `OpeningProxyDatasetBuild`
+- Imports: `__future__, btc_short_horizon, dataclasses, datetime, enum, math, numbers, numpy, typing`
+- Function L37: `opening_regime_for_elapsed_seconds(elapsed_seconds: float) -> OpeningRegime`
+- Function L49: `opening_proxy_protocol(*, entry_start_seconds: int, entry_end_seconds: int, snapshot_seconds: int) -> dict[str, object]`
+- Function L87: `validate_opening_proxy_protocol(metadata_config: Mapping[str, object], *, expected: Mapping[str, object]) -> None`
+- Function L109: `opening_proxy_feature_schema(interval_seconds: int) -> FeatureSchema`
+- Function L136: `opening_proxy_decision_offsets_ms(*, cadence_ms: int, entry_start_seconds: int, entry_end_seconds: int) -> tuple[int, ...]`
+- Function L165: `build_opening_proxy_dataset(*, markets: Sequence[MarketWindow], klines: BinanceKlineHistory, snapshot_seconds: int = 5, entry_start_seconds: int = 3, entry_end_seconds: int = 180, availability_delay: timedelta = timedelta(seconds=1)) -> OpeningProxyDatasetBuild`
+- Function L304: `opening_proxy_feature_values_at(*, klines: BinanceKlineHistory, market_start: datetime, decision_time: datetime, availability_delay: timedelta = timedelta(seconds=1)) -> dict[str, float]`
+- Function L364: `_feature_vector(*, klines: BinanceKlineHistory, available_ts_ns: np.ndarray, start: int, end: int, reference_index: int, decision_ns: int, elapsed_seconds: float, schema: FeatureSchema, windows: Sequence[int]) -> tuple[float, ...]`
+- Function L436: `_has_full_history(*, available_ts_ns: np.ndarray, start: int, decision_ns: int, max_window_ns: int, interval_ns: int) -> bool`
+- Function L447: `_snapshot_offsets(*, snapshot_seconds: int, entry_start_seconds: int, entry_end_seconds: int) -> tuple[int, ...]`
+- Function L460: `_windows_for_interval(interval_seconds: int) -> tuple[int, ...]`
+- Function L468: `_validate_timing(*, snapshot_seconds: int, entry_start_seconds: int, entry_end_seconds: int, interval_seconds: int, availability_delay: timedelta) -> None`
+- Function L496: `_datetime_to_ns(value: datetime) -> int`
+- Class L26: `OpeningRegime(StrEnum)`
+- Class L98: `OpeningProxyDatasetBuild`
 
 ### `btc_short_horizon/research/opening_runtime.py`
 - Imports: `__future__, btc_short_horizon, datetime`
 - Function L19: `build_opening_proxy_prediction(*, model: FittedDirectionModel, metadata: ModelArtifactMetadata, market: MarketWindow, klines: BinanceKlineHistory, market_observation: OpeningMarketObservation, availability_delay: timedelta = timedelta(seconds=1), fee_unchanged: bool = True, latency_healthy: bool = True) -> OpeningMispricingPrediction`
 
 ### `btc_short_horizon/research/pipeline.py`
-- Imports: `__future__, btc_short_horizon, dataclasses, math, numpy`
-- Function L115: `run_walk_forward_model(*, dataset: DirectionDataset, split_config: WalkForwardConfig | None = None, model_config: DirectionModelConfig | None = None, early_stopping_fraction: float = 0.2) -> WalkForwardModelRun`
-- Function L190: `run_sealed_holdout_model(*, dataset: DirectionDataset, split_config: WalkForwardConfig | None = None, model_config: DirectionModelConfig | None = None, early_stopping_fraction: float = 0.2) -> SealedHoldoutModelRun`
-- Function L287: `_split_training_indices(*, indices: tuple[int, ...], labels: np.ndarray, samples: tuple[ResearchSample, ...], fraction: float, require_early_stopping: bool) -> tuple[tuple[int, ...], tuple[int, ...]]`
-- Class L22: `DirectionDataset`
-  - Method L30: `__post_init__(self) -> None`
-  - Method L53: `labels(self) -> np.ndarray`
-- Class L58: `OofPrediction`
-  - Method L68: `__post_init__(self) -> None`
-- Class L80: `WalkForwardModelRun`
-  - Method L87: `__post_init__(self) -> None`
-- Class L96: `HoldoutPrediction`
-- Class L105: `SealedHoldoutModelRun`
+- Imports: `__future__, btc_short_horizon, dataclasses, datetime, math, numbers, numpy`
+- Function L227: `run_walk_forward_model(*, dataset: DirectionDataset, split_config: WalkForwardConfig | None = None, model_config: DirectionModelConfig | None = None, early_stopping_fraction: float = 0.2) -> WalkForwardModelRun`
+- Function L307: `run_sealed_holdout_model(*, dataset: DirectionDataset, split_config: WalkForwardConfig | None = None, model_config: DirectionModelConfig | None = None, early_stopping_fraction: float = 0.2) -> SealedHoldoutModelRun`
+- Function L421: `_split_training_indices(*, indices: tuple[int, ...], labels: np.ndarray, samples: tuple[ResearchSample, ...], fraction: float, require_early_stopping: bool) -> tuple[tuple[int, ...], tuple[int, ...]]`
+- Function L457: `_independent_group_count(samples: tuple[ResearchSample, ...], indices: tuple[int, ...]) -> int`
+- Function L461: `_datetime_ns(value: datetime) -> int`
+- Class L24: `DirectionDataset`
+  - Method L32: `__post_init__(self) -> None`
+  - Method L61: `labels(self) -> np.ndarray`
+- Class L66: `OofPrediction`
+  - Method L76: `__post_init__(self) -> None`
+- Class L99: `WalkForwardModelRun`
+  - Method L106: `__post_init__(self) -> None`
+- Class L135: `HoldoutPrediction`
+  - Method L142: `__post_init__(self) -> None`
+- Class L165: `SealedHoldoutModelRun`
+  - Method L176: `__post_init__(self) -> None`
 
 ### `btc_short_horizon/research/polymarket_price_history.py`
 - Imports: `__future__, asyncio, collections, dataclasses, httpx, math`
@@ -1213,22 +1232,26 @@ flowchart TD
 - Class L18: `TokenPricePoint`
   - Method L23: `__post_init__(self) -> None`
 
+### `btc_short_horizon/research/provenance.py`
+- Imports: `__future__, hashlib, pathlib, subprocess`
+- Function L10: `git_provenance(*, repository: Path | None = None) -> dict[str, object]`
+
 ### `btc_short_horizon/research/walk_forward.py`
-- Imports: `__future__, dataclasses, datetime, typing`
-- Function L10: `_as_utc(value: datetime, name: str) -> datetime`
-- Function L16: `_require_positive_duration(name: str, value: timedelta) -> None`
-- Function L127: `build_walk_forward_plan(samples: Sequence[ResearchSample], *, config: WalkForwardConfig | None = None) -> WalkForwardPlan`
-- Function L225: `_partition_indices(samples: Sequence[ResearchSample], candidates: Sequence[int], groups: Mapping[str, tuple[int, ...]], *, start: datetime, end: datetime, label_deadline: datetime | None) -> tuple[int, ...]`
-- Function L246: `select_complete_group_indices(samples: Sequence[ResearchSample], candidates: Sequence[int], *, start: datetime, end: datetime, label_deadline: datetime | None) -> tuple[int, ...]`
-- Function L266: `_grouped_indices(samples: Sequence[ResearchSample], candidates: Sequence[int]) -> dict[str, tuple[int, ...]]`
-- Class L22: `ResearchSample`
-  - Method L31: `__post_init__(self) -> None`
-- Class L49: `WalkForwardConfig`
-  - Method L59: `__post_init__(self) -> None`
-- Class L72: `WalkForwardFold`
-  - Method L86: `__post_init__(self) -> None`
-- Class L106: `WalkForwardPlan`
-  - Method L113: `__post_init__(self) -> None`
+- Imports: `__future__, dataclasses, datetime, numbers, typing`
+- Function L11: `_as_utc(value: datetime, name: str) -> datetime`
+- Function L17: `_require_positive_duration(name: str, value: timedelta) -> None`
+- Function L200: `build_walk_forward_plan(samples: Sequence[ResearchSample], *, config: WalkForwardConfig | None = None) -> WalkForwardPlan`
+- Function L303: `_partition_indices(samples: Sequence[ResearchSample], candidates: Sequence[int], groups: Mapping[str, tuple[int, ...]], *, start: datetime, end: datetime, label_deadline: datetime | None) -> tuple[int, ...]`
+- Function L324: `select_complete_group_indices(samples: Sequence[ResearchSample], candidates: Sequence[int], *, start: datetime, end: datetime, label_deadline: datetime | None) -> tuple[int, ...]`
+- Function L351: `_grouped_indices(samples: Sequence[ResearchSample], candidates: Sequence[int]) -> dict[str, tuple[int, ...]]`
+- Class L23: `ResearchSample`
+  - Method L32: `__post_init__(self) -> None`
+- Class L62: `WalkForwardConfig`
+  - Method L72: `__post_init__(self) -> None`
+- Class L89: `WalkForwardFold`
+  - Method L103: `__post_init__(self) -> None`
+- Class L143: `WalkForwardPlan`
+  - Method L150: `__post_init__(self) -> None`
 
 ### `btc_short_horizon/strategy/__init__.py`
 - Imports: `btc_short_horizon`
@@ -3061,56 +3084,57 @@ flowchart TD
 - Function L205: `main(argv: Sequence[str] | None = None) -> int`
 
 ### `scripts/btc_opening_mispricing_proxy.py`
-- Imports: `__future__, argparse, asyncio, btc_short_horizon, collections, dataclasses, datetime, hashlib, httpx, json, numpy, pandas, pathlib, pyarrow, subprocess`
+- Imports: `__future__, argparse, asyncio, btc_short_horizon, collections, dataclasses, datetime, hashlib, httpx, json, numpy, pandas, pathlib, pyarrow`
 - Function L68: `parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace`
 - Function L112: `async discover_closed_markets(*, start: datetime, end: datetime, rule_epoch: str) -> MarketCatalog`
 - Function L129: `download_binance_archives(*, directory: Path, start: date, end: date, interval: str) -> tuple[Path, ...]`
 - Function L155: `existing_binance_archives(*, directory: Path, start: date, end: date, interval: str) -> tuple[Path, ...]`
 - Function L171: `run(args: argparse.Namespace) -> dict[str, object]`
-- Function L519: `load_materialized_opening_proxy_dataset(*, path: Path, interval_seconds: int, snapshot_seconds: int, entry_start_seconds: int, entry_end_seconds: int, market_stride: int = 1) -> DirectionDataset`
-- Function L579: `_materialized_selected_row_count(*, parquet: pq.ParquetFile, expected_offsets: tuple[int, ...], market_stride: int) -> int`
-- Function L608: `_load_materialized_proxy_batches(*, parquet: pq.ParquetFile, schema: FeatureSchema, expected_offsets: tuple[int, ...], market_stride: int, vectors: np.ndarray) -> tuple[list[ResearchSample], list[float]]`
-- Function L701: `_sample_group_id(sample_id: str) -> str`
-- Function L708: `_candidate_configs() -> tuple[tuple[str, DirectionModelConfig], ...]`
-- Function L733: `_catalog_for_study(*, catalog_path: Path | None, start: datetime, end: datetime, rule_epoch: str) -> tuple[MarketCatalog, int]`
-- Function L750: `_split_config(profile: str) -> WalkForwardConfig`
-- Function L763: `_prediction_metrics(predictions: Iterable[object], *, weights: np.ndarray) -> dict[str, object]`
-- Function L773: `_prediction_metrics_by_regime(predictions: Iterable[object], *, dataset: DirectionDataset) -> dict[str, dict[str, object]]`
-- Function L785: `_constant_probability_metrics_by_regime(predictions: Iterable[object], *, dataset: DirectionDataset, probability: float) -> dict[str, dict[str, object]]`
-- Function L803: `_prediction_items_by_regime(predictions: Iterable[object], *, dataset: DirectionDataset) -> dict[object, tuple[object, ...]]`
-- Function L814: `_probability_metrics(*, labels: np.ndarray, probabilities: np.ndarray, weights: np.ndarray) -> dict[str, object]`
-- Function L860: `_write_dataset(*, path: Path, dataset: object) -> None`
-- Function L870: `_write_predictions(*, path: Path, development: Sequence[object], holdout: Sequence[object], weights: np.ndarray) -> None`
-- Function L897: `_market_slugs(*, start: datetime, end: datetime) -> Iterable[str]`
-- Function L904: `_batches(values: Sequence[str], size: int) -> Iterable[tuple[str, ...]]`
-- Function L909: `_dates(start: date, end: date) -> Iterable[date]`
-- Function L916: `_data_hash(*, archives: Sequence[Path], catalog_path: Path) -> str`
-- Function L926: `_git_provenance() -> dict[str, object]`
-- Function L960: `_date(value: str) -> date`
-- Function L967: `_ns(value: datetime) -> int`
-- Function L971: `main(argv: Sequence[str] | None = None) -> int`
+- Function L546: `load_materialized_opening_proxy_dataset(*, path: Path, interval_seconds: int, snapshot_seconds: int, entry_start_seconds: int, entry_end_seconds: int, market_stride: int = 1, expected_market_group_ids: Sequence[str] | None = None) -> DirectionDataset`
+- Function L618: `_materialized_selected_row_count(*, parquet: pq.ParquetFile, expected_offsets: tuple[int, ...], market_stride: int) -> int`
+- Function L650: `_load_materialized_proxy_batches(*, parquet: pq.ParquetFile, schema: FeatureSchema, expected_offsets: tuple[int, ...], market_stride: int, vectors: np.ndarray) -> tuple[list[ResearchSample], list[float]]`
+- Function L754: `_sample_group_id(sample_id: str) -> str`
+- Function L761: `_strict_integer_array(values: object, *, name: str) -> np.ndarray`
+- Function L775: `_candidate_configs() -> tuple[tuple[str, DirectionModelConfig], ...]`
+- Function L800: `_catalog_for_study(*, catalog_path: Path | None, start: datetime, end: datetime, rule_epoch: str) -> tuple[MarketCatalog, int]`
+- Function L817: `_split_config(profile: str) -> WalkForwardConfig`
+- Function L830: `_prediction_metrics(predictions: Iterable[object], *, weights: np.ndarray) -> dict[str, object]`
+- Function L840: `_prediction_metrics_by_regime(predictions: Iterable[object], *, dataset: DirectionDataset) -> dict[str, dict[str, object]]`
+- Function L852: `_constant_probability_metrics_by_regime(predictions: Iterable[object], *, dataset: DirectionDataset, probability: float) -> dict[str, dict[str, object]]`
+- Function L870: `_prediction_items_by_regime(predictions: Iterable[object], *, dataset: DirectionDataset) -> dict[object, tuple[object, ...]]`
+- Function L881: `_probability_metrics(*, labels: np.ndarray, probabilities: np.ndarray, weights: np.ndarray) -> dict[str, object]`
+- Function L950: `_write_dataset(*, path: Path, dataset: object) -> None`
+- Function L960: `_write_predictions(*, path: Path, development: Sequence[object], holdout: Sequence[object], weights: np.ndarray) -> None`
+- Function L987: `_market_slugs(*, start: datetime, end: datetime) -> Iterable[str]`
+- Function L994: `_batches(values: Sequence[str], size: int) -> Iterable[tuple[str, ...]]`
+- Function L999: `_dates(start: date, end: date) -> Iterable[date]`
+- Function L1006: `_data_hash(*, archives: Sequence[Path], catalog_path: Path) -> str`
+- Function L1019: `_date(value: str) -> date`
+- Function L1026: `_ns(value: datetime) -> int`
+- Function L1035: `main(argv: Sequence[str] | None = None) -> int`
 
 ### `scripts/btc_opening_price_edge_proxy.py`
-- Imports: `__future__, argparse, asyncio, btc_short_horizon, collections, dataclasses, httpx, json, numpy, pandas, pathlib`
-- Function L38: `parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace`
-- Function L53: `run(args: argparse.Namespace) -> dict[str, object]`
-- Function L219: `_maximum_prediction_offset_seconds(*, predictions: pd.DataFrame, markets_by_slug: Mapping[str, MarketWindow]) -> int`
-- Function L235: `_load_or_fetch_prices(*, cache_path: Path, markets: Sequence[MarketWindow], max_concurrency: int, maximum_prediction_offset_seconds: int) -> pd.DataFrame`
-- Function L298: `_price_cache_coverage(path: Path) -> set[str]`
-- Function L308: `async _fetch_market_price_batches(*, markets: Sequence[MarketWindow], cached_tokens: set[str], max_concurrency: int, maximum_prediction_offset_seconds: int) -> tuple[TokenPricePoint, ...]`
-- Function L343: `_build_candidates(*, predictions: pd.DataFrame, prices: pd.DataFrame, markets: Sequence[MarketWindow], entry_price_buffer: float, max_price_age_seconds: int) -> tuple[pd.DataFrame, dict[str, object]]`
-- Function L436: `_select_one_entry_per_market(candidates: pd.DataFrame, *, threshold: float, minimum_consecutive_signals: int = 1, maximum_signal_gap_seconds: int = 5) -> pd.DataFrame`
-- Function L476: `_select_one_entry_per_market_by_regime(candidates: pd.DataFrame, *, thresholds_by_regime: Mapping[str, float], minimum_consecutive_signals: int = 1, maximum_signal_gap_seconds: int = 5) -> pd.DataFrame`
-- Function L501: `_select_positive_confidence_threshold(sweep: Sequence[dict[str, object]], *, min_development_entries: int) -> dict[str, object] | None`
-- Function L526: `_select_regime_thresholds(candidates: pd.DataFrame, *, requested_markets: int, min_development_entries: int, bootstrap_resamples: int, minimum_consecutive_signals: int, maximum_signal_gap_seconds: int) -> dict[str, dict[str, object]]`
-- Function L585: `_sensitivity_entries(candidates: pd.DataFrame, *, threshold: float | None, thresholds_by_regime: Mapping[str, float] | None = None, additional_entry_cost: float, max_price_age_seconds: int, minimum_consecutive_signals: int = 1, maximum_signal_gap_seconds: int = 5) -> pd.DataFrame`
-- Function L619: `_entry_diagnostics(entries: pd.DataFrame) -> dict[str, object]`
-- Function L642: `_entry_metrics_by_regime(entries: pd.DataFrame, *, requested_markets: int, bootstrap_resamples: int) -> dict[str, dict[str, object]]`
-- Function L662: `_entry_metrics(entries: pd.DataFrame, *, requested_markets: int, bootstrap_resamples: int, seed: int) -> dict[str, object]`
-- Function L704: `_validate_args(args: argparse.Namespace) -> None`
-- Function L721: `_validate_predictions(predictions: pd.DataFrame) -> None`
-- Function L731: `_validate_market_labels(*, predictions: pd.DataFrame, markets: Sequence[MarketWindow]) -> None`
-- Function L741: `main(argv: Sequence[str] | None = None) -> int`
+- Imports: `__future__, argparse, asyncio, btc_short_horizon, collections, dataclasses, httpx, json, math, numbers, numpy, pandas, pathlib, uuid`
+- Function L44: `parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace`
+- Function L59: `run(args: argparse.Namespace) -> dict[str, object]`
+- Function L235: `_maximum_prediction_offset_seconds(*, predictions: pd.DataFrame, markets_by_slug: Mapping[str, MarketWindow]) -> int`
+- Function L251: `_load_or_fetch_prices(*, cache_path: Path, markets: Sequence[MarketWindow], max_concurrency: int, maximum_prediction_offset_seconds: int) -> pd.DataFrame`
+- Function L311: `_price_cache_coverage(path: Path) -> set[str]`
+- Function L329: `_validate_price_rows(frame: pd.DataFrame) -> None`
+- Function L371: `async _fetch_market_price_batches(*, markets: Sequence[MarketWindow], cached_tokens: set[str], max_concurrency: int, maximum_prediction_offset_seconds: int) -> tuple[TokenPricePoint, ...]`
+- Function L406: `_build_candidates(*, predictions: pd.DataFrame, prices: pd.DataFrame, markets: Sequence[MarketWindow], entry_price_buffer: float, max_price_age_seconds: int) -> tuple[pd.DataFrame, dict[str, object]]`
+- Function L503: `_select_one_entry_per_market(candidates: pd.DataFrame, *, threshold: float, minimum_consecutive_signals: int = 1, maximum_signal_gap_seconds: int = 5, thresholds_by_regime: Mapping[str, float] | None = None) -> pd.DataFrame`
+- Function L564: `_select_one_entry_per_market_by_regime(candidates: pd.DataFrame, *, thresholds_by_regime: Mapping[str, float], minimum_consecutive_signals: int = 1, maximum_signal_gap_seconds: int = 5) -> pd.DataFrame`
+- Function L586: `_select_positive_confidence_threshold(sweep: Sequence[dict[str, object]], *, min_development_entries: int) -> dict[str, object] | None`
+- Function L612: `_select_regime_thresholds(candidates: pd.DataFrame, *, requested_markets: int, min_development_entries: int, bootstrap_resamples: int, minimum_consecutive_signals: int, maximum_signal_gap_seconds: int) -> dict[str, dict[str, object]]`
+- Function L672: `_sensitivity_entries(candidates: pd.DataFrame, *, threshold: float | None, thresholds_by_regime: Mapping[str, float] | None = None, additional_entry_cost: float, max_price_age_seconds: int, minimum_consecutive_signals: int = 1, maximum_signal_gap_seconds: int = 5) -> pd.DataFrame`
+- Function L717: `_entry_diagnostics(entries: pd.DataFrame) -> dict[str, object]`
+- Function L740: `_entry_metrics_by_regime(entries: pd.DataFrame, *, requested_markets: int, bootstrap_resamples: int) -> dict[str, dict[str, object]]`
+- Function L760: `_entry_metrics(entries: pd.DataFrame, *, requested_markets: int, bootstrap_resamples: int, seed: int, selection_alpha: float | None = None) -> dict[str, object]`
+- Function L872: `_validate_args(args: argparse.Namespace) -> None`
+- Function L892: `_validate_predictions(predictions: pd.DataFrame) -> None`
+- Function L934: `_validate_market_labels(*, predictions: pd.DataFrame, markets: Sequence[MarketWindow]) -> None`
+- Function L947: `main(argv: Sequence[str] | None = None) -> int`
 
 ### `scripts/btc_opening_proxy_shadow.py`
 - Imports: `__future__, argparse, asyncio, btc_short_horizon, collections, dataclasses, datetime, json, pathlib, pyarrow`

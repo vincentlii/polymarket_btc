@@ -28,8 +28,17 @@ and reporting plumbing without importing archived BTC strategy logic.
   old pair through `t0+180s` so the entire research window has one connection.
 - Evidence boundary: no profitability or deployability claim exists until real
   data passes the documented holdout and pessimistic queue/latency gates.
-- Three-minute fair-probability proxy: the reproducible exact `stride=1` run
-  used all 7,295 resolved markets and 262,620 causal five-second snapshots.
+- Model/research hardening: model inputs and probabilities now reject coercion,
+  non-finite values, invalid shapes, and inconsistent lineage. Walk-forward
+  tests are non-overlapping and group-safe; LightGBM early stopping, calibration,
+  OOF, and holdout remain disjoint. Isotonic counts unique markets. Candidate
+  and price-threshold selection use contiguous UTC-day block bootstrap with
+  multiple-comparison control. Model artifacts publish atomically and bind
+  schema/config/source/code hashes. Price-proxy persistence resets on an
+  intervening failed signal, and stress tests discard prices at or above one
+  instead of fabricating an executable price.
+- Historical three-minute fair-probability proxy: the reproducible exact
+  `stride=1` run used all 7,295 resolved markets and 262,620 causal five-second snapshots.
   Paired daily-block candidate selection retained `logistic-c0.1` because
   neither LightGBM candidate improved both log loss and Brier with positive
   95% confidence lower bounds. Its 1,345-market holdout achieved log
@@ -39,14 +48,18 @@ and reporting plumbing without importing archived BTC strategy logic.
   run the full 90/21/14/28-day protocol, and no causally available Polymarket
   implied-probability baseline exists for this period. Gamma coverage is also
   one market short of the requested 7,296. Confidence-band sample and
-  calibration checks now pass. Artifacts are in
+  calibration checks passed under its historical protocol. Artifacts are in
   `output/btc_short_horizon/research/opening-proxy-1s-postopen180-gated-20260428-20260713-v5/`.
-- Sparse Polymarket price-history proxy: frozen development thresholds produced
+  This artifact is protocol version 1 and must be retrained under version 2
+  before Shadow or promotion.
+- Historical sparse Polymarket price-history proxy: frozen development thresholds produced
   1,098 holdout entries at 2.56c/share (95% CI 0.38c to 4.75c) with price age
   capped at 15 seconds. Adding another 1c entry cost leaves 935 entries at
   1.67c/share, but its 95% CI crosses zero (-0.59c to 4.17c). One-minute price
   history is not BBO, queue, fill, fee, rebate, or latency evidence, so this
-  result prioritizes Shadow only and cannot authorize maker deployment.
+  result cannot authorize maker deployment. It predates the corrected signal
+  persistence, non-tradeable-price, and family-wise threshold rules and must be
+  rerun before it can prioritize a current Shadow candidate.
 - Legacy pre-open/revalidation strategy, historical script, runner, generic
   feature state, and their tests were removed. The only BTC 15m strategy path
   is Opening Mispricing with 36 decisions at `t0+5/10/.../180s`, two

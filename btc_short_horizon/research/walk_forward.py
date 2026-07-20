@@ -4,17 +4,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from numbers import Integral
 from typing import Mapping, Sequence
 
 
 def _as_utc(value: datetime, name: str) -> datetime:
-    if value.tzinfo is None or value.utcoffset() is None:
+    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{name} must be timezone-aware")
     return value.astimezone(UTC)
 
 
 def _require_positive_duration(name: str, value: timedelta) -> None:
-    if value <= timedelta(0):
+    if not isinstance(value, timedelta) or value <= timedelta(0):
         raise ValueError(f"{name} must be positive")
 
 
@@ -29,16 +30,28 @@ class ResearchSample:
     group_id: str = ""
 
     def __post_init__(self) -> None:
-        if not self.sample_id:
-            raise ValueError("sample_id is required")
+        if (
+            not isinstance(self.sample_id, str)
+            or not self.sample_id
+            or self.sample_id.strip() != self.sample_id
+        ):
+            raise ValueError("sample_id must be non-empty and trimmed")
         feature_ts = _as_utc(self.feature_ts, "feature_ts")
         label_available_ts = _as_utc(self.label_available_ts, "label_available_ts")
         if label_available_ts <= feature_ts:
             raise ValueError("label_available_ts must be strictly after feature_ts")
-        if self.label not in {0, 1}:
+        if (
+            isinstance(self.label, bool)
+            or not isinstance(self.label, Integral)
+            or self.label
+            not in {
+                0,
+                1,
+            }
+        ):
             raise ValueError("label must be binary")
         group_id = self.group_id or self.sample_id
-        if not group_id or group_id.strip() != group_id:
+        if not isinstance(group_id, str) or not group_id or group_id.strip() != group_id:
             raise ValueError("group_id must be non-empty and trimmed")
         object.__setattr__(self, "feature_ts", feature_ts)
         object.__setattr__(self, "label_available_ts", label_available_ts)
@@ -66,6 +79,10 @@ class WalkForwardConfig:
             ("sealed_holdout_duration", self.sealed_holdout_duration),
         ):
             _require_positive_duration(name, value)
+        if self.step_duration < self.test_duration:
+            raise ValueError(
+                "step_duration must be >= test_duration to prevent overlapping OOF tests"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,19 +101,39 @@ class WalkForwardFold:
     test_end: datetime
 
     def __post_init__(self) -> None:
+        for name in ("train_indices", "calibration_indices", "test_indices"):
+            try:
+                object.__setattr__(self, name, tuple(getattr(self, name)))
+            except TypeError as exc:
+                raise ValueError(f"{name} must be an iterable of indices") from exc
+        if isinstance(self.index, bool) or not isinstance(self.index, Integral) or self.index < 0:
+            raise ValueError("fold index must be a non-negative integer")
+        partitions = (self.train_indices, self.calibration_indices, self.test_indices)
+        for partition in partitions:
+            if len(partition) != len(set(partition)):
+                raise ValueError("fold partitions must not contain duplicate indices")
+            if any(
+                isinstance(value, bool) or not isinstance(value, Integral) or value < 0
+                for value in partition
+            ):
+                raise ValueError("fold indices must be non-negative integers")
         sets = [set(self.train_indices), set(self.calibration_indices), set(self.test_indices)]
         if any(
             left & right for position, left in enumerate(sets) for right in sets[position + 1 :]
         ):
             raise ValueError("fold partitions must not overlap")
-        if not (
-            self.train_start
-            < self.train_end
-            <= self.calibration_start
-            < self.calibration_end
-            <= self.test_start
-            < self.test_end
-        ):
+        named_times = (
+            ("train_start", self.train_start),
+            ("train_end", self.train_end),
+            ("calibration_start", self.calibration_start),
+            ("calibration_end", self.calibration_end),
+            ("test_start", self.test_start),
+            ("test_end", self.test_end),
+        )
+        times = tuple(_as_utc(value, name) for name, value in named_times)
+        for (name, _), value in zip(named_times, times, strict=True):
+            object.__setattr__(self, name, value)
+        if not (times[0] < times[1] <= times[2] < times[3] <= times[4] < times[5]):
             raise ValueError("fold time boundaries must be chronologically ordered")
         if not self.train_indices or not self.calibration_indices or not self.test_indices:
             raise ValueError("every fold partition must contain at least one sample")
@@ -111,10 +148,46 @@ class WalkForwardPlan:
     sealed_holdout_start: datetime
 
     def __post_init__(self) -> None:
+        try:
+            folds = tuple(self.folds)
+            sealed_holdout_indices = tuple(self.sealed_holdout_indices)
+        except TypeError as exc:
+            raise ValueError("walk-forward plan partitions must be iterable") from exc
+        if any(not isinstance(fold, WalkForwardFold) for fold in folds):
+            raise ValueError("walk-forward folds must contain WalkForwardFold values")
+        object.__setattr__(self, "folds", folds)
+        object.__setattr__(self, "sealed_holdout_indices", sealed_holdout_indices)
         if not self.folds:
             raise ValueError("walk-forward plan requires at least one development fold")
         if not self.sealed_holdout_indices:
             raise ValueError("walk-forward plan requires a sealed holdout")
+        if len(self.sealed_holdout_indices) != len(set(self.sealed_holdout_indices)):
+            raise ValueError("sealed holdout indices must be unique")
+        if any(
+            isinstance(value, bool) or not isinstance(value, Integral) or value < 0
+            for value in self.sealed_holdout_indices
+        ):
+            raise ValueError("sealed holdout indices must be non-negative integers")
+        object.__setattr__(
+            self,
+            "sealed_holdout_start",
+            _as_utc(self.sealed_holdout_start, "sealed_holdout_start"),
+        )
+        fold_indices = [fold.index for fold in self.folds]
+        if len(fold_indices) != len(set(fold_indices)):
+            raise ValueError("walk-forward fold indices must be unique")
+        if fold_indices != list(range(len(self.folds))):
+            raise ValueError("walk-forward folds must be ordered with contiguous indices")
+        if any(
+            current.test_end > following.test_start
+            for current, following in zip(self.folds, self.folds[1:])
+        ):
+            raise ValueError("walk-forward test windows must not overlap")
+        if self.folds[-1].test_end > self.sealed_holdout_start:
+            raise ValueError("development test windows must end before the sealed holdout")
+        test_indices = [index for fold in self.folds for index in fold.test_indices]
+        if len(test_indices) != len(set(test_indices)):
+            raise ValueError("development OOF test partitions must not overlap")
         development_indices = {
             index
             for fold in self.folds
@@ -137,10 +210,15 @@ def build_walk_forward_plan(
     effective_config = config or WalkForwardConfig()
     if not samples:
         raise ValueError("samples must not be empty")
+    if any(not isinstance(sample, ResearchSample) for sample in samples):
+        raise ValueError("samples must contain only ResearchSample values")
     if len({sample.sample_id for sample in samples}) != len(samples):
         raise ValueError("sample_id values must be unique")
     ordered_indices = tuple(
-        sorted(range(len(samples)), key=lambda index: samples[index].feature_ts)
+        sorted(
+            range(len(samples)),
+            key=lambda index: (samples[index].feature_ts, samples[index].sample_id),
+        )
     )
     first_feature_ts = samples[ordered_indices[0]].feature_ts
     last_feature_ts = samples[ordered_indices[-1]].feature_ts
@@ -253,6 +331,13 @@ def select_complete_group_indices(
 ) -> tuple[int, ...]:
     """Select only groups wholly contained by a causal time partition."""
 
+    start = _as_utc(start, "start")
+    end = _as_utc(end, "end")
+    if start >= end:
+        raise ValueError("partition start must be before end")
+    if label_deadline is not None:
+        label_deadline = _as_utc(label_deadline, "label_deadline")
+
     return _partition_indices(
         samples,
         candidates,
@@ -266,6 +351,16 @@ def select_complete_group_indices(
 def _grouped_indices(
     samples: Sequence[ResearchSample], candidates: Sequence[int]
 ) -> dict[str, tuple[int, ...]]:
+    if len(candidates) != len(set(candidates)):
+        raise ValueError("candidate indices must be unique")
+    if any(
+        isinstance(index, bool)
+        or not isinstance(index, Integral)
+        or index < 0
+        or index >= len(samples)
+        for index in candidates
+    ):
+        raise ValueError("candidate indices must be valid non-negative sample indices")
     groups: dict[str, list[int]] = {}
     for index in candidates:
         groups.setdefault(samples[index].group_id, []).append(index)

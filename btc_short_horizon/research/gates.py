@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import isfinite
+from numbers import Integral
 
 
 _DIRECTION_MIN_HOLDOUT_MARKETS = 2_500
@@ -26,6 +27,25 @@ class GateDecision:
     accepted: bool
     failed_conditions: tuple[str, ...]
 
+    def __post_init__(self) -> None:
+        if isinstance(self.failed_conditions, (str, bytes)):
+            raise ValueError("failed conditions must be an iterable of strings")
+        try:
+            object.__setattr__(self, "failed_conditions", tuple(self.failed_conditions))
+        except TypeError as exc:
+            raise ValueError("failed conditions must be iterable") from exc
+        if not isinstance(self.accepted, bool):
+            raise ValueError("accepted must be boolean")
+        if any(
+            not isinstance(value, str) or not value or value.strip() != value
+            for value in self.failed_conditions
+        ):
+            raise ValueError("failed conditions must be non-empty trimmed strings")
+        if len(self.failed_conditions) != len(set(self.failed_conditions)):
+            raise ValueError("failed conditions must be unique")
+        if self.accepted == bool(self.failed_conditions):
+            raise ValueError("accepted must be true exactly when there are no failed conditions")
+
 
 @dataclass(frozen=True, slots=True)
 class CalibrationBinEvidence:
@@ -33,9 +53,10 @@ class CalibrationBinEvidence:
     calibration_error: float
 
     def __post_init__(self) -> None:
-        if self.sample_count < 0:
-            raise ValueError("sample_count must be >= 0")
+        _require_nonnegative_integer(self.sample_count, "sample_count")
         _require_finite_nonnegative(self.calibration_error, "calibration_error")
+        if self.calibration_error > 1.0:
+            raise ValueError("calibration_error must lie in [0, 1]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,10 +70,15 @@ class DirectionGateEvidence:
     target_bins: tuple[CalibrationBinEvidence, ...]
 
     def __post_init__(self) -> None:
-        if self.sealed_holdout_markets < 0:
-            raise ValueError("sealed_holdout_markets must be >= 0")
-        if not self.target_bins:
-            raise ValueError("target_bins must not be empty")
+        try:
+            object.__setattr__(self, "target_bins", tuple(self.target_bins))
+        except TypeError as exc:
+            raise ValueError("target_bins must be iterable") from exc
+        _require_nonnegative_integer(self.sealed_holdout_markets, "sealed_holdout_markets")
+        if len(self.target_bins) != 4:
+            raise ValueError("target_bins must contain the four pre-registered confidence bands")
+        if any(not isinstance(value, CalibrationBinEvidence) for value in self.target_bins):
+            raise ValueError("target_bins must contain CalibrationBinEvidence values")
         for name in (
             "log_loss_improvement",
             "log_loss_ci_lower",
@@ -89,8 +115,7 @@ class MakerGateEvidence:
 
     def __post_init__(self) -> None:
         for name in ("total_fills", "up_fills", "down_fills"):
-            if getattr(self, name) < 0:
-                raise ValueError(f"{name} must be >= 0")
+            _require_nonnegative_integer(getattr(self, name), name)
         for name in (
             "net_ev_per_filled_share",
             "net_ev_ci_lower",
@@ -172,7 +197,8 @@ def evaluate_maker_gate(evidence: MakerGateEvidence) -> GateDecision:
 
 
 def _decision(failures: list[str]) -> GateDecision:
-    return GateDecision(accepted=not failures, failed_conditions=tuple(failures))
+    unique_failures = tuple(dict.fromkeys(failures))
+    return GateDecision(accepted=not unique_failures, failed_conditions=unique_failures)
 
 
 def _require_finite(value: float, name: str) -> None:
@@ -184,6 +210,11 @@ def _require_finite_nonnegative(value: float, name: str) -> None:
     _require_finite(value, name)
     if value < 0.0:
         raise ValueError(f"{name} must be >= 0")
+
+
+def _require_nonnegative_integer(value: int, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, Integral) or value < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
 
 
 __all__ = [

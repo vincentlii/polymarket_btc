@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from numbers import Integral
 
 import numpy as np
 
@@ -77,7 +78,8 @@ def build_opening_direction_dataset(
         if market.resolution is MarketOutcome.VOID:
             excluded_void += 1
             continue
-        assert market.label_available_ts is not None
+        if market.label_available_ts is None:
+            raise ValueError(f"resolved market {market.slug!r} is missing label availability")
         market_start_ns = _datetime_to_ns(market.t0)
         observations = tuple(observations_by_market.get(market.slug, ()))
         indexed = _index_market_observations(
@@ -158,11 +160,14 @@ def _index_market_observations(
 def _snapshot_offsets(
     *, snapshot_seconds: int, entry_start_seconds: int, entry_end_seconds: int
 ) -> tuple[int, ...]:
-    if (
+    if any(
+        isinstance(value, bool) or not isinstance(value, Integral)
+        for value in (snapshot_seconds, entry_start_seconds, entry_end_seconds)
+    ) or (
         snapshot_seconds < 1
         or entry_start_seconds < 0
         or entry_end_seconds < entry_start_seconds
-        or entry_end_seconds >= BTC_15M_MARKET_FAMILY.window_seconds
+        or entry_end_seconds > 180
     ):
         raise ValueError("opening training snapshot timing is invalid")
     first = ((entry_start_seconds + snapshot_seconds - 1) // snapshot_seconds) * snapshot_seconds
@@ -173,7 +178,12 @@ def _snapshot_offsets(
 
 
 def _datetime_to_ns(value: datetime) -> int:
-    return int(value.timestamp() * _NANOS_PER_SECOND)
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("datetime must be timezone-aware")
+    utc = value.astimezone(UTC)
+    epoch = datetime(1970, 1, 1, tzinfo=UTC)
+    delta = utc - epoch
+    return ((delta.days * 86_400 + delta.seconds) * 1_000_000 + delta.microseconds) * 1_000
 
 
 def _datetime_from_ns(value: int) -> datetime:

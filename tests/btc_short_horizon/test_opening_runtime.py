@@ -77,7 +77,7 @@ def _model_and_metadata() -> tuple[FittedDirectionModel, ModelArtifactMetadata]:
         training_end_ns=2,
         calibration_start_ns=3,
         calibration_end_ns=4,
-        data_hash="data-hash",
+        data_hash="d" * 64,
         code_revision="code-revision",
         config=model.config_dict,
     )
@@ -153,7 +153,7 @@ def test_runtime_prediction_rejects_schema_or_market_mismatch() -> None:
 
     bad_metadata = ModelArtifactMetadata(
         model_id=metadata.model_id,
-        feature_schema_hash="wrong-schema",
+        feature_schema_hash="f" * 64,
         training_start_ns=metadata.training_start_ns,
         training_end_ns=metadata.training_end_ns,
         calibration_start_ns=metadata.calibration_start_ns,

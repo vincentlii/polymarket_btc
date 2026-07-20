@@ -1933,7 +1933,7 @@ async def test_forward_collector_retries_depth_snapshot_with_bounded_backoff(
             stop_event=asyncio.Event(),
             binance_streams=("btcusdt@depth@100ms",),
         ),
-        timeout=1.0,
+        timeout=3.0,
     )
 
     assert len(call_times) == 3

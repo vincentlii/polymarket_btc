@@ -88,7 +88,7 @@ def _model() -> tuple[FittedDirectionModel, ModelArtifactMetadata]:
         training_end_ns=2,
         calibration_start_ns=3,
         calibration_end_ns=4,
-        data_hash="data-hash",
+        data_hash="d" * 64,
         code_revision="revision",
         config=model.config_dict,
     )

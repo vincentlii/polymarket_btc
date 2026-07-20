@@ -20,7 +20,7 @@ def test_direction_gate_requires_sample_size_metrics_ci_slope_and_target_bins() 
             brier_improvement=0.001,
             brier_ci_lower=0.0001,
             calibration_slope=1.0,
-            target_bins=(CalibrationBinEvidence(sample_count=300, calibration_error=0.03),),
+            target_bins=(CalibrationBinEvidence(sample_count=300, calibration_error=0.03),) * 4,
         )
     )
 
