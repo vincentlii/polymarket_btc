@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isclose, isfinite
 from pathlib import Path
 import tomllib
 from typing import Mapping
 
 from prediction_market_extensions.backtesting._execution_config import (
     ExecutionModelConfig,
+    SameTimestampPriority,
     StaticLatencyConfig,
 )
 
@@ -54,6 +56,7 @@ class ForwardCollectionConfig:
 class ExecutionScenario:
     name: str
     execution: ExecutionModelConfig
+    formal_grid_component: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,13 +117,19 @@ def load_btc_project_config(path: Path) -> BtcProjectConfig:
         max_shares=_positive_float(maker_section, "max_shares"),
         safety_buffer=_positive_float(maker_section, "safety_buffer"),
         minimum_edge=_nonnegative_float(maker_section, "minimum_edge"),
-        maker_fee_per_share=_nonnegative_float(maker_section, "maker_fee_per_share"),
         entry_start_seconds=_positive_float(maker_section, "entry_start_seconds"),
         entry_end_seconds=_positive_float(maker_section, "entry_end_seconds"),
-        edge_persistence_seconds=_nonnegative_float(maker_section, "edge_persistence_seconds"),
+        confirmation_signals=_positive_int(maker_section, "confirmation_signals"),
+        signal_cadence_seconds=_positive_float(maker_section, "signal_cadence_seconds"),
+        signal_cadence_tolerance_seconds=_nonnegative_float(
+            maker_section, "signal_cadence_tolerance_seconds"
+        ),
         max_work_seconds=_positive_float(maker_section, "max_work_seconds"),
         stale_after_seconds=_positive_float(maker_section, "stale_after_seconds"),
         cancel_probability_drop=_positive_float(maker_section, "cancel_probability_drop"),
+        max_visible_depth_fraction=_probability_excluding_zero(
+            maker_section, "max_visible_depth_fraction"
+        ),
         price_level_tick_offsets=tuple(
             _nonnegative_int_list(maker_section, "price_level_tick_offsets")
         ),
@@ -129,6 +138,13 @@ def load_btc_project_config(path: Path) -> BtcProjectConfig:
         timing.entry_start_seconds
     ) or maker.entry_end_seconds != float(timing.entry_end_seconds):
         raise ValueError("maker entry window must match research entry window")
+    if not isclose(
+        maker.signal_cadence_seconds * 1_000,
+        timing.model_cadence_ms,
+        rel_tol=0.0,
+        abs_tol=1e-9,
+    ):
+        raise ValueError("maker signal cadence must match research model cadence")
     if collection.opening_handoff_delay_seconds < timing.entry_end_seconds:
         raise ValueError("opening handoff must cover the complete research entry window")
     sources = _data_sources(root, raw)
@@ -137,6 +153,7 @@ def load_btc_project_config(path: Path) -> BtcProjectConfig:
         raise ValueError("execution_scenarios must not be empty")
     if len({scenario.name for scenario in scenarios}) != len(scenarios):
         raise ValueError("execution scenario names must be unique")
+    _validate_formal_scenario_grid(scenarios)
     return BtcProjectConfig(
         paths=paths,
         primary_family=primary_family,
@@ -157,18 +174,67 @@ def _scenario(section: Mapping[str, object]) -> ExecutionScenario:
         update_latency_ms=_nonnegative_float(section, "update_latency_ms"),
         cancel_latency_ms=_nonnegative_float(section, "cancel_latency_ms"),
     )
+    formal_grid_component = _bool(section, "formal_grid_component")
+    execution = ExecutionModelConfig(
+        queue_position=_bool(section, "queue_position"),
+        latency_model=latency,
+        maker_rebates_enabled=_bool(section, "maker_rebates_enabled"),
+        trade_execution_size_multiplier=_probability_excluding_zero(
+            section, "trade_execution_size_multiplier"
+        ),
+        same_timestamp_priority=SameTimestampPriority(_text(section, "same_timestamp_priority")),
+    )
+    if formal_grid_component:
+        if not execution.queue_position:
+            raise ValueError("a conclusion-eligible scenario requires queue_position=true")
+        if execution.maker_rebates_enabled:
+            raise ValueError("a conclusion-eligible scenario must disable maker rebates")
+        if latency.cancel_latency_ms <= 0.0 or latency.insert_latency_ms <= 0.0:
+            raise ValueError(
+                "a conclusion-eligible scenario requires positive insert and cancel latency"
+            )
     return ExecutionScenario(
         name=name,
-        execution=ExecutionModelConfig(
-            queue_position=_bool(section, "queue_position"),
-            latency_model=latency,
-            prob_fill_on_limit=_probability(section, "prob_fill_on_limit"),
-            min_synthetic_book_size=_positive_float(section, "min_synthetic_book_size"),
-            synthetic_book_depth_multiplier=_positive_float(
-                section, "synthetic_book_depth_multiplier"
-            ),
-        ),
+        execution=execution,
+        formal_grid_component=formal_grid_component,
     )
+
+
+def _validate_formal_scenario_grid(scenarios: tuple[ExecutionScenario, ...]) -> None:
+    formal = tuple(scenario for scenario in scenarios if scenario.formal_grid_component)
+    if not formal:
+        return
+    multipliers = {scenario.execution.trade_execution_size_multiplier for scenario in formal}
+    if multipliers != {0.5, 1.0}:
+        raise ValueError(
+            "conclusion-eligible scenarios must contain exactly the 0.5 and 1.0 trade-volume grid"
+        )
+    required_priorities = set(SameTimestampPriority)
+    for multiplier in multipliers:
+        priorities = {
+            scenario.execution.same_timestamp_priority
+            for scenario in formal
+            if scenario.execution.trade_execution_size_multiplier == multiplier
+        }
+        if priorities != required_priorities:
+            raise ValueError(
+                "each conclusion-eligible trade-volume setting must cover both tie orderings"
+            )
+    if len(formal) != 4:
+        raise ValueError("conclusion-eligible execution grid must contain exactly four scenarios")
+    latency_signatures = {
+        (
+            scenario.execution.latency_model.base_latency_ms,
+            scenario.execution.latency_model.insert_latency_ms,
+            scenario.execution.latency_model.update_latency_ms,
+            scenario.execution.latency_model.cancel_latency_ms,
+        )
+        for scenario in formal
+    }
+    if len(latency_signatures) != 1:
+        raise ValueError(
+            "conclusion-eligible scenario comparisons must use one identical latency profile"
+        )
 
 
 def _forward_collection(section: Mapping[str, object]) -> ForwardCollectionConfig:
@@ -308,12 +374,15 @@ def _positive_float(section: Mapping[str, object], name: str) -> float:
 
 
 def _nonnegative_float(section: Mapping[str, object], name: str) -> float:
+    raw_value = section.get(name)
+    if isinstance(raw_value, bool):
+        raise ValueError(f"{name} must be numeric")
     try:
-        value = float(section.get(name))
+        value = float(raw_value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{name} must be numeric") from exc
-    if value < 0.0:
-        raise ValueError(f"{name} must be >= 0")
+    if not isfinite(value) or value < 0.0:
+        raise ValueError(f"{name} must be finite and >= 0")
     return value
 
 
@@ -321,6 +390,13 @@ def _probability(section: Mapping[str, object], name: str) -> float:
     value = _nonnegative_float(section, name)
     if value > 1.0:
         raise ValueError(f"{name} must be <= 1")
+    return value
+
+
+def _probability_excluding_zero(section: Mapping[str, object], name: str) -> float:
+    value = _probability(section, name)
+    if value == 0.0:
+        raise ValueError(f"{name} must be > 0")
     return value
 
 

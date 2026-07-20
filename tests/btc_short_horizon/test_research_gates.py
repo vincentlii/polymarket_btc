@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from btc_short_horizon.research.gates import (
     CalibrationBinEvidence,
     DirectionGateEvidence,
@@ -34,9 +36,9 @@ def test_opening_mispricing_and_maker_gates_return_actionable_failure_reasons() 
     )
     maker = evaluate_maker_gate(
         MakerGateEvidence(
-            total_fills=499,
-            up_fills=149,
-            down_fills=149,
+            total_fill_events=499,
+            up_fill_events=149,
+            down_fill_events=149,
             net_ev_per_filled_share=0.004,
             net_ev_ci_lower=0.0,
             pnl_without_top_one_percent=-0.01,
@@ -44,9 +46,11 @@ def test_opening_mispricing_and_maker_gates_return_actionable_failure_reasons() 
             largest_month_pnl_share=0.51,
             capacity_net_edge_ci_lower=0.0,
             rebate_free=False,
-            pessimistic_queue=False,
             p99_latency=False,
+            formal_scenario_grid_complete=False,
+            trade_volume_robust=False,
             trade_order_robust=False,
+            cancel_race_robust=False,
         )
     )
 
@@ -64,7 +68,14 @@ def test_opening_mispricing_and_maker_gates_return_actionable_failure_reasons() 
         "single_month_pnl_concentration",
         "capacity_ci_lower_not_positive",
         "rebate_free_requirement_failed",
-        "pessimistic_queue_requirement_failed",
         "p99_latency_requirement_failed",
+        "formal_scenario_grid_incomplete",
+        "trade_volume_stress_not_robust",
         "trade_ordering_not_robust",
+        "cancel_race_not_robust",
     } <= set(maker.failed_conditions)
+
+
+def test_gate_evidence_rejects_boolean_numeric_values() -> None:
+    with pytest.raises(ValueError, match="numeric"):
+        OpeningMispricingGateEvidence(paired_net_edge_ci_lower=True)

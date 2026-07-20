@@ -160,3 +160,34 @@ WebSocket event / 5s decision tick
 5. 只在订单参数确定后签名。若以后要维护短寿命 pre-signed price grid，必须先取得 timestamp-age 实测证据并评估泄漏/错误提交风险。
 6. 保留 REST heartbeat、启动检查和重连对账；删除的只能是实时行情与订单状态的 REST 轮询。
 7. 首尔 VPS 首次只运行 collector、Shadow 与 dashboard，并记录至少一周网络分布；未来是否迁往更靠近 `eu-west-2` 的合规区域由实测决定。法兰克福当前官方规则下不可作为开仓部署默认值。
+
+## 2026-07-20 回放执行契约补充
+
+历史 maker 结论不再依赖单一的“悲观场景”。正式证据必须同时包含四个
+P99 组件：完整/50% `TradeTick` 成交量，分别配合
+`book_before_trade` 与 `trade_before_book` 的同时间戳排序。四个组件必须使用
+相同的 insert/update/cancel latency，开启 Nautilus queue position，并关闭
+maker rebate。50% 成交量只是政策压力，不代表能够从 L2 恢复真实 FIFO。
+
+当前 P99 参数（base 150 ms、insert 50 ms、update 25 ms、cancel 100 ms）仍是
+部署前压力值，不是实测分布。Minimum-size Canary 必须重新测量完整链路并替换
+这些值；在此之前，任何单一组件都带有
+`standalone_strategy_conclusion=false`，不能生成 Maker Go。
+
+正式回放还必须满足以下失败关闭条件：
+
+- 所有订单均为 `post_only`，所有实际 fill 均为 maker；
+- maker commission 与 rebate 都为零；
+- `cancel_rejected`、提前终止或未运行到 `label_available_ts` 均使结果无效；
+- Up/Down 两个结果必须互补，event-level partial fills 必须与 Nautilus
+  order-level 汇总在数量、加权价格和 commission 上一致；
+- 1/3/10/30/60 秒 markout 必须记录其盘口时间与 book age，不能把旧盘口静默
+  当成新报价；
+- 真实引擎 fixture 必须持续覆盖 insert-latency post-only race、cancel-latency
+  partial fill race、multi-layer rejection 和 GTC 最大工作时间。
+
+当前官方费用边界为：maker 不收 trading fee；若做诊断性 rebate 估算，crypto、
+sports 和其他合格类别当前分别使用 20%、15% 和 25% 分成。正式 BTC 结论始终
+禁用 rebate，因为日级 payout、最低累计金额与其他 maker 的钱包级状态无法由
+逐笔历史回放精确恢复。参考 [Fees](https://docs.polymarket.com/trading/fees) 与
+[Maker Rebates](https://docs.polymarket.com/market-makers/maker-rebates)。

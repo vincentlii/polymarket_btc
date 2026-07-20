@@ -206,6 +206,7 @@ Detailed guides have been filed away in the [docs index](https://evan-kolberg.gi
   - [部署区域与资格的关键修正](https://evan-kolberg.github.io/prediction-market-backtesting/btc-execution-latency-research/#部署区域与资格的关键修正)
   - [截至 2026-07-16 的不确定性](https://evan-kolberg.github.io/prediction-market-backtesting/btc-execution-latency-research/#截至-2026-07-16-的不确定性)
   - [对项目路线的直接建议](https://evan-kolberg.github.io/prediction-market-backtesting/btc-execution-latency-research/#对项目路线的直接建议)
+  - [2026-07-20 回放执行契约补充](https://evan-kolberg.github.io/prediction-market-backtesting/btc-execution-latency-research/#2026-07-20-回放执行契约补充)
 - [BTC VPS Operations](https://evan-kolberg.github.io/prediction-market-backtesting/btc-vps-operations/)
   - [Scope](https://evan-kolberg.github.io/prediction-market-backtesting/btc-vps-operations/#scope)
   - [Runtime Boundary](https://evan-kolberg.github.io/prediction-market-backtesting/btc-vps-operations/#runtime-boundary)

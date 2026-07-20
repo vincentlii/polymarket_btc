@@ -15,6 +15,7 @@ from btc_short_horizon.strategy.types import (
     OutcomeBooks,
     SideBook,
     TokenSide,
+    VisibleBookLevel,
 )
 
 __all__ = [
@@ -29,6 +30,7 @@ __all__ = [
     "SideBook",
     "StrategyPhase",
     "TokenSide",
+    "VisibleBookLevel",
     "evaluate_cancellation",
     "plan_opening_mispricing_orders",
 ]

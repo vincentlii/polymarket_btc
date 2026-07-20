@@ -14,8 +14,10 @@ features, models, strategy, reports, and live safety layer.
 - Archived BTC strategies and models are not imported or used as research
   inputs.
 - The primary path is passive, post-only buying and hold-to-resolution.
-- Rebate-free, pessimistic queue, and latency-stressed results are the only
-  results eligible for a strategy conclusion.
+- Rebate-free, queue-enabled, P99-latency results are the only inputs eligible
+  for a strategy conclusion. A conclusion requires the complete four-component
+  trade-volume/timestamp-order robustness grid; no single replay run is a
+  strategy result.
 
 ## Data Flow
 
@@ -52,7 +54,7 @@ raw market/BTC feeds
 | Research | `btc_short_horizon.research` | Group-safe walk-forward splits, OOF output, a quick Binance feasibility proxy, and machine-evaluated fair-probability/opening-mispricing/maker Go/No-Go gates. |
 | Strategy | `btc_short_horizon.strategy` | Pure post-only maker planning, cancellation decisions, and one-placement lifecycle accounting. |
 | Replay | `btc_short_horizon.backtest` | A dual-token `BookReplay` with causal `BtcOpeningMispricingSignal` auxiliary data; it reuses the upstream engine rather than creating another simulator. |
-| Reporting | `btc_short_horizon.reporting` | Atomic required artifact bundle and probability/fill attribution metrics. |
+| Reporting | `btc_short_horizon.reporting` | Immutable whole-directory artifact publication, event-level fill reconciliation, probability/fill attribution, markout quality, and lifecycle metrics. |
 | Live | `btc_short_horizon.live` | Shadow-default service, append-only WAL, current CLOB V2 gateway, heartbeat cancellation, reconciliation, and canary caps. |
 
 ## Configuration
@@ -115,9 +117,19 @@ closed on a collision. It is distinct from
 the first `data_sources` entry, which is a PMXT vendor-archive mirror at
 `data/pmxt_raw` for BookReplay. Do not point both settings at the same directory.
 
-The `zero` scenario is diagnostic only. Strategy conclusions must use
-`p99_pessimistic`, which keeps queue modelling enabled and explicitly stresses
-insert, update, and cancellation latency.
+The `zero` and `p95` scenarios are diagnostic only. Strategy conclusions must
+survive all four formal components:
+
+- full trade volume with book-before-trade ties;
+- full trade volume with trade-before-book ties;
+- 50% trade-volume stress with book-before-trade ties;
+- 50% trade-volume stress with trade-before-book ties.
+
+All four use the same queue-enabled P99 insert/update/cancel latency profile,
+disable maker rebates, and carry `standalone_strategy_conclusion=false` in the
+manifest. The 50% multiplier is a policy stress, not a calibrated estimate of
+true L3 queue position. The P99 values remain provisional until minimum-size
+Canary telemetry replaces them.
 
 ## Data Contracts
 
@@ -136,6 +148,14 @@ PMXT v2 records retain source time as `ts_event` and exporter receive time as
 `ts_init`. Its `last_trade_price` rows are converted to `TradeTick` evidence
 for L2 matching. L2 data does not recover L3 FIFO order position; queue results
 remain a stressed heuristic, not a claim of exact fills.
+
+At equal `ts_init`, the replay explicitly tests both book-before-trade and
+trade-before-book ordering. Trade-size stress rounds down at instrument
+precision and never fabricates extra execution volume. Formal replay requires
+the complete `t0+5/10/.../180s` signal grid, caps order-book evidence at market
+close, then advances the engine with a non-price boundary event to the causal
+`label_available_ts`. Final outcome metadata remains outside the strategy
+event stream.
 
 The forward collector stores accepted, normalized public messages as append-only
 Parquet. Each part manifest carries duplicate and gap counts for its partition.
@@ -303,16 +323,27 @@ regimes, so a later regime never replaces an earlier qualifying entry. A
 candidate must appear in two consecutive model signals, five seconds apart,
 then gets one placement cycle at pre-registered passive price levels. It never
 lowers an order price merely to manufacture apparent edge. The current maker
-configuration remains a conservative 10c model-edge requirement plus a
-separate 1c safety buffer; lower research-proxy thresholds are not execution
-authorization.
+configuration remains a conservative 10c executable probability-edge
+requirement plus a separate 1c safety buffer; lower research-proxy thresholds
+are not execution authorization.
+
+The execution books are a separate causal dependency from the prediction
+features. Both token books must have a valid L2 state whose last `ts_init` is no
+more than `stale_after_seconds` old at placement. The strategy rechecks both
+book ages on every five-second signal and every token-book update while orders
+are working; a missing, future-dated, invalid, or stale leg causes rejection or
+cancel rather than allowing a fresh model score to trade against an old book.
 
 At each decision point the strategy evaluates both sides:
 
 ```text
-edge(up) = p_fair(up) - passive_up_price - maker_fee - safety_buffer
-edge(down) = (1-p_fair(up)) - passive_down_price - maker_fee - safety_buffer
+edge(up) = p_fair(up) - passive_up_price - safety_buffer
+edge(down) = (1-p_fair(up)) - passive_down_price - safety_buffer
 ```
+
+Post-only maker commission is zero in the formal path. Actual commission and
+any diagnostic rebate are reconciled from fill events as separate ledger
+attribution; they are never hidden inside the probability edge.
 
 `p_market` is an observed execution comparison, not a feature in the current
 fair-probability model. This prevents a Binance-only historical proxy from
@@ -329,7 +360,8 @@ Isotonic eligibility counts unique markets rather than correlated snapshots,
 and every development prediction is OOF. `btc_short_horizon.research.gates`
 encodes acceptance checks; an opening-mispricing gate requires a positive
 paired held-out net-edge confidence lower bound, and the maker gate additionally
-requires real replay fills under the pessimistic queue/P99 latency scenario.
+requires real event-level fills that remain positive across the complete
+queue-enabled P99 trade-volume/timestamp-order robustness grid.
 
 ### Fast Fair-Probability Feasibility Proxy
 
@@ -467,12 +499,13 @@ uv run python backtests/polymarket_btc_15m_opening_mispricing_maker.py \
   --rule-epoch chainlink-btc-usd-v1 \
   --start-time 2026-04-13T00:00:00Z \
   --end-time 2026-04-13T00:01:00Z \
-  --scenario p99_pessimistic \
+  --scenario p95 \
   --artifact-directory /path/to/output/run-001 \
   --code-revision "$(git rev-parse HEAD)" \
   --upstream-revision 8d694143836f486e053e157a31484e8ad471fe6f \
-  --model-hash <model-sha256> \
-  --raw-data-hash <raw-manifest-sha256>
+  --signal-manifest /path/to/shadow/metrics.json \
+  --model-directory /path/to/model-artifact \
+  --pmxt-coverage /path/to/coverage/pmxt_coverage.json
 ```
 
 The token-index flags default to `0` for Up and `1` for Down only because the
@@ -481,8 +514,41 @@ metadata during the framework audit. Override `--up-token-index` and
 `--down-token-index` when the archive order differs.
 
 The output directory contains `run_manifest.json`, `data_quality.json`, six
-Parquet tables, `metrics.json`, and a summary `report.html`. A missing model or
-raw data hash is an error; the runner never invents lineage.
+Parquet tables, `metrics.json`, and a summary `report.html`. The target must be
+new: the complete bundle is written to a same-volume staging directory and
+published by one rename, so an interrupted rerun cannot mix old and new files.
+A signal manifest must bind the exact model ID, model SHA-256, feature schema,
+market, ingest version, prediction count, and zero-order Shadow origin. The
+actual model directory is also mandatory: the runner validates its metadata
+contract and recomputes `model.joblib` SHA-256, which must match both the
+metadata and Shadow manifest. The
+PMXT coverage artifact must bind the replay window and both catalog token IDs,
+contain positive L2/TradeTick counts, report no archive gap, and include a
+canonical SHA-256 digest of every reconstructed L2 event and TradeTick for each
+token. The replay loader recomputes those content digests before starting the
+engine, so a mutable cache or changed archive response fails closed instead of
+silently reusing an old coverage result. Their file hashes, the project config
+hash, market input hash, and signal Parquet hash are recorded in
+`run_manifest.json`; code/upstream revisions must be full Git hashes, and the
+runner no longer accepts operator-typed model/raw hashes as evidence.
+
+The one-minute example is diagnostic. A formal component must use a resolved
+catalog entry, run through `label_available_ts`, provide the complete 36-signal
+grid, and use one of the four `p99_*_volume_*_first` scenarios. All four
+component artifacts must be aggregated before constructing
+`MakerGateEvidence`.
+
+`fills.parquet` is built from each actual `OrderFilled` event, including
+partial fills during cancel latency. Nautilus' order-level fill report is used
+only as an independent reconciliation ledger for quantity, weighted price,
+instrument, and commission. Each fill records probability attribution and
+1/3/10/30/60-second token-mid markouts. Markout rows include the exact last
+book timestamp and book age; an old book is visible evidence quality, not
+silently labeled fresh. Formal evidence rejects non-maker fills, nonzero maker
+commission/rebate, cancel rejection, early termination, incomplete settlement,
+duplicate/empty fill identity, non-complementary Up/Down outcomes, non-finite or
+missing ledger fields, or any missing/duplicate/mistimed 1/3/10/30/60-second
+markout row.
 
 ## Dashboard Observability
 
@@ -598,8 +664,8 @@ evidence is required for any new promotion decision.
 
 These results still cannot establish passive fills, queue position, or
 latency-adjusted maker P&L. No market advances beyond shadow until synchronized
-BookReplay evidence passes the pessimistic queue/P99 latency gates using
-reproducible raw manifests.
+BookReplay evidence passes every component of the queue-enabled P99
+trade-volume/timestamp-order robustness grid using reproducible raw manifests.
 
 A bounded PMXT v2 audit of the 2026-07-13T04 UTC raw hour found zero rows for
 all four Gamma-verified BTC 15m conditions in the local archive file. The

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from numbers import Integral, Real
 from pathlib import Path
 from typing import Sequence
 
@@ -70,24 +71,52 @@ def _signal_from_record(record: dict[str, object]) -> BtcOpeningMispricingSignal
     if missing:
         raise ValueError(f"signal parquet is missing required fields: {missing}")
     signal = BtcOpeningMispricingSignal(
-        market_slug=str(record["market_slug"]),
-        model_version=str(record["model_version"]),
-        feature_schema_hash=str(record["feature_schema_hash"]),
-        market_window_start_ts_ns=int(record["market_window_start_ts_ns"]),
-        p_up=float(record["p_up"]),
-        p_boundary_up=float(record["p_boundary_up"]),
-        p_market_mid_up=float(record["p_market_mid_up"]),
-        data_age_seconds=float(record["data_age_seconds"]),
-        has_data_gap=bool(record["has_data_gap"]),
-        structure_valid=bool(record["structure_valid"]),
-        tick_unchanged=bool(record["tick_unchanged"]),
-        fee_unchanged=bool(record["fee_unchanged"]),
-        latency_healthy=bool(record["latency_healthy"]),
-        ts_event=int(record["ts_event"]),
-        ts_init=int(record["ts_init"]),
+        market_slug=_text(record, "market_slug"),
+        model_version=_text(record, "model_version"),
+        feature_schema_hash=_text(record, "feature_schema_hash"),
+        market_window_start_ts_ns=_integer(record, "market_window_start_ts_ns"),
+        p_up=_real(record, "p_up"),
+        p_boundary_up=_real(record, "p_boundary_up"),
+        p_market_mid_up=_real(record, "p_market_mid_up"),
+        data_age_seconds=_real(record, "data_age_seconds"),
+        has_data_gap=_boolean(record, "has_data_gap"),
+        structure_valid=_boolean(record, "structure_valid"),
+        tick_unchanged=_boolean(record, "tick_unchanged"),
+        fee_unchanged=_boolean(record, "fee_unchanged"),
+        latency_healthy=_boolean(record, "latency_healthy"),
+        ts_event=_integer(record, "ts_event"),
+        ts_init=_integer(record, "ts_init"),
     )
     validate_opening_mispricing_signal(signal)
     return signal
+
+
+def _text(record: dict[str, object], field: str) -> str:
+    value = record[field]
+    if not isinstance(value, str):
+        raise TypeError(f"{field} must be a string")
+    return value
+
+
+def _integer(record: dict[str, object], field: str) -> int:
+    value = record[field]
+    if isinstance(value, bool) or not isinstance(value, Integral):
+        raise TypeError(f"{field} must be an integer")
+    return int(value)
+
+
+def _real(record: dict[str, object], field: str) -> float:
+    value = record[field]
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise TypeError(f"{field} must be numeric")
+    return float(value)
+
+
+def _boolean(record: dict[str, object], field: str) -> bool:
+    value = record[field]
+    if not isinstance(value, bool):
+        raise TypeError(f"{field} must be bool")
+    return value
 
 
 def _signal_sort_key(signal: BtcOpeningMispricingSignal) -> tuple[int, int, str, str, str]:

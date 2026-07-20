@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from btc_short_horizon.backtest.signal_io import (
@@ -76,6 +78,17 @@ def test_signal_parquet_round_trip_is_validated_and_timestamp_ordered(tmp_path: 
     assert [signal.p_up for signal in loaded] == pytest.approx([0.64, 0.64])
 
 
+def test_signal_parquet_reader_rejects_boolean_string_coercion(tmp_path: Path) -> None:
+    path = tmp_path / "opening-mispricing-signals.parquet"
+    write_opening_mispricing_signals(path, (to_opening_mispricing_signal(_prediction()),))
+    record = pq.read_table(path).to_pylist()[0]
+    record["has_data_gap"] = "false"
+    pq.write_table(pa.Table.from_pylist([record]), path)
+
+    with pytest.raises(TypeError, match="has_data_gap"):
+        read_opening_mispricing_signals(path)
+
+
 def test_signal_entry_rejects_quality_failure_and_ages_during_replay() -> None:
     signal = to_opening_mispricing_signal(_prediction())
 
@@ -98,3 +111,23 @@ def test_signal_entry_rejects_quality_failure_and_ages_during_replay() -> None:
         )
         == "data_gap"
     )
+
+
+def test_signal_entry_validates_types_before_interpreting_quality_flags() -> None:
+    signal = to_opening_mispricing_signal(_prediction())
+    signal.has_data_gap = "false"  # type: ignore[assignment]
+
+    with pytest.raises(TypeError, match="has_data_gap"):
+        opening_signal_entry_rejection_reason(
+            signal,
+            now_ts_ns=2_000,
+            stale_after_seconds=1.0,
+        )
+
+    signal.has_data_gap = False
+    with pytest.raises(ValueError, match="stale_after_seconds"):
+        opening_signal_entry_rejection_reason(
+            signal,
+            now_ts_ns=2_000,
+            stale_after_seconds=True,
+        )

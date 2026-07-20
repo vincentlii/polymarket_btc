@@ -10,6 +10,7 @@ from btc_short_horizon.strategy import (
     SideBook,
     StrategyPhase,
     TokenSide,
+    VisibleBookLevel,
     evaluate_cancellation,
     plan_opening_mispricing_orders,
 )
@@ -17,8 +18,20 @@ from btc_short_horizon.strategy import (
 
 def _books() -> OutcomeBooks:
     return OutcomeBooks(
-        up=SideBook(token_id="up-token", best_bid=0.60, best_ask=0.61, tick_size=0.01),
-        down=SideBook(token_id="down-token", best_bid=0.34, best_ask=0.35, tick_size=0.01),
+        up=SideBook(
+            token_id="up-token",
+            bids=tuple(VisibleBookLevel(price=price, size=100.0) for price in (0.60, 0.59, 0.58)),
+            asks=(VisibleBookLevel(price=0.61, size=100.0),),
+            tick_size=0.01,
+            minimum_order_size=1.0,
+        ),
+        down=SideBook(
+            token_id="down-token",
+            bids=tuple(VisibleBookLevel(price=price, size=100.0) for price in (0.34, 0.33, 0.32)),
+            asks=(VisibleBookLevel(price=0.35, size=100.0),),
+            tick_size=0.01,
+            minimum_order_size=1.0,
+        ),
     )
 
 
@@ -30,10 +43,13 @@ def _config(**overrides: object) -> MakerStrategyConfig:
         "minimum_edge": 0.01,
         "entry_start_seconds": 3.0,
         "entry_end_seconds": 180.0,
-        "edge_persistence_seconds": 2.0,
+        "confirmation_signals": 2,
+        "signal_cadence_seconds": 5.0,
         "max_work_seconds": 60.0,
         "stale_after_seconds": 1.0,
         "cancel_probability_drop": 0.03,
+        "max_visible_depth_fraction": 1.0,
+        "price_level_tick_offsets": (0, 1, 2),
     }
     values.update(overrides)
     return MakerStrategyConfig(**values)
@@ -42,8 +58,8 @@ def _config(**overrides: object) -> MakerStrategyConfig:
 def _up_plan():
     decision = plan_opening_mispricing_orders(
         market_slug="btc-updown-15m-1776038400",
+        p_boundary_up=0.65,
         p_up=0.72,
-        p_market_mid_up=0.63,
         books=_books(),
         decision_ts_ns=5_000_000_000,
         elapsed_seconds=5.0,
@@ -68,12 +84,15 @@ def test_plan_selects_up_from_fair_probability_and_pre_registered_passive_levels
 def test_plan_selects_down_and_does_not_invent_a_deeper_price_to_create_edge() -> None:
     down = plan_opening_mispricing_orders(
         market_slug="btc-updown-15m-1776038400",
+        p_boundary_up=0.55,
         p_up=0.40,
-        p_market_mid_up=0.63,
         books=_books(),
         decision_ts_ns=5_000_000_000,
         elapsed_seconds=5.0,
-        config=_config(structure=LayerStructure.SINGLE),
+        config=_config(
+            structure=LayerStructure.SINGLE,
+            price_level_tick_offsets=(0,),
+        ),
     )
 
     assert down.plan is not None
@@ -84,12 +103,16 @@ def test_plan_selects_down_and_does_not_invent_a_deeper_price_to_create_edge() -
 
     rejected = plan_opening_mispricing_orders(
         market_slug="btc-updown-15m-1776038400",
+        p_boundary_up=0.60,
         p_up=0.63,
-        p_market_mid_up=0.60,
         books=_books(),
         decision_ts_ns=5_000_000_000,
         elapsed_seconds=5.0,
-        config=_config(structure=LayerStructure.SINGLE, safety_buffer=0.03),
+        config=_config(
+            structure=LayerStructure.SINGLE,
+            safety_buffer=0.03,
+            price_level_tick_offsets=(0,),
+        ),
     )
 
     assert not rejected.accepted
@@ -99,8 +122,8 @@ def test_plan_selects_down_and_does_not_invent_a_deeper_price_to_create_edge() -
 def test_plan_respects_opening_entry_window() -> None:
     decision = plan_opening_mispricing_orders(
         market_slug="btc-updown-15m-1776038400",
+        p_boundary_up=0.65,
         p_up=0.72,
-        p_market_mid_up=0.63,
         books=_books(),
         decision_ts_ns=2_000_000_000,
         elapsed_seconds=2.0,
@@ -109,6 +132,54 @@ def test_plan_respects_opening_entry_window() -> None:
 
     assert not decision.accepted
     assert decision.reason == "outside_entry_window"
+
+
+def test_plan_caps_each_layer_by_visible_depth_and_rejects_below_venue_minimum() -> None:
+    capped = plan_opening_mispricing_orders(
+        market_slug="btc-updown-15m-1776038400",
+        p_boundary_up=0.65,
+        p_up=0.72,
+        books=_books(),
+        decision_ts_ns=5_000_000_000,
+        elapsed_seconds=5.0,
+        config=_config(
+            structure=LayerStructure.SINGLE,
+            max_shares=10.0,
+            max_visible_depth_fraction=0.05,
+            price_level_tick_offsets=(0,),
+        ),
+    )
+
+    assert capped.plan is not None
+    assert capped.plan.layers[0].size == pytest.approx(5.0)
+    assert capped.plan.layers[0].visible_depth_fraction == pytest.approx(0.05)
+
+    too_small_book = OutcomeBooks(
+        up=SideBook(
+            token_id="up-token",
+            bids=(VisibleBookLevel(price=0.60, size=50.0),),
+            asks=(VisibleBookLevel(price=0.61, size=50.0),),
+            tick_size=0.01,
+            minimum_order_size=5.0,
+        ),
+        down=_books().down,
+    )
+    rejected = plan_opening_mispricing_orders(
+        market_slug="btc-updown-15m-1776038400",
+        p_boundary_up=0.65,
+        p_up=0.72,
+        books=too_small_book,
+        decision_ts_ns=5_000_000_000,
+        elapsed_seconds=5.0,
+        config=_config(
+            structure=LayerStructure.SINGLE,
+            max_shares=10.0,
+            max_visible_depth_fraction=0.05,
+            price_level_tick_offsets=(0,),
+        ),
+    )
+
+    assert not rejected.accepted
 
 
 @pytest.mark.parametrize(

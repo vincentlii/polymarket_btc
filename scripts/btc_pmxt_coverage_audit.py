@@ -22,6 +22,9 @@ from prediction_market_extensions.backtesting.data_sources.pmxt import (  # noqa
     RunnerPolymarketPMXTDataLoader,
     configured_pmxt_data_source,
 )
+from prediction_market_extensions.adapters.prediction_market import (  # noqa: E402
+    replay_records_sha256,
+)
 
 from btc_short_horizon.config import load_btc_project_config  # noqa: E402
 from btc_short_horizon.data import read_market_catalog  # noqa: E402
@@ -132,10 +135,16 @@ async def _audit(
         "market_slug": market_slug,
         "window": {"start": start_time.isoformat(), "end": end_time.isoformat()},
         "tokens": {
-            "up": _token_summary(up, trade_tick_count=len(up_trades), gap_hours=up_gap_hours),
+            "up": _token_summary(
+                up,
+                book_records=up_records,
+                trades=up_trades,
+                gap_hours=up_gap_hours,
+            ),
             "down": _token_summary(
                 down,
-                trade_tick_count=len(down_trades),
+                book_records=down_records,
+                trades=down_trades,
                 gap_hours=down_gap_hours,
             ),
         },
@@ -155,14 +164,16 @@ async def _audit(
 def _token_summary(
     load: PmxtBookEventLoad,
     *,
-    trade_tick_count: int,
+    book_records: Sequence[object],
+    trades: Sequence[object],
     gap_hours: Sequence[object],
 ) -> dict[str, object]:
     return {
         "token_id": load.token_id,
         "source_book_event_count": load.source_book_event_count,
         "reconstructed_book_state_event_count": len(load.events),
-        "trade_tick_count": trade_tick_count,
+        "trade_tick_count": len(trades),
+        "records_sha256": replay_records_sha256((*book_records, *trades)),
         "gap_hours": [str(item) for item in gap_hours],
     }
 

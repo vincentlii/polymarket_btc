@@ -27,7 +27,8 @@ and reporting plumbing without importing archived BTC strategy logic.
   pre-subscribes both token pairs before the next opening window. It retains the
   old pair through `t0+180s` so the entire research window has one connection.
 - Evidence boundary: no profitability or deployability claim exists until real
-  data passes the documented holdout and pessimistic queue/latency gates.
+  data passes the documented holdout and the complete queue-enabled P99
+  trade-volume/timestamp-order robustness grid.
 - Model/research hardening: model inputs and probabilities now reject coercion,
   non-finite values, invalid shapes, and inconsistent lineage. Walk-forward
   tests are non-overlapping and group-safe; LightGBM early stopping, calibration,
@@ -37,6 +38,25 @@ and reporting plumbing without importing archived BTC strategy logic.
   schema/config/source/code hashes. Price-proxy persistence resets on an
   intervening failed signal, and stress tests discard prices at or above one
   instead of fabricating an executable price.
+- Replay/execution hardening: the BTC runner now consumes current dual-token L2
+  books, requires exchange-valid post-only prices and minimum sizes, caps each
+  layer to 5% of displayed same-side depth, and confirms two exact five-second
+  signals. Formal evidence is a four-component P99 grid covering full/half
+  execution-trade volume and both same-timestamp book/trade orderings; each
+  component keeps queue modelling on and rebates off, and no component is a
+  standalone strategy conclusion. Real Nautilus fixtures cover post-only
+  insert races, partial fills during cancel latency, synchronous multi-layer
+  rejection, and the GTC maximum-work timer. Event-level fills reconcile to
+  Nautilus order summaries and carry 1/3/10/30/60-second markouts plus source
+  book age. Placement and working orders now fail closed when either execution
+  L2 book is missing, future-dated, invalid, or older than the configured
+  freshness limit. Formal ledgers require explicit finite settlement fields and
+  the complete exact-horizon markout grid. Run artifacts publish as an immutable
+  whole-directory transaction
+  and preserve the union of heterogeneous lifecycle fields in Parquet. Signal
+  and coverage manifests replace operator-entered provenance hashes; PMXT
+  coverage now binds canonical per-token replay-record SHA-256 values which the
+  loader recomputes before engine start.
 - Historical three-minute fair-probability proxy: the reproducible exact
   `stride=1` run used all 7,295 resolved markets and 262,620 causal five-second snapshots.
   Paired daily-block candidate selection retained `logistic-c0.1` because
@@ -137,7 +157,7 @@ the input/output contract and operational commands.
 - A single fresh 36-decision Shadow window proves runtime compatibility, not
   statistical stability. Promotion still requires accumulated forward windows,
   target holdout counts, synchronized executable L2/TradeTick evidence, and the
-  pessimistic queue/P99 latency maker gate.
+  complete queue-enabled P99 execution robustness gate.
 - The forward raw parts written on 2026-07-13 contain malformed `payload_json`
   because their JSON field delimiter was incorrect. They must not be used for
   feature generation, market evidence, model fitting, or replay. The reader
