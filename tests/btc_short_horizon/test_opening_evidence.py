@@ -17,6 +17,11 @@ from btc_short_horizon.data.catalog_io import write_market_catalog
 from btc_short_horizon.data.collector import PartitionedRawEventWriter, RawCollectorEvent
 from btc_short_horizon.data.contracts import TimedMarketEvent
 from btc_short_horizon.data.market_catalog import MarketCatalog
+from btc_short_horizon.data.session_inventory import (
+    SESSION_INVENTORY_MANIFEST_ATTRIBUTE,
+    SESSION_INVENTORY_SCHEMA_VERSION,
+    SessionInventoryRepository,
+)
 from btc_short_horizon.data.storage import ImmutableParquetStore
 from btc_short_horizon.features.events import BtcBookTop
 from btc_short_horizon.research.opening_evidence import (
@@ -630,6 +635,47 @@ def test_forward_reader_requires_v8_polymarket_tolerance_manifest_attribute(
         )
 
 
+def test_forward_reader_detects_deleted_part_and_manifest_from_session_inventory(
+    tmp_path: Path,
+) -> None:
+    inventory = SessionInventoryRepository(tmp_path).start_session(
+        session_id="test-session",
+        ingest_version="btc-short-horizon-v9",
+    )
+    writer = PartitionedRawEventWriter(
+        tmp_path,
+        manifest_attributes={
+            "polymarket_source_timestamp_regression_tolerance_seconds": "1",
+            SESSION_INVENTORY_MANIFEST_ATTRIBUTE: SESSION_INVENTORY_SCHEMA_VERSION,
+        },
+        inventory=inventory,
+    )
+    manifest = writer.write(
+        (
+            _raw_book_event(
+                token_id=UP_TOKEN,
+                at=T0,
+                bid="0.60",
+                ask="0.61",
+                ingest_version="btc-short-horizon-v9",
+            ),
+        )
+    )[0]
+    data_path = tmp_path / manifest.data_path
+    data_path.unlink()
+    data_path.with_name(f"manifest-{manifest.sha256[:32]}.json").unlink()
+
+    with pytest.raises(RawPayloadError, match="references missing raw manifests"):
+        load_forward_polymarket_book_events(
+            raw_data_root=tmp_path,
+            token_id=UP_TOKEN,
+            start_time=T0,
+            end_time=T0,
+            ingest_version="btc-short-horizon-v9",
+            expected_source_timestamp_regression_tolerance_seconds=1.0,
+        )
+
+
 def test_forward_reader_replays_polymarket_timestamp_tolerance_from_manifest(
     tmp_path: Path,
 ) -> None:
@@ -671,24 +717,37 @@ def test_forward_reader_replays_polymarket_timestamp_tolerance_from_manifest(
 
 def test_opening_market_audit_writes_observations_and_coverage(tmp_path: Path) -> None:
     event_time = T0 + timedelta(seconds=2)
-    _v8_raw_writer(tmp_path).write(
+    inventory = SessionInventoryRepository(tmp_path).start_session(
+        session_id="test-session",
+        ingest_version="btc-short-horizon-v9",
+    )
+    writer = PartitionedRawEventWriter(
+        tmp_path,
+        manifest_attributes={
+            "polymarket_source_timestamp_regression_tolerance_seconds": "1",
+            SESSION_INVENTORY_MANIFEST_ATTRIBUTE: SESSION_INVENTORY_SCHEMA_VERSION,
+        },
+        inventory=inventory,
+    )
+    writer.write(
         (
             _raw_book_event(
                 token_id=UP_TOKEN,
                 at=event_time,
                 bid="0.60",
                 ask="0.61",
-                ingest_version="btc-short-horizon-v8",
+                ingest_version="btc-short-horizon-v9",
             ),
             _raw_book_event(
                 token_id=DOWN_TOKEN,
                 at=event_time,
                 bid="0.39",
                 ask="0.40",
-                ingest_version="btc-short-horizon-v8",
+                ingest_version="btc-short-horizon-v9",
             ),
         )
     )
+    inventory.complete()
     catalog_path = tmp_path / "catalog.json"
     market = _market()
     write_market_catalog(

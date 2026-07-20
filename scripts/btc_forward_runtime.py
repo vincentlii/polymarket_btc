@@ -25,6 +25,10 @@ from btc_short_horizon.data.forward import (  # noqa: E402
     DEFAULT_BINANCE_FUTURES_PUBLIC_STREAMS,
     DEFAULT_BINANCE_STREAMS,
 )
+from btc_short_horizon.data.session_inventory import (  # noqa: E402
+    CollectorStorageLease,
+    SessionInventoryRepository,
+)
 from btc_short_horizon.live.forward_runtime import (  # noqa: E402
     ForwardCollectorRuntimeConfig,
     run_forward_collector_runtime,
@@ -102,6 +106,7 @@ async def run_async(args: argparse.Namespace) -> None:
         config_path=args.config,
         ingest_version=project.collection.ingest_version,
     )
+    recovered_interrupted_sessions: tuple[str, ...] = ()
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     registered_signals: list[signal.Signals] = []
@@ -144,6 +149,7 @@ async def run_async(args: argparse.Namespace) -> None:
             "ingest_version": project.collection.ingest_version,
             "scheduled_market": current_market_slug(project.primary_family, datetime.now(UTC)),
             "identity": identity,
+            "recovered_interrupted_sessions": list(recovered_interrupted_sessions),
             "storage": {
                 "raw_data": filesystem_usage(project.paths.raw_data_root),
                 "runtime": filesystem_usage(runtime_root),
@@ -251,17 +257,29 @@ async def run_async(args: argparse.Namespace) -> None:
             (market.up_token_id, market.down_token_id)
         )
 
+    lease = CollectorStorageLease(
+        project.paths.raw_data_root,
+        owner={
+            "service": "forward_collector",
+            "ingest_version": project.collection.ingest_version,
+            "code_revision": str(identity["code_revision"]),
+        },
+    )
     try:
-        await run_forward_collector_runtime(
-            config=ForwardCollectorRuntimeConfig(
-                runtime_root=runtime_root,
-                status_interval_seconds=args.status_interval_seconds,
-            ),
-            collect=collect,
-            status_details=status_details,
-            status_health=feed_health,
-            stop_event=stop_event,
-        )
+        with lease:
+            recovered_interrupted_sessions = SessionInventoryRepository(
+                project.paths.raw_data_root
+            ).recover_interrupted_sessions()
+            await run_forward_collector_runtime(
+                config=ForwardCollectorRuntimeConfig(
+                    runtime_root=runtime_root,
+                    status_interval_seconds=args.status_interval_seconds,
+                ),
+                collect=collect,
+                status_details=status_details,
+                status_health=feed_health,
+                stop_event=stop_event,
+            )
     finally:
         for item in registered_signals:
             loop.remove_signal_handler(item)

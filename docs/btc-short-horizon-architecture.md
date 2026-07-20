@@ -90,8 +90,8 @@ Futures `aggTrade` onto `/market/stream` and depth/Book Ticker onto
 `/public/stream`, matching the official channel layout. Version v5 made closed
 Binance Spot `kline_1s` the lightweight default and left trade/depth,
 perpetual, and OKX streams as explicit opt-ins. Version v6 added look-ahead
-CLOB subscription and namespaced epoch IDs by market-window start. The current
-v8 boundary retains the v7 collector-session identity and opaque composite
+CLOB subscription and namespaced epoch IDs by market-window start. Version v8
+retained the v7 collector-session identity and opaque composite
 `(collector_session_id, epoch_id)` as opaque rather than globally monotonic,
 prevents old/new raw schemas in the same hour from being mixed, bounds queued
 plus in-flight raw evidence by both event count and serialized bytes, and
@@ -100,7 +100,11 @@ version records the configured Polymarket source-timestamp regression tolerance
 in each manifest and a collector-session monotonic `admission_sequence` in each
 row. Offline reconstruction therefore cannot silently use a different threshold
 or reorder two messages that shared the same source, receive, and availability
-timestamp.
+timestamp. The current v9 boundary adds a transactional per-session inventory,
+single-writer storage lease, interrupted-session recovery, and verified
+content-addressed backup/restore. A part is not complete evidence until its
+inventory state is committed, and a session cannot close while any part is only
+prepared.
 
 `paths.raw_data_root` is the root of the project's immutable collector store;
 it contains `raw/<source>/<instrument-directory>/...` parts and manifests. The
@@ -153,9 +157,12 @@ a prefix collision fails explicitly rather than reusing the wrong data. The
 reader discovers parts only through manifests and verifies source, instrument,
 schema, ingest version, session, filename, full SHA-256, row count, and source/
 availability bounds before reading rows. It rejects missing referenced parts,
-orphan parts, tampering, or mixed ingest versions. This directory-local proof
-cannot detect deletion of both a part and its manifest; the planned session
-inventory closes that remaining storage-audit boundary.
+orphan parts, tampering, or mixed ingest versions. v9 also registers every part
+before installation and commits it only after both part and manifest are
+durable. The session inventory therefore detects deletion of both adjacent
+files, records failed/interrupted collection explicitly, and makes remote-only
+evidence request a verified restore instead of looking like an empty window.
+See [BTC 前瞻数据持久性与灾难恢复](btc-data-durability-research.md).
 
 The collector expands batch envelopes, ignores documented `PONG` replies and empty
 subscription control frames, sends heartbeats independently of message
@@ -177,7 +184,7 @@ For CLOB events, a small source-clock timestamp regression is conservatively
 held at the prior available time, while a regression at or beyond
 `collection.polymarket_source_timestamp_regression_tolerance_seconds` starts a
 new epoch. The value is project policy rather than a documented Polymarket
-guarantee. Persisting it in v8 manifests keeps live admission and offline
+guarantee. Persisting it in v8 and v9 manifests keeps live admission and offline
 reconstruction identical. Dual-token research rejects either a manifest/config
 mismatch or different Up/Down tolerances; changing this policy requires a new
 ingest boundary.
@@ -561,8 +568,9 @@ all 36 decisions; 32 were quality-eligible and four failed closed because
 Binance Spot trade or BBO evidence was older than one second. There were no gap
 flags. This validates causal runtime compatibility while preserving the data
 freshness boundary; one window does not establish statistical stability.
-Because v8 changes the collector-session, epoch, buffer, gap, manifest, and
-raw-schema contracts, this v6 run remains provenance only; fresh v8 forward
+Because v9 includes all v8 collector-session, epoch, buffer, gap, manifest, and
+raw-schema contracts plus transactional session inventory, this v6 run remains
+provenance only; fresh v9 forward
 evidence is required for any new promotion decision.
 
 These results still cannot establish passive fills, queue position, or

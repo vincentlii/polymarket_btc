@@ -34,6 +34,10 @@ from btc_short_horizon.data.forward import (  # noqa: E402
 )
 from btc_short_horizon.data.gamma import GammaMarketClient  # noqa: E402
 from btc_short_horizon.data.market_catalog import MarketCatalog  # noqa: E402
+from btc_short_horizon.data.session_inventory import (  # noqa: E402
+    CollectorStorageLease,
+    SessionInventoryRepository,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +198,22 @@ def _token_ids(args: argparse.Namespace) -> tuple[str, ...]:
 
 async def collect(args: argparse.Namespace) -> None:
     config = load_btc_project_config(args.config)
+    with CollectorStorageLease(
+        config.paths.raw_data_root,
+        owner={
+            "service": "forward_collector_cli",
+            "ingest_version": config.collection.ingest_version,
+        },
+    ):
+        SessionInventoryRepository(config.paths.raw_data_root).recover_interrupted_sessions()
+        await _collect_with_storage_lease(args, config=config)
+
+
+async def _collect_with_storage_lease(
+    args: argparse.Namespace,
+    *,
+    config: BtcProjectConfig,
+) -> None:
     streams = tuple(args.binance_stream or DEFAULT_BINANCE_STREAMS)
     futures_market_streams = tuple(
         args.binance_futures_market_stream or DEFAULT_BINANCE_FUTURES_MARKET_STREAMS

@@ -22,6 +22,9 @@ features from the NautilusTrader documentation.
 - Before changing BTC forward market-data collection, sequence validation,
   L2 snapshot/delta recovery, or raw replay, also read
   `docs/btc-market-data-protocol-research.md`.
+- Before changing BTC raw storage transactions, session inventory, backup,
+  local archival, or disaster recovery, also read
+  `docs/btc-data-durability-research.md`.
 - Keep changes tightly scoped to the request. Avoid unrelated refactors and
   formatting churn.
 - Do not add backwards-compatibility shims for old dependency APIs or old repo

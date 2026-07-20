@@ -20,7 +20,11 @@ import pyarrow as pa
 import websockets
 
 from btc_short_horizon.data.contracts import TimedMarketEvent
-from btc_short_horizon.data.storage import DataPartitionManifest, ImmutableParquetStore
+from btc_short_horizon.data.storage import (
+    DataPartitionManifest,
+    ImmutableParquetStore,
+    PartWriteInventory,
+)
 
 type RawPartitionKey = tuple[str, str, str, str, str, str, str]
 _COLLECTOR_SESSION_ID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
@@ -129,8 +133,10 @@ class PartitionedRawEventWriter:
         root: Path,
         *,
         manifest_attributes: Mapping[str, str] | None = None,
+        inventory: PartWriteInventory | None = None,
     ) -> None:
         self.store = ImmutableParquetStore(root)
+        self.inventory = inventory
         self.manifest_attributes = dict(manifest_attributes or {})
         if any(
             not isinstance(key, str) or not key or not isinstance(value, str) or not value
@@ -203,6 +209,7 @@ class PartitionedRawEventWriter:
                         "collector_session_id": collector_session_id,
                         "epoch_ids": ",".join(str(event.epoch_id) for event in partition),
                     },
+                    inventory=self.inventory,
                 )
             )
         return tuple(manifests)

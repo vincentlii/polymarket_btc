@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+import json
 from math import isfinite
 from pathlib import Path
 from threading import Lock, RLock, Thread
@@ -44,6 +45,11 @@ from btc_short_horizon.data.polymarket import (
 )
 from btc_short_horizon.data.quality import DataQualityStats, EventQualityValidator
 from btc_short_horizon.data.rtds import normalize_chainlink_btc_usd
+from btc_short_horizon.data.session_inventory import (
+    SESSION_INVENTORY_MANIFEST_ATTRIBUTE,
+    SESSION_INVENTORY_SCHEMA_VERSION,
+    SessionInventoryRepository,
+)
 from btc_short_horizon.data.storage import DataPartitionManifest
 from btc_short_horizon.data.subscriptions import (
     binance_combined_stream_subscription,
@@ -258,6 +264,14 @@ class BtcForwardCollector:
         )
         self.okx_instruments_url = okx_instruments_url
         self.okx_swap_contract_value = okx_swap_contract_value
+        self._session_inventory = SessionInventoryRepository(raw_data_root).start_session(
+            session_id=self.collector_session_id,
+            ingest_version=self.ingest_version,
+            attributes={
+                "epoch_id_offset": str(self.epoch_id_offset),
+                "polymarket_token_ids": json.dumps(self.token_ids, separators=(",", ":")),
+            },
+        )
         self._writer = PartitionedRawEventWriter(
             raw_data_root,
             manifest_attributes={
@@ -265,7 +279,9 @@ class BtcForwardCollector:
                     polymarket_source_timestamp_regression_tolerance_seconds,
                     ".17g",
                 ),
+                SESSION_INVENTORY_MANIFEST_ATTRIBUTE: SESSION_INVENTORY_SCHEMA_VERSION,
             },
+            inventory=self._session_inventory,
         )
         source_regression_tolerance = timedelta(
             seconds=polymarket_source_timestamp_regression_tolerance_seconds
@@ -1564,15 +1580,20 @@ class BtcForwardCollector:
         """Run BTC public subscriptions until stopped, flushing outside socket callbacks."""
 
         if stop_event.is_set():
-            loop = asyncio.get_running_loop()
-            flush_task = asyncio.create_task(
-                self._flush_async(),
-                name="btc-raw-final-flush",
-            )
-            await self._await_flush_task(
-                flush_task,
-                deadline=loop.time() + self.shutdown_flush_timeout_seconds,
-            )
+            try:
+                loop = asyncio.get_running_loop()
+                flush_task = asyncio.create_task(
+                    self._flush_async(),
+                    name="btc-raw-final-flush",
+                )
+                await self._await_flush_task(
+                    flush_task,
+                    deadline=loop.time() + self.shutdown_flush_timeout_seconds,
+                )
+                self._session_inventory.complete()
+            except BaseException as error:
+                self._record_session_failure(error)
+                raise
             return
         self.configure_required_feeds(
             binance_streams=binance_streams,
@@ -2075,7 +2096,12 @@ class BtcForwardCollector:
                             additional_producer_errors,
                             note_prefix="additional producer cleanup failure",
                         )
+                    if primary_exception is None:
+                        self._session_inventory.complete()
+                    else:
+                        self._record_session_failure(primary_exception)
                 except BaseException as cleanup_error:
+                    self._record_session_failure(cleanup_error)
                     additional_producer_errors = tuple(
                         error
                         for error in producer_errors
@@ -2091,6 +2117,12 @@ class BtcForwardCollector:
                     for error in additional_producer_errors:
                         primary_exception.add_note(f"producer cleanup also failed: {error!r}")
                     primary_exception.add_note(f"collector shutdown also failed: {cleanup_error!r}")
+
+    def _record_session_failure(self, error: BaseException) -> None:
+        try:
+            self._session_inventory.fail(f"{type(error).__name__}: {error}")
+        except BaseException as inventory_error:
+            error.add_note(f"session inventory failure could not be recorded: {inventory_error!r}")
 
     async def _await_flush_task(
         self,

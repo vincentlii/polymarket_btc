@@ -33,7 +33,7 @@ def test_baseline_config_is_path_relative_and_has_explicit_queue_scenarios() -> 
     assert config.collection.max_pending_events == 100_000
     assert config.collection.max_pending_bytes == 67_108_864
     assert config.collection.opening_handoff_delay_seconds == 180.0
-    assert config.collection.ingest_version == "btc-short-horizon-v8"
+    assert config.collection.ingest_version == "btc-short-horizon-v9"
     assert config.require_scenario("p99_pessimistic").execution.queue_position
     assert config.paths.raw_data_root.is_absolute()
     assert config.paths.raw_data_root.name == "btc_short_horizon"

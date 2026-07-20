@@ -18,13 +18,23 @@ from nautilus_trader.model.enums import BookType
 
 from btc_short_horizon.data import MarketWindow
 from btc_short_horizon.data.polymarket import PolymarketL2Normalizer, PolymarketL2Status
+from btc_short_horizon.data.session_inventory import (
+    SESSION_INVENTORY_MANIFEST_ATTRIBUTE,
+    SESSION_INVENTORY_SCHEMA_VERSION,
+    SessionInventoryError,
+    SessionInventoryRepository,
+)
 from btc_short_horizon.data.storage import DataPartitionManifest, instrument_directory_name
+from btc_short_horizon.data.storage import sha256_file as _inventory_sha256_file
 from btc_short_horizon.features.events import BtcBookTop
 
 
 _NANOS_PER_SECOND = 1_000_000_000
 _POLYMARKET_SOURCE_REGRESSION_ATTRIBUTE = "polymarket_source_timestamp_regression_tolerance_seconds"
-_POLYMARKET_SOURCE_REGRESSION_REQUIRED_INGEST_VERSION = "btc-short-horizon-v8"
+_POLYMARKET_SOURCE_REGRESSION_REQUIRED_INGEST_VERSIONS = {
+    "btc-short-horizon-v8",
+    "btc-short-horizon-v9",
+}
 _RAW_COLUMNS = (
     "source_ts_ns",
     "collector_receive_ts_ns",
@@ -209,6 +219,7 @@ def load_forward_raw_events(
         instrument=instrument,
         start_time=start_time,
         end_time=end_time,
+        ingest_version=expected_ingest_version,
     ):
         if (
             expected_ingest_version is not None
@@ -219,7 +230,7 @@ def load_forward_raw_events(
         tolerance_text = manifest.attributes.get(_POLYMARKET_SOURCE_REGRESSION_ATTRIBUTE)
         if (
             source == "polymarket_clob"
-            and manifest.ingest_version == _POLYMARKET_SOURCE_REGRESSION_REQUIRED_INGEST_VERSION
+            and manifest.ingest_version in _POLYMARKET_SOURCE_REGRESSION_REQUIRED_INGEST_VERSIONS
             and tolerance_text is None
         ):
             raise RawPayloadError(f"raw manifest has no Polymarket timestamp tolerance: {path}")
@@ -305,7 +316,7 @@ def load_forward_raw_events(
             "raw Polymarket source timestamp regression tolerance "
             "does not match the expected collector configuration"
         )
-    if resolved_ingest_version == _POLYMARKET_SOURCE_REGRESSION_REQUIRED_INGEST_VERSION:
+    if resolved_ingest_version in _POLYMARKET_SOURCE_REGRESSION_REQUIRED_INGEST_VERSIONS:
         seen_admission_sequences: set[tuple[str, int]] = set()
         for event in events:
             key = (event.collector_session_id, event.admission_sequence)
@@ -623,6 +634,7 @@ def _raw_manifest_parts(
     instrument: str,
     start_time: datetime,
     end_time: datetime,
+    ingest_version: str | None,
 ) -> Iterator[tuple[Path, DataPartitionManifest]]:
     """Yield verified manifest/part pairs and reject unreferenced parts.
 
@@ -632,6 +644,21 @@ def _raw_manifest_parts(
     """
 
     root = raw_data_root.resolve()
+    start_ns, end_ns = _window_ns(start_time=start_time, end_time=end_time)
+    repository = SessionInventoryRepository(root)
+    try:
+        inventoried = {
+            item.manifest_path: item
+            for item in repository.expected_parts(
+                source=source,
+                instrument=instrument,
+                start_available_ts_ns=start_ns,
+                end_available_ts_ns=end_ns,
+                ingest_version=ingest_version,
+            )
+        }
+    except SessionInventoryError as exc:
+        raise RawPayloadError(f"raw session inventory is invalid: {exc}") from exc
     instrument_path = instrument_directory_name(instrument)
     for hour in _hours_between(start_time=start_time, end_time=end_time):
         directory = (
@@ -641,6 +668,23 @@ def _raw_manifest_parts(
         verified: list[tuple[Path, DataPartitionManifest]] = []
         for manifest_path in sorted(directory.glob("manifest-*.json")):
             manifest = _read_raw_manifest(manifest_path)
+            relative_manifest_path = manifest_path.relative_to(root).as_posix()
+            is_inventory_managed = (
+                manifest.attributes.get(SESSION_INVENTORY_MANIFEST_ATTRIBUTE)
+                == SESSION_INVENTORY_SCHEMA_VERSION
+            )
+            inventory_record = inventoried.pop(relative_manifest_path, None)
+            if is_inventory_managed and inventory_record is None:
+                raise RawPayloadError(
+                    f"managed raw manifest is not covered by a session inventory: {manifest_path}"
+                )
+            if inventory_record is not None and (
+                inventory_record.manifest != manifest
+                or _inventory_sha256_file(manifest_path) != inventory_record.manifest_sha256
+            ):
+                raise RawPayloadError(
+                    f"raw manifest differs from its session inventory: {manifest_path}"
+                )
             part_path = _validate_raw_manifest(
                 manifest,
                 manifest_path=manifest_path,
@@ -655,6 +699,9 @@ def _raw_manifest_parts(
             paths = ", ".join(str(path) for path in sorted(orphan_parts))
             raise RawPayloadError(f"raw parts have no manifest: {paths}")
         yield from verified
+    if inventoried:
+        missing = ", ".join(sorted(inventoried))
+        raise RawPayloadError(f"session inventory references missing raw manifests: {missing}")
 
 
 def _read_raw_manifest(path: Path) -> DataPartitionManifest:

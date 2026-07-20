@@ -110,15 +110,38 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml run --rm --no-deps 
 docker compose --env-file deploy/.env -f deploy/compose.yaml up -d forward_collector
 ```
 
+## Data Backup And Restore
+
+前瞻原始数据使用 v9 session inventory，而不是按目录中文件数量判断完整性。每次安全停机后先运行 audit；至少每天把 complete sessions 上传到异地对象存储并执行全量下载校验。当前容器镜像不包含 `rclone`，首次部署由宿主机安装并配置 rclone，再从固定代码 revision 运行 `scripts/btc_data_archive.py`。
+
+```bash
+uv run python scripts/btc_data_archive.py \
+  --raw-data-root deploy/runtime/data/btc_short_horizon \
+  audit --require-closed
+
+uv run python scripts/btc_data_archive.py \
+  --raw-data-root deploy/runtime/data/btc_short_horizon \
+  backup \
+  --transport rclone \
+  --remote btc-archive:polymarket-btc/forward \
+  --temporary-root deploy/runtime/tmp
+```
+
+备份命令只有在重新下载并核对 snapshot 中每个对象后才写 verification receipt。snapshot ID 与 receipt 路径必须同步到本地电脑或独立运维记录。对象存储至少开启 versioning，并使用与主 VPS 隔离、无历史版本删除权限的凭据。
+
+本地空间清理默认只输出计划。实际增加 `--apply` 前必须停掉 collector、核对 cutoff/session/file/byte count，并确认最近一次恢复演练成功。restore 和实际 archive 会取得 collector 同一把单写者锁；拿不到锁即退出，不允许边采集边删除或恢复。
+
+完整命令、崩溃语义、bucket 权限与恢复验收见 [BTC 前瞻数据持久性与灾难恢复](btc-data-durability-research.md)。
+
 ## Migration
 
-迁移前先写入 stop request，确认采集器已退出并记录最后一个状态文件。复制以下内容到新 VPS：
+迁移前先写入 stop request，确认采集器已退出，运行 `audit --require-closed`，并完成最新 snapshot 的远端全量校验。复制以下内容到新 VPS：
 
 1. 固定的代码 revision 与 `deploy/.env`（通过安全渠道传输，绝不提交）；
 2. `deploy/runtime/data/`，其中包括原始前瞻数据与模型 artefact；
 3. `deploy/runtime/output/`，其中包括 WAL、状态、Shadow 输出和报告。
 
-在新 VPS 创建同样的目录权限后执行 `docker compose ... up --build -d`。迁移不需要重新训练模型或修改策略；只有新代码、配置、规则 epoch 或模型版本经过本地验证后才发布新的不可变版本。
+优先从已验证 snapshot 恢复 `deploy/runtime/data/btc_short_horizon`，再复制其余 runtime 输出。在新 VPS 创建同样的目录权限后先运行 data audit，最后执行 `docker compose ... up --build -d`。迁移不需要重新训练模型或修改策略；只有新代码、配置、规则 epoch 或模型版本经过本地验证后才发布新的不可变版本。
 
 ## Pre-Purchase Validation Status
 

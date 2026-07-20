@@ -20,6 +20,11 @@ from btc_short_horizon.data.forward import (
     BtcForwardCollector,
     CollectorBufferCapacityError,
 )
+from btc_short_horizon.data.session_inventory import (
+    SESSION_STATUS_COMPLETE,
+    SESSION_STATUS_FAILED,
+    SESSION_STATUS_OPEN,
+)
 from btc_short_horizon.research.opening_evidence import (
     load_forward_polymarket_book_events,
     load_forward_raw_events,
@@ -490,6 +495,8 @@ async def test_forward_collector_flushes_pending_events_on_interval(tmp_path) ->
 
     assert collector.pending_event_count == 0
     assert list(tmp_path.rglob("manifest-*.json"))
+    # The worker owns flushing only; the enclosing collector lifecycle closes the session.
+    assert collector._session_inventory.snapshot().status == SESSION_STATUS_OPEN
 
 
 @pytest.mark.asyncio
@@ -1247,6 +1254,7 @@ async def test_forward_collector_does_not_connect_after_stop_requested(
 
     assert collector.pending_event_count == 0
     assert list(tmp_path.rglob("manifest-*.json"))
+    assert collector._session_inventory.snapshot().status == SESSION_STATUS_COMPLETE
 
 
 @pytest.mark.asyncio
@@ -1648,6 +1656,7 @@ async def test_forward_collector_preserves_writer_timeout_error(
         await collector.collect_forever(stop_event=stop_event)
 
     assert collector.pending_event_count == 1
+    assert collector._session_inventory.snapshot().status == SESSION_STATUS_FAILED
     assert collector.buffer_stats.flush_failures == 1
 
 

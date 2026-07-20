@@ -60,7 +60,7 @@ and reporting plumbing without importing archived BTC strategy logic.
   malformed payloads. Version v5 made closed Binance Spot `kline_1s` the
   lightweight default. Version v6 pre-subscribed the next CLOB pair. Version
   v7 added the collector-session, immutable JSON, atomic multi-token CLOB, and
-  bounded-buffer contracts. Current v8 persists every continuity loss as an
+  bounded-buffer contracts. Version v8 persists every continuity loss as an
   immediate causal raw event, invalidates stale books offline even when no
   later message arrives, separates the official Spot/Futures depth bridge
   rules, and forces OKX/Polymarket resubscription after invalid state. Ingress
@@ -69,11 +69,16 @@ and reporting plumbing without importing archived BTC strategy logic.
   event loop also exits boundedly if a task resists cancellation. Readers are
   manifest-first: they verify hashes, identities, row/time statistics, reject
   orphan or missing parts and mixed ingest versions, and replay the persisted
-  Polymarket timestamp tolerance. Every v8 row also carries a session-monotonic
+  Polymarket timestamp tolerance. Every v8+ row also carries a session-monotonic
   admission sequence, so identical timestamps preserve live order across parts;
   source events and their gap boundaries reserve capacity and commit together.
   Follow catalogs preserve their first pre-open `collected_at` timestamp and
   reject same-path metadata conflicts instead of overwriting provenance.
+  Current v9 adds a durable prepared/committed session inventory, process-level
+  single-writer lease, interrupted-session recovery, and content-addressed
+  object backup with full-download verification. Readers now detect deletion of
+  both a part and its adjacent manifest; archive is dry-run by default and
+  remote-only evidence must be restored before research.
 - The historical v6 collector completed a fresh 180-second audit on
   `btc-updown-15m-1784214900`. The dual-token Shadow reconstructed all 36
   decisions with zero submitted orders. The enhanced multi-venue audit observed
@@ -82,7 +87,7 @@ and reporting plumbing without importing archived BTC strategy logic.
   enhanced audit explicitly opted into the current Binance Futures `/public`
   route for trade and Book Ticker. The deploy default remains Spot closed
   `kline_1s` only, and the runtime reports the look-ahead market as active after
-  handoff. This run does not validate the v8 storage/session boundary; fresh v8
+  handoff. This run does not validate the v9 storage/session boundary; fresh v9
   evidence is required before promotion.
 - The runtime model path uses the same feature schema as training and bootstraps
   at most four Binance REST pages. A full three-minute shadow needs 3,782 closed
@@ -120,10 +125,6 @@ the input/output contract and operational commands.
   statistical stability. Promotion still requires accumulated forward windows,
   target holdout counts, synchronized executable L2/TradeTick evidence, and the
   pessimistic queue/P99 latency maker gate.
-- Directory-local manifests cannot prove that both a raw part and its adjacent
-  manifest were deleted together. A transactional session inventory is the
-  next storage-hardening boundary; until then, external backup checks must not
-  infer completeness solely from the remaining directory contents.
 - The forward raw parts written on 2026-07-13 contain malformed `payload_json`
   because their JSON field delimiter was incorrect. They must not be used for
   feature generation, market evidence, model fitting, or replay. The reader
@@ -146,7 +147,7 @@ the input/output contract and operational commands.
 - Forward data through `btc-short-horizon-v6` predates the explicit
   collector-session column and hard queued/in-flight buffer contract. It
   remains immutable provenance and can be audited only with its matching
-  schema; current v8 readers select one ingest version and apply its matching
+  schema; current v9 readers select one ingest version and apply its matching
   row contract without mixing epochs.
 - Kalshi is not currently exposed as a public runnable backtest path. The repo
   still contains Kalshi instrument, trade/candlestick loader, fee-model, and
@@ -156,6 +157,14 @@ the input/output contract and operational commands.
   data, a Kalshi replay adapter, and a public runner are added.
 
 ## Recently Fixed
+
+- [x] BTC forward storage v9 now records every immutable part in a transactional
+  session inventory, reconciles durable prepared pairs after interruption,
+  excludes concurrent writers with one storage lease, detects adjacent
+  part/manifest deletion, and provides content-addressed rclone/local backup,
+  full-download verification receipts, fail-closed local archival, and atomic
+  restore across filesystems. Operational rules are documented in
+  [BTC 前瞻数据持久性与灾难恢复](btc-data-durability-research.md).
 
 - [x] v4 staged replay loading now prepares Polymarket metadata first, loads all
   book data second, and loads execution trade ticks last. PMXT filtered-cache
