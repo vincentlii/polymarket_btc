@@ -202,6 +202,31 @@ def test_forward_reader_orders_hashed_parts_by_causal_timestamps(tmp_path: Path)
     assert load.events[1].reset_book
 
 
+def test_forward_reader_finds_long_token_id_in_bounded_directory(tmp_path: Path) -> None:
+    token_id = "9" * 78
+    PartitionedRawEventWriter(tmp_path).write(
+        (
+            _raw_book_event(
+                token_id=token_id,
+                at=T0 + timedelta(seconds=1),
+                bid="0.60",
+                ask="0.61",
+            ),
+        )
+    )
+
+    load = load_forward_polymarket_book_events(
+        raw_data_root=tmp_path,
+        token_id=token_id,
+        start_time=T0,
+        end_time=T0 + timedelta(seconds=2),
+    )
+
+    assert load.raw_part_count == 1
+    assert len(load.events) == 1
+    assert load.events[0].token_id == token_id
+
+
 def test_forward_reader_filters_to_one_explicit_ingest_version(tmp_path: Path) -> None:
     writer = PartitionedRawEventWriter(tmp_path)
     writer.write(

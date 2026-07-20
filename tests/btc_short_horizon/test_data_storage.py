@@ -95,14 +95,42 @@ def test_store_writes_long_token_id_without_overlong_manifest_temp_path(tmp_path
         tmp_path
         / "raw"
         / "polymarket_clob"
-        / instrument
+        / f"sha256-{storage_module._instrument_digest(instrument)[:32]}"
         / "date=2026-07-11"
         / "hour=12"
         / f"manifest-{manifest.sha256[:32]}.json"
     )
+    assert manifest.instrument == instrument
     assert manifest_path.exists()
-    assert len(str(manifest_path)) < 260
+    assert len(str(manifest_path.relative_to(tmp_path))) < 180
     assert store.read_manifest(str(manifest_path.relative_to(tmp_path))) == manifest
+
+
+def test_store_fails_closed_on_instrument_hash_collision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(storage_module, "_instrument_digest", lambda _instrument: "a" * 64)
+    store = ImmutableParquetStore(tmp_path)
+    store.write(
+        table=_table(),
+        source="polymarket_clob",
+        instrument="x" * 78,
+        partition_date="2026-07-11",
+        partition_hour="12",
+        schema_version="v1",
+        ingest_version="v1",
+    )
+
+    with pytest.raises(FileExistsError, match="instrument path collision"):
+        store.write(
+            table=_table(),
+            source="polymarket_clob",
+            instrument="y" * 78,
+            partition_date="2026-07-11",
+            partition_hour="12",
+            schema_version="v1",
+            ingest_version="v1",
+        )
 
 
 def test_store_removes_new_part_when_manifest_write_fails(

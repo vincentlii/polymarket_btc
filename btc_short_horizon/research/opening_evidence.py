@@ -8,7 +8,6 @@ from datetime import UTC, datetime, timedelta
 import json
 from math import isfinite
 from pathlib import Path
-from urllib.parse import quote
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -18,6 +17,7 @@ from nautilus_trader.model.enums import BookType
 
 from btc_short_horizon.data import MarketWindow
 from btc_short_horizon.data.polymarket import PolymarketL2Normalizer, PolymarketL2Status
+from btc_short_horizon.data.storage import instrument_directory_name
 from btc_short_horizon.features.events import BtcBookTop
 
 
@@ -482,10 +482,7 @@ def _raw_part_paths(
     start_time: datetime,
     end_time: datetime,
 ) -> Iterator[Path]:
-    instrument_path = quote(
-        instrument,
-        safe="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._=-",
-    )
+    instrument_path = instrument_directory_name(instrument)
     for hour in _hours_between(start_time=start_time, end_time=end_time):
         directory = (
             raw_data_root

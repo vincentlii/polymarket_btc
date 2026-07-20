@@ -15,6 +15,9 @@ import pyarrow.parquet as pq
 
 _SAFE_PATH_PART = re.compile(r"^[A-Za-z0-9._%=-]+$")
 _CONTENT_HASH_FILENAME_LENGTH = 32
+_MAX_ENCODED_INSTRUMENT_PATH_LENGTH = 48
+_INSTRUMENT_HASH_PREFIX = "sha256-"
+_INSTRUMENT_IDENTITY_FILENAME = "_instrument.json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,18 +63,13 @@ class ImmutableParquetStore:
             raise ValueError("cannot persist an empty table")
         for value in (source, partition_date, partition_hour, schema_version, ingest_version):
             _require_safe_path_part(value)
-        instrument_path = _encoded_path_part(instrument)
+        instrument_path = instrument_directory_name(instrument)
         if duplicate_count < 0 or gap_count < 0:
             raise ValueError("duplicate_count and gap_count must be >= 0")
 
-        directory = (
-            self.root
-            / "raw"
-            / source
-            / instrument_path
-            / f"date={partition_date}"
-            / f"hour={partition_hour}"
-        )
+        instrument_directory = self.root / "raw" / source / instrument_path
+        _ensure_instrument_identity(instrument_directory, instrument)
+        directory = instrument_directory / f"date={partition_date}" / f"hour={partition_hour}"
         directory.mkdir(parents=True, exist_ok=True)
         temporary = directory / f".write-{uuid4().hex}.parquet"
         final_path: Path | None = None
@@ -132,7 +130,8 @@ def _require_safe_path_part(value: str) -> None:
         raise ValueError(f"unsafe partition component: {value!r}")
 
 
-def _encoded_path_part(value: str) -> str:
+def instrument_directory_name(value: str) -> str:
+    """Return the bounded, deterministic directory component for an instrument."""
     if not value or "\x00" in value:
         raise ValueError(f"unsafe partition component: {value!r}")
     encoded = quote(
@@ -141,7 +140,33 @@ def _encoded_path_part(value: str) -> str:
     if encoded in {".", ".."}:
         raise ValueError(f"unsafe partition component: {value!r}")
     _require_safe_path_part(encoded)
+    if len(encoded) > _MAX_ENCODED_INSTRUMENT_PATH_LENGTH:
+        return f"{_INSTRUMENT_HASH_PREFIX}{_instrument_digest(value)[:32]}"
     return encoded
+
+
+def _ensure_instrument_identity(directory: Path, instrument: str) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    identity_path = directory / _INSTRUMENT_IDENTITY_FILENAME
+    expected = {
+        "instrument": instrument,
+        "sha256": _instrument_digest(instrument),
+    }
+    try:
+        with identity_path.open("x", encoding="utf-8") as handle:
+            json.dump(expected, handle, sort_keys=True)
+            handle.write("\n")
+    except FileExistsError:
+        try:
+            existing = json.loads(identity_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise FileExistsError(f"invalid instrument identity at {identity_path}") from exc
+        if existing != expected:
+            raise FileExistsError(f"instrument path collision at {identity_path}")
+
+
+def _instrument_digest(instrument: str) -> str:
+    return sha256(instrument.encode("utf-8")).hexdigest()
 
 
 def _column_min(table: pa.Table, name: str) -> int | None:

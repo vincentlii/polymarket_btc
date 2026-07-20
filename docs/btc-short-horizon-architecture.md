@@ -92,9 +92,11 @@ look-ahead CLOB subscription and namespaces epoch IDs by market-window start,
 so overlapping handoff connections cannot silently reuse the same epoch.
 
 `paths.raw_data_root` is the root of the project's immutable collector store;
-it contains `raw/<source>/<encoded-instrument>/...` parts and manifests. The
-manifest retains the original instrument string, while the directory component
-uses reversible URL encoding (for example, `btc%2Fusd`). It is distinct from
+it contains `raw/<source>/<instrument-directory>/...` parts and manifests. The
+manifest retains the original instrument string. Short instrument names use
+reversible URL encoding (for example, `btc%2Fusd`); long token IDs use a
+bounded 128-bit SHA-256 prefix with a full-hash identity marker that fails
+closed on a collision. It is distinct from
 the first `data_sources` entry, which is a PMXT vendor-archive mirror at
 `data/pmxt_raw` for BookReplay. Do not point both settings at the same directory.
 

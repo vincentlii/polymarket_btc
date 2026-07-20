@@ -7,6 +7,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import Literal
 
+from nautilus_trader.core.nautilus_pyo3 import FIXED_PRECISION, FIXED_SCALAR
+
 NATIVE_ENV = "PREDICTION_MARKET_NATIVE"
 NATIVE_REQUIRE_ENV = "PREDICTION_MARKET_NATIVE_REQUIRE"
 
@@ -340,6 +342,8 @@ def fixed_raw_values(values: Sequence[object], precision: int) -> list[int]:
         for value in _required_native_function(module, "fixed_raw_values")(
             [float(value) for value in values],
             int(precision),
+            int(FIXED_PRECISION),
+            int(FIXED_SCALAR),
         )
     ]
 
