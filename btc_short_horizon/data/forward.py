@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from math import isfinite
 from pathlib import Path
-from threading import Lock
+from threading import Lock, RLock, Thread
+from time import monotonic_ns
+from typing import Any
+from uuid import uuid4
 
 import httpx
 
@@ -25,6 +29,7 @@ from btc_short_horizon.data.collector import (
     JsonWebSocketCollector,
     PartitionedRawEventWriter,
     RawCollectorEvent,
+    normalize_collector_session_id,
 )
 from btc_short_horizon.data.contracts import TimedMarketEvent
 from btc_short_horizon.data.okx import (
@@ -32,7 +37,11 @@ from btc_short_horizon.data.okx import (
     normalize_okx_book_update,
     normalize_okx_trade,
 )
-from btc_short_horizon.data.polymarket import PolymarketL2Normalizer, PolymarketL2Status
+from btc_short_horizon.data.polymarket import (
+    PolymarketL2Normalizer,
+    PolymarketL2Result,
+    PolymarketL2Status,
+)
 from btc_short_horizon.data.quality import DataQualityStats, EventQualityValidator
 from btc_short_horizon.data.rtds import normalize_chainlink_btc_usd
 from btc_short_horizon.data.storage import DataPartitionManifest
@@ -61,6 +70,11 @@ _DEPTH_STREAM = "depth"
 _BOOK_TICKER_STREAM = "book_ticker"
 _BOOK_STREAM = "book"
 _INSTRUMENT_METADATA_STREAM = "instrument_metadata"
+_CONTINUITY_GAP_EVENT_TYPE = "continuity_gap"
+_CONTINUITY_GAP_SCHEMA_VERSION = "btc-continuity-gap-v1"
+_MAX_GAP_REASON_LENGTH = 256
+_DEFAULT_MAX_PENDING_EVENTS = 100_000
+_DEFAULT_MAX_PENDING_BYTES = 64 * 1024 * 1024
 
 type _QualityStreamKey = tuple[str, str, str]
 
@@ -71,6 +85,7 @@ class CollectorIngressResult:
     rejected_events: int = 0
     stale_events: int = 0
     reasons: tuple[str, ...] = ()
+    resubscribe_required: bool = False
 
     def merged(self, other: CollectorIngressResult) -> CollectorIngressResult:
         return CollectorIngressResult(
@@ -78,6 +93,7 @@ class CollectorIngressResult:
             rejected_events=self.rejected_events + other.rejected_events,
             stale_events=self.stale_events + other.stale_events,
             reasons=(*self.reasons, *other.reasons),
+            resubscribe_required=(self.resubscribe_required or other.resubscribe_required),
         )
 
 
@@ -86,6 +102,30 @@ class RequiredFeedHealth:
     healthy: bool
     reason: str
     feeds: tuple[dict[str, object], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CollectorBufferStats:
+    pending_events: int
+    pending_bytes: int
+    inflight_events: int
+    inflight_bytes: int
+    total_events: int
+    total_bytes: int
+    high_water_events: int
+    high_water_bytes: int
+    flush_count: int
+    flush_failures: int
+    last_flush_duration_ms: float | None
+    max_queue_delay_ms: float
+
+
+class CollectorBufferCapacityError(RuntimeError):
+    """Raised before admission when the bounded raw-event buffer is full."""
+
+
+class _FeedResubscribeRequired(RuntimeError):
+    """Internal signal that the current subscription can no longer recover state."""
 
 
 class BtcForwardCollector:
@@ -98,12 +138,20 @@ class BtcForwardCollector:
         polymarket_token_ids: Sequence[str],
         flush_size: int = 10_000,
         flush_interval_seconds: float = 60.0,
+        shutdown_flush_timeout_seconds: float = 30.0,
         ingest_version: str = "btc-short-horizon-v1",
         epoch_id_offset: int = 0,
+        collector_session_id: str | None = None,
+        max_pending_events: int = _DEFAULT_MAX_PENDING_EVENTS,
+        max_pending_bytes: int = _DEFAULT_MAX_PENDING_BYTES,
         binance_depth_snapshot_url: str = _BINANCE_DEPTH_SNAPSHOT_URL,
         binance_futures_depth_snapshot_url: str = _BINANCE_FUTURES_DEPTH_SNAPSHOT_URL,
-        binance_depth_snapshot_limit: int = 1_000,
+        binance_spot_depth_snapshot_limit: int = 1_000,
+        binance_futures_depth_snapshot_limit: int = 1_000,
         binance_depth_snapshot_timeout_seconds: float = 10.0,
+        binance_depth_snapshot_retry_initial_seconds: float = 0.5,
+        binance_depth_snapshot_retry_max_seconds: float = 30.0,
+        polymarket_source_timestamp_regression_tolerance_seconds: float = 1.0,
         okx_instruments_url: str = _OKX_PUBLIC_INSTRUMENTS_URL,
         okx_swap_contract_value: float | None = None,
     ) -> None:
@@ -112,25 +160,74 @@ class BtcForwardCollector:
             raise ValueError("polymarket_token_ids must not be empty")
         if len(set(token_ids)) != len(token_ids):
             raise ValueError("polymarket_token_ids must be unique")
-        if flush_size < 1:
+        if isinstance(flush_size, bool) or not isinstance(flush_size, int) or flush_size < 1:
             raise ValueError("flush_size must be >= 1")
         if not isfinite(flush_interval_seconds) or flush_interval_seconds <= 0.0:
             raise ValueError("flush_interval_seconds must be finite and > 0")
+        if not isfinite(shutdown_flush_timeout_seconds) or shutdown_flush_timeout_seconds <= 0.0:
+            raise ValueError("shutdown_flush_timeout_seconds must be finite and > 0")
         if not ingest_version or not ingest_version.strip():
             raise ValueError("ingest_version is required")
-        if isinstance(epoch_id_offset, bool) or epoch_id_offset < 0:
+        if (
+            isinstance(epoch_id_offset, bool)
+            or not isinstance(epoch_id_offset, int)
+            or epoch_id_offset < 0
+        ):
             raise ValueError("epoch_id_offset must be a non-negative integer")
+        if (
+            isinstance(max_pending_events, bool)
+            or not isinstance(max_pending_events, int)
+            or max_pending_events < flush_size
+        ):
+            raise ValueError("max_pending_events must be >= flush_size")
+        if (
+            isinstance(max_pending_bytes, bool)
+            or not isinstance(max_pending_bytes, int)
+            or max_pending_bytes < 1
+        ):
+            raise ValueError("max_pending_bytes must be >= 1")
         if not binance_depth_snapshot_url.startswith("https://"):
             raise ValueError("binance_depth_snapshot_url must use https")
         if not binance_futures_depth_snapshot_url.startswith("https://"):
             raise ValueError("binance_futures_depth_snapshot_url must use https")
-        if not 1 <= binance_depth_snapshot_limit <= 5_000:
-            raise ValueError("binance_depth_snapshot_limit must be in [1, 5000]")
+        if (
+            isinstance(binance_spot_depth_snapshot_limit, bool)
+            or not isinstance(binance_spot_depth_snapshot_limit, int)
+            or not 1 <= binance_spot_depth_snapshot_limit <= 5_000
+        ):
+            raise ValueError("binance_spot_depth_snapshot_limit must be in [1, 5000]")
+        if (
+            isinstance(binance_futures_depth_snapshot_limit, bool)
+            or not isinstance(binance_futures_depth_snapshot_limit, int)
+            or not 1 <= binance_futures_depth_snapshot_limit <= 1_000
+        ):
+            raise ValueError("binance_futures_depth_snapshot_limit must be in [1, 1000]")
         if (
             not isfinite(binance_depth_snapshot_timeout_seconds)
             or binance_depth_snapshot_timeout_seconds <= 0.0
         ):
             raise ValueError("binance_depth_snapshot_timeout_seconds must be finite and > 0")
+        if (
+            not isfinite(binance_depth_snapshot_retry_initial_seconds)
+            or binance_depth_snapshot_retry_initial_seconds <= 0.0
+        ):
+            raise ValueError("binance_depth_snapshot_retry_initial_seconds must be finite and > 0")
+        if (
+            not isfinite(binance_depth_snapshot_retry_max_seconds)
+            or binance_depth_snapshot_retry_max_seconds
+            < binance_depth_snapshot_retry_initial_seconds
+        ):
+            raise ValueError(
+                "binance_depth_snapshot_retry_max_seconds must be finite and "
+                ">= binance_depth_snapshot_retry_initial_seconds"
+            )
+        if (
+            not isfinite(polymarket_source_timestamp_regression_tolerance_seconds)
+            or polymarket_source_timestamp_regression_tolerance_seconds < 0.0
+        ):
+            raise ValueError(
+                "polymarket_source_timestamp_regression_tolerance_seconds must be finite and >= 0"
+            )
         if not okx_instruments_url.startswith("https://"):
             raise ValueError("okx_instruments_url must use https")
         if okx_swap_contract_value is not None and (
@@ -140,30 +237,69 @@ class BtcForwardCollector:
         self.token_ids = token_ids
         self.flush_size = flush_size
         self.flush_interval_seconds = flush_interval_seconds
+        self.shutdown_flush_timeout_seconds = shutdown_flush_timeout_seconds
         self.ingest_version = ingest_version.strip()
         self.epoch_id_offset = epoch_id_offset
+        session_id = uuid4().hex if collector_session_id is None else collector_session_id
+        self.collector_session_id = normalize_collector_session_id(session_id)
+        self.max_pending_events = max_pending_events
+        self.max_pending_bytes = max_pending_bytes
         self.binance_depth_snapshot_url = binance_depth_snapshot_url
         self.binance_futures_depth_snapshot_url = binance_futures_depth_snapshot_url
-        self.binance_depth_snapshot_limit = binance_depth_snapshot_limit
+        self.binance_spot_depth_snapshot_limit = binance_spot_depth_snapshot_limit
+        self.binance_futures_depth_snapshot_limit = binance_futures_depth_snapshot_limit
         self.binance_depth_snapshot_timeout_seconds = binance_depth_snapshot_timeout_seconds
+        self.binance_depth_snapshot_retry_initial_seconds = (
+            binance_depth_snapshot_retry_initial_seconds
+        )
+        self.binance_depth_snapshot_retry_max_seconds = binance_depth_snapshot_retry_max_seconds
+        self.polymarket_source_timestamp_regression_tolerance_seconds = (
+            polymarket_source_timestamp_regression_tolerance_seconds
+        )
         self.okx_instruments_url = okx_instruments_url
         self.okx_swap_contract_value = okx_swap_contract_value
-        self._writer = PartitionedRawEventWriter(raw_data_root)
+        self._writer = PartitionedRawEventWriter(
+            raw_data_root,
+            manifest_attributes={
+                "polymarket_source_timestamp_regression_tolerance_seconds": format(
+                    polymarket_source_timestamp_regression_tolerance_seconds,
+                    ".17g",
+                ),
+            },
+        )
+        source_regression_tolerance = timedelta(
+            seconds=polymarket_source_timestamp_regression_tolerance_seconds
+        )
         self._polymarket_normalizers = {
-            token_id: PolymarketL2Normalizer(token_id=token_id) for token_id in token_ids
+            token_id: PolymarketL2Normalizer(
+                token_id=token_id,
+                source_timestamp_regression_tolerance=source_regression_tolerance,
+            )
+            for token_id in token_ids
         }
         self._binance_depth: dict[tuple[str, str], BinanceDepthSynchronizer] = {}
         self._okx_books: dict[tuple[str, str], OkxBookSynchronizer] = {}
         self._validators: dict[_QualityStreamKey, EventQualityValidator] = {}
         self._pending: list[RawCollectorEvent] = []
+        self._pending_bytes = 0
+        self._inflight_events = 0
+        self._inflight_bytes = 0
+        self._oldest_pending_monotonic_ns: int | None = None
+        self._high_water_events = 0
+        self._high_water_bytes = 0
+        self._flush_count = 0
+        self._flush_failures = 0
+        self._last_flush_duration_ms: float | None = None
+        self._max_queue_delay_ms = 0.0
         self._pending_quality_counts: dict[_RawPartitionKey, tuple[int, int]] = {}
-        self._unattributed_gaps: dict[_QualityStreamKey, int] = {}
+        self._unresolved_gaps: dict[_QualityStreamKey, int] = {}
         self._required_feed_keys: set[_QualityStreamKey] = {
             ("polymarket_clob", token_id, _MARKET_STREAM) for token_id in token_ids
         }
         self._required_feed_keys.add(("polymarket_rtds_chainlink", "btc/usd", _PRICE_STREAM))
         self._last_feed_event_at: dict[_QualityStreamKey, datetime] = {}
-        self._lock = Lock()
+        self._next_admission_sequence = 0
+        self._lock = RLock()
         self._flush_lock = Lock()
 
     @property
@@ -172,8 +308,42 @@ class BtcForwardCollector:
             return len(self._pending)
 
     @property
+    def pending_bytes(self) -> int:
+        with self._lock:
+            return self._pending_bytes
+
+    @property
     def flush_required(self) -> bool:
-        return self.pending_event_count >= self.flush_size
+        stats = self.buffer_stats
+        return stats.pending_events >= self.flush_size or stats.pending_bytes >= max(
+            1, self.max_pending_bytes // 2
+        )
+
+    @property
+    def buffer_at_capacity(self) -> bool:
+        stats = self.buffer_stats
+        return (
+            stats.total_events >= self.max_pending_events
+            or stats.total_bytes >= self.max_pending_bytes
+        )
+
+    @property
+    def buffer_stats(self) -> CollectorBufferStats:
+        with self._lock:
+            return CollectorBufferStats(
+                pending_events=len(self._pending),
+                pending_bytes=self._pending_bytes,
+                inflight_events=self._inflight_events,
+                inflight_bytes=self._inflight_bytes,
+                total_events=len(self._pending) + self._inflight_events,
+                total_bytes=self._pending_bytes + self._inflight_bytes,
+                high_water_events=self._high_water_events,
+                high_water_bytes=self._high_water_bytes,
+                flush_count=self._flush_count,
+                flush_failures=self._flush_failures,
+                last_flush_duration_ms=self._last_flush_duration_ms,
+                max_queue_delay_ms=self._max_queue_delay_ms,
+            )
 
     @property
     def quality_stats(self) -> dict[_QualityStreamKey, DataQualityStats]:
@@ -224,7 +394,7 @@ class BtcForwardCollector:
         with self._lock:
             required = tuple(sorted(self._required_feed_keys))
             last_events = dict(self._last_feed_event_at)
-            unresolved_gaps = dict(self._unattributed_gaps)
+            unresolved_gaps = dict(self._unresolved_gaps)
         feeds: list[dict[str, object]] = []
         reasons: list[str] = []
         for key in required:
@@ -239,6 +409,30 @@ class BtcForwardCollector:
                 state, reason = "silent", "required_feed_silent"
             elif unresolved_gaps.get(key, 0):
                 state, reason = "gap", "required_feed_gap"
+            elif (
+                source in {"binance_spot", "binance_perp"}
+                and stream_id == _DEPTH_STREAM
+                and (
+                    (source, instrument) not in self._binance_depth
+                    or not self._binance_depth[(source, instrument)].synchronized
+                )
+            ):
+                state, reason = "gap", "required_feed_snapshot_missing"
+            elif (
+                source in {"okx_spot", "okx_swap"}
+                and stream_id == _BOOK_STREAM
+                and (
+                    (source, instrument) not in self._okx_books
+                    or not self._okx_books[(source, instrument)].synchronized
+                )
+            ):
+                state, reason = "gap", "required_feed_snapshot_missing"
+            elif (
+                source == "polymarket_clob"
+                and instrument in self._polymarket_normalizers
+                and not self._polymarket_normalizers[instrument].has_snapshot
+            ):
+                state, reason = "gap", "required_feed_snapshot_missing"
             elif age_seconds is not None and age_seconds < -5.0:
                 state, reason = "future", "required_feed_timestamp_in_future"
             elif age_seconds is not None and age_seconds > stale_after_seconds:
@@ -270,23 +464,138 @@ class BtcForwardCollector:
     ) -> CollectorIngressResult:
         """Normalize each configured token without persisting ignored channel messages."""
 
-        outcome = CollectorIngressResult()
-        for normalizer in self._polymarket_normalizers.values():
-            try:
-                result = normalizer.apply(payload, collector_receive_ts=collector_receive_ts)
-            except ValueError as exc:
-                outcome = outcome.merged(_rejected(str(exc)))
-                continue
-            if result.status is PolymarketL2Status.APPLIED and result.timing is not None:
-                outcome = outcome.merged(
-                    self._ingest(
-                        timing=result.timing,
-                        event_type=result.event_type,
-                        payload=payload,
-                        stream_id=_MARKET_STREAM,
+        with self._lock:
+            candidates = {
+                token_id: normalizer.fork()
+                for token_id, normalizer in self._polymarket_normalizers.items()
+            }
+            outcome = CollectorIngressResult()
+            processed: list[tuple[str, PolymarketL2Result]] = []
+            for token_id, normalizer in candidates.items():
+                try:
+                    result = normalizer.apply(
+                        payload,
+                        collector_receive_ts=collector_receive_ts,
                     )
+                except ValueError as exc:
+                    outcome = outcome.merged(_rejected(str(exc)))
+                    continue
+                if result.status is not PolymarketL2Status.IGNORED and result.timing is not None:
+                    processed.append((token_id, result))
+            if outcome.rejected_events:
+                planned_gaps = tuple(
+                    (
+                        token_id,
+                        self._validator(
+                            source="polymarket_clob",
+                            instrument=token_id,
+                            stream_id=_MARKET_STREAM,
+                        ),
+                        self._new_gap_event(
+                            source="polymarket_clob",
+                            instrument=token_id,
+                            stream_id=_MARKET_STREAM,
+                            reason="invalid_market_payload",
+                            observed_at=collector_receive_ts,
+                            previous_available_ts=self._validator(
+                                source="polymarket_clob",
+                                instrument=token_id,
+                                stream_id=_MARKET_STREAM,
+                            ).last_available_ts,
+                        ),
+                    )
+                    for token_id in self._polymarket_normalizers
                 )
-        return outcome
+                self._ensure_capacity_locked(tuple(event for _, _, event in planned_gaps))
+                for normalizer in self._polymarket_normalizers.values():
+                    normalizer.reset()
+                for _token_id, validator, gap_event in planned_gaps:
+                    self._commit_gap_event_locked(
+                        event=gap_event,
+                        validator=validator,
+                        stream_id=_MARKET_STREAM,
+                        reason="invalid_market_payload",
+                    )
+                return outcome.merged(CollectorIngressResult(resubscribe_required=True))
+
+            reservation: list[RawCollectorEvent] = []
+            planned_start_gaps: dict[str, tuple[EventQualityValidator, RawCollectorEvent, str]] = {}
+            for token_id, result in processed:
+                assert result.timing is not None
+                timing = replace(result.timing, ingest_version=self.ingest_version)
+                source_event = _pending_event_candidate(
+                    timing=timing,
+                    event_type=result.event_type,
+                    payload=payload,
+                    collector_session_id=self.collector_session_id,
+                )
+                validator = self._validator(
+                    source=timing.source,
+                    instrument=timing.instrument,
+                    stream_id=_MARKET_STREAM,
+                )
+                if result.starts_new_epoch:
+                    reason = result.reason or result.status.value
+                    gap_event = self._new_gap_event(
+                        source=timing.source,
+                        instrument=token_id,
+                        stream_id=_MARKET_STREAM,
+                        reason=reason,
+                        observed_at=collector_receive_ts,
+                        previous_available_ts=validator.last_available_ts,
+                    )
+                    planned_start_gaps[token_id] = (validator, gap_event, reason)
+                    reservation.extend((gap_event, source_event))
+                    continue
+                decision = validator.prepare(timing).decision
+                if decision.accepted:
+                    reservation.append(source_event)
+                elif decision.reason == "out_of_order":
+                    reservation.append(
+                        self._new_gap_event(
+                            source=timing.source,
+                            instrument=token_id,
+                            stream_id=_MARKET_STREAM,
+                            reason="available_time_regression",
+                            observed_at=collector_receive_ts,
+                            previous_available_ts=validator.last_available_ts,
+                        )
+                    )
+            self._ensure_capacity_locked(tuple(reservation))
+            self._polymarket_normalizers = candidates
+            for token_id, result in processed:
+                assert result.timing is not None
+                planned_gap = planned_start_gaps.get(token_id)
+                if planned_gap is not None:
+                    validator, gap_event, reason = planned_gap
+                    self._commit_gap_event_locked(
+                        event=gap_event,
+                        validator=validator,
+                        stream_id=_MARKET_STREAM,
+                        reason=reason,
+                    )
+                ingested = self._ingest(
+                    timing=result.timing,
+                    event_type=result.event_type,
+                    payload=payload,
+                    stream_id=_MARKET_STREAM,
+                )
+                outcome = outcome.merged(ingested)
+                if result.reason is not None:
+                    outcome = outcome.merged(
+                        CollectorIngressResult(
+                            reasons=(result.reason,),
+                            resubscribe_required=result.requires_resubscribe,
+                        )
+                    )
+                elif result.requires_resubscribe:
+                    outcome = outcome.merged(
+                        CollectorIngressResult(
+                            reasons=(result.status.value,),
+                            resubscribe_required=True,
+                        )
+                    )
+            return outcome
 
     def handle_chainlink_rtds(
         self, payload: Mapping[str, object], *, collector_receive_ts: datetime
@@ -336,7 +645,7 @@ class BtcForwardCollector:
                 collector_receive_ts=collector_receive_ts,
                 source=source,
             )
-        if event_type == "depthupdate":
+        if event_type == "depthupdate" or "@depth" in stream:
             return self._handle_binance_depth_update(
                 message,
                 payload=payload,
@@ -369,26 +678,104 @@ class BtcForwardCollector:
                 collector_receive_ts=collector_receive_ts,
                 source=source,
             )
-            result = self._depth_synchronizer(source=source, instrument=instrument).apply_snapshot(
-                payload,
-                collector_receive_ts=collector_receive_ts,
+            synchronizer = self._depth_synchronizer(
+                source=source,
+                instrument=instrument,
             )
         except ValueError as exc:
+            if instrument and source in {"binance_spot", "binance_perp"}:
+                self._invalidate_binance_depth_after_error(
+                    source=source,
+                    instrument=instrument,
+                    reason="invalid_depth_snapshot",
+                    observed_at=collector_receive_ts,
+                )
             return _rejected(str(exc))
-        if result.status is DepthUpdateStatus.GAP:
-            self.mark_gap(
+        with self._lock:
+            source_event = _pending_event_candidate(
+                timing=replace(timing, ingest_version=self.ingest_version),
+                event_type="depth_snapshot",
+                payload=payload,
+                collector_session_id=self.collector_session_id,
+            )
+            gap_capacity = self._gap_capacity_event_locked(
                 source=timing.source,
                 instrument=timing.instrument,
                 stream_id=_DEPTH_STREAM,
-                reason=result.reason or "depth_snapshot_gap",
+                observed_at=collector_receive_ts,
             )
-        outcome = self._ingest(
-            timing=timing,
-            event_type="depth_snapshot",
-            payload=payload,
-            stream_id=_DEPTH_STREAM,
-        )
-        return _with_depth_status(outcome, result.status, result.reason)
+            if not self._quality_would_accept(timing=timing, stream_id=_DEPTH_STREAM):
+                return self._ingest(
+                    timing=timing,
+                    event_type="depth_snapshot",
+                    payload=payload,
+                    stream_id=_DEPTH_STREAM,
+                )
+            try:
+                self._ensure_capacity_locked((source_event, gap_capacity))
+            except CollectorBufferCapacityError as capacity_error:
+                self._ensure_capacity_locked((source_event,))
+                candidate = deepcopy(synchronizer)
+                try:
+                    candidate_result = candidate.apply_snapshot(
+                        payload,
+                        collector_receive_ts=collector_receive_ts,
+                    )
+                except ValueError:
+                    raise capacity_error
+                if candidate_result.status is DepthUpdateStatus.GAP:
+                    raise capacity_error
+                self._binance_depth[(source, instrument)] = candidate
+                outcome = self._ingest(
+                    timing=timing,
+                    event_type="depth_snapshot",
+                    payload=payload,
+                    stream_id=_DEPTH_STREAM,
+                )
+                return _with_depth_status(
+                    outcome,
+                    candidate_result.status,
+                    candidate_result.reason,
+                    resubscribe_on_unavailable=False,
+                )
+            try:
+                result = synchronizer.apply_snapshot(
+                    payload,
+                    collector_receive_ts=collector_receive_ts,
+                )
+            except ValueError as exc:
+                self._invalidate_binance_depth_after_error(
+                    source=source,
+                    instrument=instrument,
+                    reason="invalid_depth_snapshot",
+                    observed_at=collector_receive_ts,
+                )
+                return self._ingest(
+                    timing=timing,
+                    event_type="depth_snapshot",
+                    payload=payload,
+                    stream_id=_DEPTH_STREAM,
+                ).merged(_rejected(str(exc)))
+            if result.status is DepthUpdateStatus.GAP:
+                self.mark_gap(
+                    source=timing.source,
+                    instrument=timing.instrument,
+                    stream_id=_DEPTH_STREAM,
+                    reason=result.reason or "depth_snapshot_gap",
+                    observed_at=collector_receive_ts,
+                )
+            outcome = self._ingest(
+                timing=timing,
+                event_type="depth_snapshot",
+                payload=payload,
+                stream_id=_DEPTH_STREAM,
+            )
+            return _with_depth_status(
+                outcome,
+                result.status,
+                result.reason,
+                resubscribe_on_unavailable=False,
+            )
 
     async def refresh_binance_depth_snapshot(
         self,
@@ -396,6 +783,13 @@ class BtcForwardCollector:
         instrument: str,
         client: httpx.AsyncClient | None = None,
         source: str = "binance_spot",
+        snapshot_handler: (
+            Callable[
+                [Mapping[str, object], datetime],
+                Awaitable[CollectorIngressResult],
+            ]
+            | None
+        ) = None,
     ) -> CollectorIngressResult:
         """Fetch a public REST snapshot and preserve its local receive timestamp explicitly."""
 
@@ -408,16 +802,22 @@ class BtcForwardCollector:
         try:
             response = await active_client.get(
                 self._binance_depth_snapshot_url(source),
-                params={"symbol": instrument, "limit": self.binance_depth_snapshot_limit},
+                params={
+                    "symbol": instrument,
+                    "limit": self._binance_depth_snapshot_limit(source),
+                },
             )
             response.raise_for_status()
             payload = response.json()
             if not isinstance(payload, Mapping):
                 raise ValueError("Binance depth snapshot must be a JSON object")
+            received_at = datetime.now(UTC)
+            if snapshot_handler is not None:
+                return await snapshot_handler(payload, received_at)
             return self.handle_binance_depth_snapshot(
                 instrument=instrument,
                 payload=payload,
-                collector_receive_ts=datetime.now(UTC),
+                collector_receive_ts=received_at,
                 source=source,
             )
         finally:
@@ -429,8 +829,55 @@ class BtcForwardCollector:
     ) -> bool:
         return self._depth_synchronizer(source=source, instrument=instrument).needs_snapshot
 
+    def binance_depth_requires_snapshot(
+        self, instrument: str, *, source: str = "binance_spot"
+    ) -> bool:
+        return self._depth_synchronizer(
+            source=source,
+            instrument=instrument,
+        ).requires_snapshot
+
+    def binance_depth_is_synchronized(
+        self, instrument: str, *, source: str = "binance_spot"
+    ) -> bool:
+        return self._depth_synchronizer(
+            source=source,
+            instrument=instrument,
+        ).synchronized
+
     def invalidate_binance_depth(self, instrument: str, *, source: str = "binance_spot") -> None:
         self._depth_synchronizer(source=source, instrument=instrument).invalidate()
+
+    def _invalidate_binance_depth_after_error(
+        self,
+        *,
+        source: str,
+        instrument: str,
+        reason: str,
+        observed_at: datetime,
+    ) -> None:
+        with self._lock:
+            validator = self._validator(
+                source=source,
+                instrument=instrument,
+                stream_id=_DEPTH_STREAM,
+            )
+            gap_event = self._new_gap_event(
+                source=source,
+                instrument=instrument,
+                stream_id=_DEPTH_STREAM,
+                reason=reason,
+                observed_at=observed_at,
+                previous_available_ts=validator.last_available_ts,
+            )
+            self._ensure_capacity_locked((gap_event,))
+            self.invalidate_binance_depth(instrument, source=source)
+            self._commit_gap_event_locked(
+                event=gap_event,
+                validator=validator,
+                stream_id=_DEPTH_STREAM,
+                reason=reason,
+            )
 
     def _handle_binance_trade(
         self,
@@ -495,28 +942,107 @@ class BtcForwardCollector:
                 collector_receive_ts=collector_receive_ts,
                 source=source,
             )
-            result = self._depth_synchronizer(
-                source=source, instrument=timing.instrument
-            ).observe_delta(
-                message,
-                collector_receive_ts=collector_receive_ts,
+            synchronizer = self._depth_synchronizer(
+                source=source,
+                instrument=timing.instrument,
             )
         except ValueError as exc:
-            return _rejected(str(exc))
-        if result.status is DepthUpdateStatus.GAP:
-            self.mark_gap(
+            instrument = message.get("s")
+            if isinstance(instrument, str) and instrument:
+                self._invalidate_binance_depth_after_error(
+                    source=source,
+                    instrument=instrument,
+                    reason="invalid_depth_update",
+                    observed_at=collector_receive_ts,
+                )
+            return _rejected(str(exc)).merged(CollectorIngressResult(resubscribe_required=True))
+        with self._lock:
+            source_event = _pending_event_candidate(
+                timing=replace(timing, ingest_version=self.ingest_version),
+                event_type="depth_update",
+                payload=payload,
+                collector_session_id=self.collector_session_id,
+            )
+            gap_capacity = self._gap_capacity_event_locked(
                 source=timing.source,
                 instrument=timing.instrument,
                 stream_id=_DEPTH_STREAM,
-                reason=result.reason or "depth_update_gap",
+                observed_at=collector_receive_ts,
             )
-        outcome = self._ingest(
-            timing=timing,
-            event_type="depth_update",
-            payload=payload,
-            stream_id=_DEPTH_STREAM,
-        )
-        return _with_depth_status(outcome, result.status, result.reason)
+            if not self._quality_would_accept(timing=timing, stream_id=_DEPTH_STREAM):
+                return self._ingest(
+                    timing=timing,
+                    event_type="depth_update",
+                    payload=payload,
+                    stream_id=_DEPTH_STREAM,
+                )
+            try:
+                self._ensure_capacity_locked((source_event, gap_capacity))
+            except CollectorBufferCapacityError as capacity_error:
+                self._ensure_capacity_locked((source_event,))
+                candidate = deepcopy(synchronizer)
+                try:
+                    candidate_result = candidate.observe_delta(
+                        message,
+                        collector_receive_ts=collector_receive_ts,
+                    )
+                except ValueError:
+                    raise capacity_error
+                if candidate_result.status is DepthUpdateStatus.GAP:
+                    raise capacity_error
+                self._binance_depth[(source, timing.instrument)] = candidate
+                outcome = self._ingest(
+                    timing=timing,
+                    event_type="depth_update",
+                    payload=payload,
+                    stream_id=_DEPTH_STREAM,
+                )
+                return _with_depth_status(
+                    outcome,
+                    candidate_result.status,
+                    candidate_result.reason,
+                    resubscribe_on_unavailable=False,
+                )
+            try:
+                result = synchronizer.observe_delta(
+                    message,
+                    collector_receive_ts=collector_receive_ts,
+                )
+            except ValueError as exc:
+                self._invalidate_binance_depth_after_error(
+                    source=source,
+                    instrument=timing.instrument,
+                    reason="invalid_depth_update",
+                    observed_at=collector_receive_ts,
+                )
+                return self._ingest(
+                    timing=timing,
+                    event_type="depth_update",
+                    payload=payload,
+                    stream_id=_DEPTH_STREAM,
+                ).merged(
+                    _rejected(str(exc)).merged(CollectorIngressResult(resubscribe_required=True))
+                )
+            if result.status is DepthUpdateStatus.GAP:
+                self.mark_gap(
+                    source=timing.source,
+                    instrument=timing.instrument,
+                    stream_id=_DEPTH_STREAM,
+                    reason=result.reason or "depth_update_gap",
+                    observed_at=collector_receive_ts,
+                )
+            outcome = self._ingest(
+                timing=timing,
+                event_type="depth_update",
+                payload=payload,
+                stream_id=_DEPTH_STREAM,
+            )
+            return _with_depth_status(
+                outcome,
+                result.status,
+                result.reason,
+                resubscribe_on_unavailable=False,
+            )
 
     def _handle_binance_book_ticker(
         self,
@@ -546,8 +1072,21 @@ class BtcForwardCollector:
     ) -> CollectorIngressResult:
         """Persist only validated OKX BTC public `trades` and `books` messages."""
 
-        if payload.get("event") is not None:
-            return CollectorIngressResult()
+        control_event = payload.get("event")
+        if control_event is not None:
+            if isinstance(control_event, str) and control_event.casefold() in {
+                "subscribe",
+                "unsubscribe",
+            }:
+                return CollectorIngressResult()
+            event_name = (
+                control_event.casefold()
+                if isinstance(control_event, str) and control_event
+                else "invalid"
+            )
+            return _rejected(f"okx_control_{event_name}").merged(
+                CollectorIngressResult(resubscribe_required=True)
+            )
         argument = payload.get("arg")
         data = payload.get("data")
         if (
@@ -555,25 +1094,40 @@ class BtcForwardCollector:
             or not isinstance(data, Sequence)
             or isinstance(data, (str, bytes))
         ):
-            return _rejected("unsupported_okx_event")
+            return _rejected("unsupported_okx_event").merged(
+                CollectorIngressResult(resubscribe_required=True)
+            )
         channel = argument.get("channel")
         instrument = argument.get("instId")
         if not isinstance(channel, str) or not isinstance(instrument, str):
-            return _rejected("unsupported_okx_event")
+            return _rejected("unsupported_okx_event").merged(
+                CollectorIngressResult(resubscribe_required=True)
+            )
         source = _okx_source_for_instrument(instrument)
         if source is None:
-            return _rejected("unsupported_okx_instrument")
+            return _rejected("unsupported_okx_instrument").merged(
+                CollectorIngressResult(resubscribe_required=True)
+            )
         if channel == "trades":
             return self._handle_okx_trades(
                 data=data,
                 payload=payload,
+                instrument=instrument,
                 collector_receive_ts=collector_receive_ts,
                 source=source,
             )
         if channel == "books":
             action = payload.get("action")
             if not isinstance(action, str):
-                return _rejected("okx_book_action_missing")
+                self._invalidate_okx_book_after_error(
+                    source=source,
+                    instrument=instrument,
+                    reason="okx_book_action_missing",
+                    observed_at=collector_receive_ts,
+                )
+                return _rejected("okx_book_action_missing").merged(
+                    CollectorIngressResult(resubscribe_required=True)
+                )
             return self._handle_okx_books(
                 data=data,
                 payload=payload,
@@ -638,6 +1192,7 @@ class BtcForwardCollector:
         *,
         data: Sequence[object],
         payload: Mapping[str, object],
+        instrument: str,
         collector_receive_ts: datetime,
         source: str,
     ) -> CollectorIngressResult:
@@ -645,6 +1200,7 @@ class BtcForwardCollector:
         if multiplier is None:
             return _rejected("okx_swap_contract_value_unavailable")
         outcome = CollectorIngressResult()
+        normalized: list[tuple[TimedMarketEvent, Mapping[str, object]]] = []
         for item in data:
             if not isinstance(item, Mapping):
                 outcome = outcome.merged(_rejected("OKX trade data must contain objects"))
@@ -659,15 +1215,34 @@ class BtcForwardCollector:
             except ValueError as exc:
                 outcome = outcome.merged(_rejected(str(exc)))
                 continue
-            outcome = outcome.merged(
-                self._ingest(
-                    timing=record.timing,
-                    event_type="trade",
-                    payload=_okx_item_payload(payload, item),
-                    stream_id=_TRADE_STREAM,
+            if record.timing.instrument != instrument:
+                outcome = outcome.merged(_rejected("OKX item instId does not match arg.instId"))
+                continue
+            normalized.append((record.timing, _okx_item_payload(payload, item)))
+        if outcome.rejected_events:
+            return outcome
+        with self._lock:
+            self._ensure_capacity_locked(
+                tuple(
+                    _pending_event_candidate(
+                        timing=replace(timing, ingest_version=self.ingest_version),
+                        event_type="trade",
+                        payload=item_payload,
+                        collector_session_id=self.collector_session_id,
+                    )
+                    for timing, item_payload in normalized
                 )
             )
-        return outcome
+            for timing, item_payload in normalized:
+                outcome = outcome.merged(
+                    self._ingest(
+                        timing=timing,
+                        event_type="trade",
+                        payload=item_payload,
+                        stream_id=_TRADE_STREAM,
+                    )
+                )
+            return outcome
 
     def _handle_okx_books(
         self,
@@ -680,7 +1255,7 @@ class BtcForwardCollector:
         source: str,
     ) -> CollectorIngressResult:
         outcome = CollectorIngressResult()
-        synchronizer = self._okx_book_synchronizer(source=source, instrument=instrument)
+        normalized: list[tuple[TimedMarketEvent, Mapping[str, object], Mapping[str, object]]] = []
         for item in data:
             if not isinstance(item, Mapping):
                 outcome = outcome.merged(_rejected("OKX book data must contain objects"))
@@ -693,46 +1268,217 @@ class BtcForwardCollector:
                     collector_receive_ts=collector_receive_ts,
                     source=source,
                 )
-                result = synchronizer.apply(
-                    action=action,
-                    payload=item,
-                    collector_receive_ts=collector_receive_ts,
-                )
             except ValueError as exc:
                 outcome = outcome.merged(_rejected(str(exc)))
                 continue
-            if result.status is DepthUpdateStatus.GAP:
-                self.mark_gap(
+            normalized.append(
+                (
+                    timing,
+                    _okx_item_payload(payload, item),
+                    item,
+                )
+            )
+        if outcome.rejected_events:
+            self._invalidate_okx_book_after_error(
+                source=source,
+                instrument=instrument,
+                reason="invalid_okx_book_payload",
+                observed_at=collector_receive_ts,
+            )
+            return outcome.merged(CollectorIngressResult(resubscribe_required=True))
+        with self._lock:
+            source_events = tuple(
+                _pending_event_candidate(
+                    timing=replace(timing, ingest_version=self.ingest_version),
+                    event_type=f"books_{action}",
+                    payload=item_payload,
+                    collector_session_id=self.collector_session_id,
+                )
+                for timing, item_payload, _item in normalized
+            )
+            gap_capacity_events = tuple(
+                self._gap_capacity_event_locked(
                     source=source,
                     instrument=instrument,
                     stream_id=_BOOK_STREAM,
-                    reason=result.reason or "okx_book_gap",
+                    observed_at=collector_receive_ts,
                 )
-            outcome = outcome.merged(
-                _with_depth_status(
-                    self._ingest(
-                        timing=timing,
-                        event_type=f"books_{action}",
-                        payload=_okx_item_payload(payload, item),
-                        stream_id=_BOOK_STREAM,
-                    ),
-                    result.status,
-                    result.reason,
-                )
+                for _ in normalized
             )
-        return outcome
+            self._ensure_capacity_locked((*source_events, *gap_capacity_events))
+            synchronizer = self._okx_book_synchronizer(
+                source=source,
+                instrument=instrument,
+            )
+            for timing, item_payload, item in normalized:
+                if not self._quality_would_accept(timing=timing, stream_id=_BOOK_STREAM):
+                    outcome = outcome.merged(
+                        self._ingest(
+                            timing=timing,
+                            event_type=f"books_{action}",
+                            payload=item_payload,
+                            stream_id=_BOOK_STREAM,
+                        )
+                    )
+                    continue
+                try:
+                    result = synchronizer.apply(
+                        action=action,
+                        payload=item,
+                        collector_receive_ts=collector_receive_ts,
+                    )
+                except ValueError as exc:
+                    self._invalidate_okx_book_after_error(
+                        source=source,
+                        instrument=instrument,
+                        reason="invalid_okx_book_payload",
+                        observed_at=collector_receive_ts,
+                    )
+                    outcome = outcome.merged(
+                        self._ingest(
+                            timing=timing,
+                            event_type=f"books_{action}",
+                            payload=item_payload,
+                            stream_id=_BOOK_STREAM,
+                        )
+                    )
+                    return outcome.merged(
+                        _rejected(str(exc)).merged(
+                            CollectorIngressResult(resubscribe_required=True)
+                        )
+                    )
+                if result.status is DepthUpdateStatus.GAP:
+                    self.mark_gap(
+                        source=source,
+                        instrument=instrument,
+                        stream_id=_BOOK_STREAM,
+                        reason=result.reason or "okx_book_gap",
+                        observed_at=collector_receive_ts,
+                    )
+                outcome = outcome.merged(
+                    _with_depth_status(
+                        self._ingest(
+                            timing=timing,
+                            event_type=f"books_{action}",
+                            payload=item_payload,
+                            stream_id=_BOOK_STREAM,
+                        ),
+                        result.status,
+                        result.reason,
+                    )
+                )
+            return outcome
 
-    def mark_gap(self, *, source: str, instrument: str, stream_id: str, reason: str) -> None:
-        if not source or not instrument or not stream_id:
-            raise ValueError("source, instrument, and stream_id are required")
-        self._validator(
+    def _invalidate_okx_book_after_error(
+        self,
+        *,
+        source: str,
+        instrument: str,
+        reason: str,
+        observed_at: datetime,
+    ) -> None:
+        with self._lock:
+            validator = self._validator(
+                source=source,
+                instrument=instrument,
+                stream_id=_BOOK_STREAM,
+            )
+            gap_event = self._new_gap_event(
+                source=source,
+                instrument=instrument,
+                stream_id=_BOOK_STREAM,
+                reason=reason,
+                observed_at=observed_at,
+                previous_available_ts=validator.last_available_ts,
+            )
+            self._ensure_capacity_locked((gap_event,))
+            self._okx_book_synchronizer(
+                source=source,
+                instrument=instrument,
+            ).reset()
+            self._commit_gap_event_locked(
+                event=gap_event,
+                validator=validator,
+                stream_id=_BOOK_STREAM,
+                reason=reason,
+            )
+
+    def mark_gap(
+        self,
+        *,
+        source: str,
+        instrument: str,
+        stream_id: str,
+        reason: str,
+        observed_at: datetime | None = None,
+    ) -> None:
+        """Persist an explicit causal boundary before any post-gap source event."""
+
+        self.mark_gaps(
+            ((source, instrument, stream_id, reason, observed_at),),
+        )
+
+    def mark_gaps(
+        self,
+        gaps: Sequence[tuple[str, str, str, str, datetime | None]],
+    ) -> None:
+        """Persist a multi-stream continuity boundary as one capacity transaction."""
+
+        if not gaps:
+            raise ValueError("gaps must not be empty")
+        with self._lock:
+            planned: list[tuple[EventQualityValidator, RawCollectorEvent, str, str]] = []
+            for source, instrument, stream_id, reason, observed_at in gaps:
+                source, instrument, stream_id, reason = _normalize_gap_identity(
+                    source=source,
+                    instrument=instrument,
+                    stream_id=stream_id,
+                    reason=reason,
+                )
+                validator = self._validator(
+                    source=source,
+                    instrument=instrument,
+                    stream_id=stream_id,
+                )
+                gap_event = self._new_gap_event(
+                    source=source,
+                    instrument=instrument,
+                    stream_id=stream_id,
+                    reason=reason,
+                    observed_at=observed_at,
+                    previous_available_ts=validator.last_available_ts,
+                )
+                planned.append((validator, gap_event, stream_id, reason))
+            self._ensure_capacity_locked(tuple(event for _, event, _, _ in planned))
+            for validator, gap_event, stream_id, reason in planned:
+                self._commit_gap_event_locked(
+                    event=gap_event,
+                    validator=validator,
+                    stream_id=stream_id,
+                    reason=reason,
+                )
+
+    def _gap_capacity_event_locked(
+        self,
+        *,
+        source: str,
+        instrument: str,
+        stream_id: str,
+        observed_at: datetime | None,
+    ) -> RawCollectorEvent:
+        validator = self._validator(
             source=source,
             instrument=instrument,
             stream_id=stream_id,
-        ).mark_gap(reason=reason)
-        with self._lock:
-            key = (source, instrument, stream_id)
-            self._unattributed_gaps[key] = self._unattributed_gaps.get(key, 0) + 1
+        )
+        return self._new_gap_event(
+            source=source,
+            instrument=instrument,
+            stream_id=stream_id,
+            reason="x" * _MAX_GAP_REASON_LENGTH,
+            observed_at=observed_at,
+            previous_available_ts=validator.last_available_ts,
+        )
 
     def flush(self) -> tuple[DataPartitionManifest, ...]:
         """Atomically persist the currently buffered events without dropping concurrent ingress."""
@@ -740,21 +1486,50 @@ class BtcForwardCollector:
         with self._flush_lock:
             with self._lock:
                 events = tuple(self._pending)
-                self._pending.clear()
-            if not events:
-                return ()
-            event_keys = {_partition_key(event.timing) for event in events}
-            with self._lock:
+                pending_bytes = self._pending_bytes
+                oldest_pending_monotonic_ns = self._oldest_pending_monotonic_ns
+                event_keys = {
+                    _partition_key(
+                        event.timing,
+                        collector_session_id=event.collector_session_id,
+                    )
+                    for event in events
+                }
                 quality_counts = {
                     key: self._pending_quality_counts.pop(key)
                     for key in event_keys
                     if key in self._pending_quality_counts
                 }
+                self._pending.clear()
+                self._pending_bytes = 0
+                self._inflight_events = len(events)
+                self._inflight_bytes = pending_bytes
+                self._oldest_pending_monotonic_ns = None
+            if not events:
+                return ()
+            flush_started_ns = monotonic_ns()
             try:
-                return self._writer.write(events, quality_counts=quality_counts)
+                manifests = self._writer.write(events, quality_counts=quality_counts)
             except Exception:
                 with self._lock:
                     self._pending[0:0] = events
+                    self._pending_bytes += pending_bytes
+                    self._inflight_events = 0
+                    self._inflight_bytes = 0
+                    self._high_water_events = max(
+                        self._high_water_events,
+                        len(self._pending),
+                    )
+                    self._high_water_bytes = max(
+                        self._high_water_bytes,
+                        self._pending_bytes,
+                    )
+                    if self._oldest_pending_monotonic_ns is None or (
+                        oldest_pending_monotonic_ns is not None
+                        and oldest_pending_monotonic_ns < self._oldest_pending_monotonic_ns
+                    ):
+                        self._oldest_pending_monotonic_ns = oldest_pending_monotonic_ns
+                    self._flush_failures += 1
                     for key, counts in quality_counts.items():
                         _add_quality_counts(
                             self._pending_quality_counts,
@@ -763,6 +1538,19 @@ class BtcForwardCollector:
                             gap_count=counts[1],
                         )
                 raise
+            flush_finished_ns = monotonic_ns()
+            queue_delay_ms = (
+                0.0
+                if oldest_pending_monotonic_ns is None
+                else (flush_started_ns - oldest_pending_monotonic_ns) / 1_000_000
+            )
+            with self._lock:
+                self._inflight_events = 0
+                self._inflight_bytes = 0
+                self._flush_count += 1
+                self._last_flush_duration_ms = (flush_finished_ns - flush_started_ns) / 1_000_000
+                self._max_queue_delay_ms = max(self._max_queue_delay_ms, queue_delay_ms)
+            return manifests
 
     async def collect_forever(
         self,
@@ -776,6 +1564,15 @@ class BtcForwardCollector:
         """Run BTC public subscriptions until stopped, flushing outside socket callbacks."""
 
         if stop_event.is_set():
+            loop = asyncio.get_running_loop()
+            flush_task = asyncio.create_task(
+                self._flush_async(),
+                name="btc-raw-final-flush",
+            )
+            await self._await_flush_task(
+                flush_task,
+                deadline=loop.time() + self.shutdown_flush_timeout_seconds,
+            )
             return
         self.configure_required_feeds(
             binance_streams=binance_streams,
@@ -796,84 +1593,244 @@ class BtcForwardCollector:
         futures_public_stream_ids = _binance_stream_ids(futures_public_stream_names)
         normalized_okx_subscriptions = tuple(dict(item) for item in okx_subscriptions)
         resync_tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
+        resync_failures: asyncio.Queue[Exception] = asyncio.Queue()
+        flush_requested = asyncio.Event()
+        capacity_available = asyncio.Event()
+        capacity_available.set()
+        ingress_lock = asyncio.Lock()
+
+        async def admit_with_backpressure(operation: Callable[[], Any]) -> Any:
+            while True:
+                await self._coordinate_buffer(
+                    flush_requested=flush_requested,
+                    capacity_available=capacity_available,
+                )
+                try:
+                    result = operation()
+                except CollectorBufferCapacityError:
+                    if self.buffer_stats.total_events == 0:
+                        raise
+                    capacity_available.clear()
+                    flush_requested.set()
+                    await capacity_available.wait()
+                    continue
+                await self._coordinate_buffer(
+                    flush_requested=flush_requested,
+                    capacity_available=capacity_available,
+                )
+                return result
+
         async with httpx.AsyncClient(
             timeout=self.binance_depth_snapshot_timeout_seconds
         ) as snapshot_client:
 
             async def refresh_depth_safely(source: str, instrument: str) -> None:
-                try:
-                    await self.refresh_binance_depth_snapshot(
-                        instrument=instrument,
-                        client=snapshot_client,
-                        source=source,
+                attempt = 0
+                fetch_gap_recorded = False
+
+                async def admit_snapshot(
+                    payload: Mapping[str, object],
+                    received_at: datetime,
+                ) -> CollectorIngressResult:
+                    async with ingress_lock:
+                        return await admit_with_backpressure(
+                            lambda: self.handle_binance_depth_snapshot(
+                                instrument=instrument,
+                                payload=payload,
+                                collector_receive_ts=received_at,
+                                source=source,
+                            )
+                        )
+
+                while not stop_event.is_set():
+                    try:
+                        result = await self.refresh_binance_depth_snapshot(
+                            instrument=instrument,
+                            client=snapshot_client,
+                            source=source,
+                            snapshot_handler=admit_snapshot,
+                        )
+                    except (httpx.HTTPError, ValueError) as exc:
+                        if not fetch_gap_recorded:
+                            gap_reason = f"depth_snapshot_{type(exc).__name__}"
+                            async with ingress_lock:
+                                await admit_with_backpressure(
+                                    lambda: self.mark_gap(
+                                        source=source,
+                                        instrument=instrument,
+                                        stream_id=_DEPTH_STREAM,
+                                        reason=gap_reason,
+                                    )
+                                )
+                            fetch_gap_recorded = True
+                    else:
+                        if result.rejected_events and not fetch_gap_recorded:
+                            async with ingress_lock:
+                                await admit_with_backpressure(
+                                    lambda: self.mark_gap(
+                                        source=source,
+                                        instrument=instrument,
+                                        stream_id=_DEPTH_STREAM,
+                                        reason="depth_snapshot_rejected",
+                                    )
+                                )
+                            fetch_gap_recorded = True
+                        if not self.binance_depth_requires_snapshot(
+                            instrument,
+                            source=source,
+                        ):
+                            return
+                    delay = min(
+                        self.binance_depth_snapshot_retry_max_seconds,
+                        self.binance_depth_snapshot_retry_initial_seconds * (2 ** min(attempt, 63)),
                     )
-                except (httpx.HTTPError, ValueError) as exc:
-                    self.invalidate_binance_depth(instrument, source=source)
-                    self.mark_gap(
-                        source=source,
-                        instrument=instrument,
-                        stream_id=_DEPTH_STREAM,
-                        reason=f"depth_snapshot_{type(exc).__name__}",
-                    )
+                    attempt += 1
+                    try:
+                        await asyncio.wait_for(stop_event.wait(), timeout=delay)
+                    except TimeoutError:
+                        continue
+                    return
 
             def schedule_depth_refresh(source: str, instrument: str) -> None:
                 key = (source, instrument)
                 current = resync_tasks.get(key)
                 if current is None or current.done():
-                    resync_tasks[key] = asyncio.create_task(
-                        refresh_depth_safely(source, instrument)
+                    task = asyncio.create_task(refresh_depth_safely(source, instrument))
+                    resync_tasks[key] = task
+
+                    def observe_result(completed: asyncio.Task[None]) -> None:
+                        if resync_tasks.get(key) is completed:
+                            resync_tasks.pop(key, None)
+                        if completed.cancelled():
+                            return
+                        error = completed.exception()
+                        if error is not None:
+                            resync_failures.put_nowait(error)
+
+                    task.add_done_callback(observe_result)
+
+            def on_binance_connected(
+                source: str,
+                instruments: tuple[str, ...],
+            ):
+                def schedule_initial_snapshots() -> None:
+                    for instrument in instruments:
+                        schedule_depth_refresh(source, instrument)
+
+                return schedule_initial_snapshots
+
+            async def supervise_depth_refreshes() -> None:
+                failure_task = asyncio.create_task(resync_failures.get())
+                stop_task = asyncio.create_task(stop_event.wait())
+                try:
+                    done, _ = await asyncio.wait(
+                        {failure_task, stop_task},
+                        return_when=asyncio.FIRST_COMPLETED,
                     )
+                    if failure_task in done:
+                        raise failure_task.result()
+                finally:
+                    for task in (failure_task, stop_task):
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(failure_task, stop_task, return_exceptions=True)
 
-            async def on_polymarket(payload: Mapping[str, object], received: datetime) -> None:
-                self.handle_polymarket(payload, collector_receive_ts=received)
-                await self._flush_if_required()
+            async def on_polymarket(payload: Mapping[str, object], received: datetime) -> bool:
+                async with ingress_lock:
+                    result = await admit_with_backpressure(
+                        lambda: self.handle_polymarket(
+                            payload,
+                            collector_receive_ts=received,
+                        )
+                    )
+                if result.resubscribe_required:
+                    raise _FeedResubscribeRequired("Polymarket book requires a fresh subscription")
+                return result.accepted_events > 0
 
-            async def on_rtds(payload: Mapping[str, object], received: datetime) -> None:
-                self.handle_chainlink_rtds(payload, collector_receive_ts=received)
-                await self._flush_if_required()
+            async def on_rtds(payload: Mapping[str, object], received: datetime) -> bool:
+                async with ingress_lock:
+                    result = await admit_with_backpressure(
+                        lambda: self.handle_chainlink_rtds(
+                            payload,
+                            collector_receive_ts=received,
+                        )
+                    )
+                return result.accepted_events > 0
 
             def on_binance(source: str):
-                async def receive(payload: Mapping[str, object], received: datetime) -> None:
-                    self.handle_binance(
-                        payload,
-                        collector_receive_ts=received,
-                        source=source,
-                    )
-                    message = payload.get("data")
-                    event = message if isinstance(message, Mapping) else payload
-                    instrument = event.get("s")
-                    if (
-                        str(event.get("e") or "").casefold() == "depthupdate"
-                        and isinstance(instrument, str)
-                        and instrument
-                        and self.binance_depth_needs_snapshot(instrument, source=source)
-                    ):
-                        schedule_depth_refresh(source, instrument)
-                    await self._flush_if_required()
+                async def receive(payload: Mapping[str, object], received: datetime) -> bool:
+                    async with ingress_lock:
+                        result = await admit_with_backpressure(
+                            lambda: self.handle_binance(
+                                payload,
+                                collector_receive_ts=received,
+                                source=source,
+                            )
+                        )
+                        message = payload.get("data")
+                        event = message if isinstance(message, Mapping) else payload
+                        instrument = event.get("s")
+                        if (
+                            str(event.get("e") or "").casefold() == "depthupdate"
+                            and isinstance(instrument, str)
+                            and instrument
+                            and self.binance_depth_requires_snapshot(
+                                instrument,
+                                source=source,
+                            )
+                        ):
+                            schedule_depth_refresh(source, instrument)
+                    if result.resubscribe_required:
+                        raise _FeedResubscribeRequired(
+                            "Binance depth payload requires a fresh connection"
+                        )
+                    return result.accepted_events > 0
 
                 return receive
 
-            async def on_okx(payload: Mapping[str, object], received: datetime) -> None:
-                self.handle_okx(payload, collector_receive_ts=received)
-                await self._flush_if_required()
+            async def on_okx(payload: Mapping[str, object], received: datetime) -> bool:
+                async with ingress_lock:
+                    result = await admit_with_backpressure(
+                        lambda: self.handle_okx(
+                            payload,
+                            collector_receive_ts=received,
+                        )
+                    )
+                if result.resubscribe_required:
+                    raise _FeedResubscribeRequired("OKX book requires a fresh subscription")
+                return result.accepted_events > 0
 
             async def on_polymarket_error(exc: Exception) -> None:
-                for token_id in self.token_ids:
-                    self.invalidate_polymarket_token(token_id)
-                    self.mark_gap(
-                        source="polymarket_clob",
-                        instrument=token_id,
-                        stream_id=_MARKET_STREAM,
-                        reason=type(exc).__name__,
-                    )
+                async with ingress_lock:
+
+                    def record_error() -> None:
+                        self.mark_gaps(
+                            tuple(
+                                (
+                                    "polymarket_clob",
+                                    token_id,
+                                    _MARKET_STREAM,
+                                    type(exc).__name__,
+                                    None,
+                                )
+                                for token_id in self.token_ids
+                            )
+                        )
+                        for token_id in self.token_ids:
+                            self.invalidate_polymarket_token(token_id)
+
+                    await admit_with_backpressure(record_error)
 
             async def on_rtds_error(exc: Exception) -> None:
-                self.mark_gap(
-                    source="polymarket_rtds_chainlink",
-                    instrument="btc/usd",
-                    stream_id=_PRICE_STREAM,
-                    reason=type(exc).__name__,
-                )
+                async with ingress_lock:
+                    await admit_with_backpressure(
+                        lambda: self.mark_gap(
+                            source="polymarket_rtds_chainlink",
+                            instrument="btc/usd",
+                            stream_id=_PRICE_STREAM,
+                            reason=type(exc).__name__,
+                        )
+                    )
 
             def on_binance_error(
                 source: str,
@@ -882,41 +1839,57 @@ class BtcForwardCollector:
                 stream_ids: tuple[str, ...],
             ):
                 async def report(exc: Exception) -> None:
-                    for instrument in instruments:
-                        if instrument in depth_instruments:
-                            self.invalidate_binance_depth(instrument, source=source)
-                        for stream_id in stream_ids:
-                            self.mark_gap(
-                                source=source,
-                                instrument=instrument,
-                                stream_id=stream_id,
-                                reason=type(exc).__name__,
+                    async with ingress_lock:
+
+                        def record_error() -> None:
+                            gaps = tuple(
+                                (
+                                    source,
+                                    instrument,
+                                    stream_id,
+                                    type(exc).__name__,
+                                    None,
+                                )
+                                for instrument in instruments
+                                for stream_id in stream_ids
                             )
+                            if gaps:
+                                self.mark_gaps(gaps)
+                            for instrument in depth_instruments:
+                                self.invalidate_binance_depth(instrument, source=source)
+
+                        await admit_with_backpressure(record_error)
 
                 return report
 
             async def on_okx_error(exc: Exception) -> None:
-                for subscription in normalized_okx_subscriptions:
-                    instrument = subscription.get("instId")
-                    if not isinstance(instrument, str):
-                        continue
-                    source = _okx_source_for_instrument(instrument)
-                    if source is None:
-                        continue
-                    stream_id = _okx_stream_id(subscription.get("channel"))
-                    if stream_id is None:
-                        continue
-                    if stream_id == _BOOK_STREAM:
-                        self._okx_book_synchronizer(
-                            source=source,
-                            instrument=instrument,
-                        ).reset()
-                    self.mark_gap(
-                        source=source,
-                        instrument=instrument,
-                        stream_id=stream_id,
-                        reason=type(exc).__name__,
-                    )
+                async with ingress_lock:
+                    gaps: list[tuple[str, str, str, str, datetime | None]] = []
+                    book_streams: list[tuple[str, str]] = []
+                    for subscription in normalized_okx_subscriptions:
+                        instrument = subscription.get("instId")
+                        if not isinstance(instrument, str):
+                            continue
+                        source = _okx_source_for_instrument(instrument)
+                        if source is None:
+                            continue
+                        stream_id = _okx_stream_id(subscription.get("channel"))
+                        if stream_id is None:
+                            continue
+                        if stream_id == _BOOK_STREAM:
+                            book_streams.append((source, instrument))
+                        gaps.append((source, instrument, stream_id, type(exc).__name__, None))
+
+                    def record_error() -> None:
+                        if gaps:
+                            self.mark_gaps(tuple(gaps))
+                        for source, instrument in book_streams:
+                            self._okx_book_synchronizer(
+                                source=source,
+                                instrument=instrument,
+                            ).reset()
+
+                    await admit_with_backpressure(record_error)
 
             if self.okx_swap_contract_value is None and any(
                 item.get("instId") == "BTC-USDT-SWAP" for item in normalized_okx_subscriptions
@@ -931,14 +1904,7 @@ class BtcForwardCollector:
                         reason=f"contract_metadata_{type(exc).__name__}",
                     )
 
-            for source, instruments in (
-                ("binance_spot", spot_depth_instruments),
-                ("binance_perp", futures_depth_instruments),
-            ):
-                for instrument in instruments:
-                    await refresh_depth_safely(source, instrument)
-
-            collectors: list[object] = [
+            collectors = [
                 JsonWebSocketCollector(
                     polymarket_market_subscription(self.token_ids)
                 ).collect_forever(
@@ -953,22 +1919,38 @@ class BtcForwardCollector:
                     on_payload=on_rtds,
                     on_error=on_rtds_error,
                 ),
+                supervise_depth_refreshes(),
             ]
             if spot_stream_names:
-                collectors.append(
-                    JsonWebSocketCollector(
-                        binance_combined_stream_subscription(spot_stream_names)
-                    ).collect_forever(
-                        stop_event=stop_event,
-                        on_payload=on_binance("binance_spot"),
-                        on_error=on_binance_error(
-                            "binance_spot",
-                            spot_instruments,
-                            spot_depth_instruments,
-                            spot_stream_ids,
-                        ),
-                    )
+                spot_collector = JsonWebSocketCollector(
+                    binance_combined_stream_subscription(spot_stream_names)
                 )
+                spot_error = on_binance_error(
+                    "binance_spot",
+                    spot_instruments,
+                    spot_depth_instruments,
+                    spot_stream_ids,
+                )
+                if spot_depth_instruments:
+                    collectors.append(
+                        spot_collector.collect_forever(
+                            stop_event=stop_event,
+                            on_payload=on_binance("binance_spot"),
+                            on_error=spot_error,
+                            on_connected=on_binance_connected(
+                                "binance_spot",
+                                spot_depth_instruments,
+                            ),
+                        )
+                    )
+                else:
+                    collectors.append(
+                        spot_collector.collect_forever(
+                            stop_event=stop_event,
+                            on_payload=on_binance("binance_spot"),
+                            on_error=spot_error,
+                        )
+                    )
             if futures_market_stream_names:
                 collectors.append(
                     JsonWebSocketCollector(
@@ -985,20 +1967,35 @@ class BtcForwardCollector:
                     )
                 )
             if futures_public_stream_names:
-                collectors.append(
-                    JsonWebSocketCollector(
-                        binance_futures_public_stream_subscription(futures_public_stream_names)
-                    ).collect_forever(
-                        stop_event=stop_event,
-                        on_payload=on_binance("binance_perp"),
-                        on_error=on_binance_error(
-                            "binance_perp",
-                            futures_public_instruments,
-                            futures_depth_instruments,
-                            futures_public_stream_ids,
-                        ),
-                    )
+                futures_public_collector = JsonWebSocketCollector(
+                    binance_futures_public_stream_subscription(futures_public_stream_names)
                 )
+                futures_public_error = on_binance_error(
+                    "binance_perp",
+                    futures_public_instruments,
+                    futures_depth_instruments,
+                    futures_public_stream_ids,
+                )
+                if futures_depth_instruments:
+                    collectors.append(
+                        futures_public_collector.collect_forever(
+                            stop_event=stop_event,
+                            on_payload=on_binance("binance_perp"),
+                            on_error=futures_public_error,
+                            on_connected=on_binance_connected(
+                                "binance_perp",
+                                futures_depth_instruments,
+                            ),
+                        )
+                    )
+                else:
+                    collectors.append(
+                        futures_public_collector.collect_forever(
+                            stop_event=stop_event,
+                            on_payload=on_binance("binance_perp"),
+                            on_error=futures_public_error,
+                        )
+                    )
             if normalized_okx_subscriptions:
                 collectors.append(
                     JsonWebSocketCollector(
@@ -1009,24 +2006,244 @@ class BtcForwardCollector:
                         on_error=on_okx_error,
                     )
                 )
-            collectors.append(self._flush_periodically(stop_event=stop_event))
+            feed_tasks = tuple(
+                asyncio.create_task(
+                    coroutine,
+                    name=f"btc-public-feed-{index}",
+                )
+                for index, coroutine in enumerate(collectors)
+            )
+            flush_worker = asyncio.create_task(
+                self._run_flush_worker(
+                    stop_event=stop_event,
+                    flush_requested=flush_requested,
+                    capacity_available=capacity_available,
+                ),
+                name="btc-raw-flush-worker",
+            )
+            primary_exception: BaseException | None = None
             try:
-                await asyncio.gather(*collectors)
+                try:
+                    done, _ = await asyncio.wait(
+                        {*feed_tasks, flush_worker},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    for task in done:
+                        await task
+                    if not stop_event.is_set():
+                        if flush_worker in done:
+                            raise RuntimeError("raw flush worker exited unexpectedly")
+                        raise RuntimeError("public feed collector exited unexpectedly")
+                except BaseException as exc:
+                    primary_exception = exc
+                    raise
             finally:
-                await asyncio.gather(*resync_tasks.values(), return_exceptions=True)
-                await asyncio.to_thread(self.flush)
+                shutdown_deadline = (
+                    asyncio.get_running_loop().time() + self.shutdown_flush_timeout_seconds
+                )
+                stop_event.set()
+                producer_errors: tuple[BaseException, ...] = ()
+                try:
+                    producer_errors = await self._quiesce_tasks(
+                        (*feed_tasks, *resync_tasks.values()),
+                        deadline=shutdown_deadline,
+                    )
+                    flush_requested.set()
+                    await self._await_flush_task(
+                        flush_worker,
+                        deadline=shutdown_deadline,
+                    )
+                    if self.buffer_stats.total_events:
+                        final_flush = asyncio.create_task(
+                            self._flush_async(),
+                            name="btc-raw-final-flush",
+                        )
+                        await self._await_flush_task(
+                            final_flush,
+                            deadline=shutdown_deadline,
+                        )
+                    remaining = self.buffer_stats
+                    if remaining.total_events or remaining.total_bytes:
+                        raise RuntimeError(
+                            "raw flush completed without draining the collector buffer"
+                        )
+                    additional_producer_errors = tuple(
+                        error for error in producer_errors if error is not primary_exception
+                    )
+                    if additional_producer_errors:
+                        _raise_first_with_notes(
+                            additional_producer_errors,
+                            note_prefix="additional producer cleanup failure",
+                        )
+                except BaseException as cleanup_error:
+                    additional_producer_errors = tuple(
+                        error
+                        for error in producer_errors
+                        if error is not primary_exception and error is not cleanup_error
+                    )
+                    for error in additional_producer_errors:
+                        cleanup_error.add_note(f"producer cleanup also failed: {error!r}")
+                    if not flush_worker.done():
+                        flush_worker.cancel()
+                        flush_worker.add_done_callback(_consume_background_task_exception)
+                    if primary_exception is None:
+                        raise
+                    for error in additional_producer_errors:
+                        primary_exception.add_note(f"producer cleanup also failed: {error!r}")
+                    primary_exception.add_note(f"collector shutdown also failed: {cleanup_error!r}")
 
-    async def _flush_if_required(self) -> None:
-        if self.flush_required:
-            await asyncio.to_thread(self.flush)
+    async def _await_flush_task(
+        self,
+        task: asyncio.Task[Any],
+        *,
+        deadline: float,
+    ) -> Any:
+        if task.done():
+            return await task
+        remaining_seconds = deadline - asyncio.get_running_loop().time()
+        if remaining_seconds <= 0.0:
+            _cancel_background_task(task)
+            raise RuntimeError("raw flush did not finish before shutdown_flush_timeout_seconds")
+        try:
+            return await asyncio.wait_for(
+                asyncio.shield(task),
+                timeout=remaining_seconds,
+            )
+        except asyncio.CancelledError:
+            _cancel_background_task(task)
+            raise
+        except TimeoutError as exc:
+            if task.done():
+                return await task
+            _cancel_background_task(task)
+            raise RuntimeError(
+                "raw flush did not finish before shutdown_flush_timeout_seconds"
+            ) from exc
 
-    async def _flush_periodically(self, *, stop_event: asyncio.Event) -> None:
-        while not stop_event.is_set():
+    async def _flush_async(self) -> tuple[DataPartitionManifest, ...]:
+        """Run one blocking write on a daemon thread so shutdown cannot hang Python."""
+
+        loop = asyncio.get_running_loop()
+        completion: asyncio.Future[tuple[DataPartitionManifest, ...]] = loop.create_future()
+
+        def publish_result(result: tuple[DataPartitionManifest, ...]) -> None:
+            if not completion.done():
+                completion.set_result(result)
+
+        def publish_error(error: BaseException) -> None:
+            if not completion.done():
+                completion.set_exception(error)
+
+        def run_flush() -> None:
             try:
-                await asyncio.wait_for(stop_event.wait(), timeout=self.flush_interval_seconds)
-            except TimeoutError:
+                result = self.flush()
+            except BaseException as exc:
+                try:
+                    loop.call_soon_threadsafe(publish_error, exc)
+                except RuntimeError:
+                    pass
+            else:
+                try:
+                    loop.call_soon_threadsafe(publish_result, result)
+                except RuntimeError:
+                    pass
+
+        Thread(
+            target=run_flush,
+            name=f"btc-raw-flush-{self.collector_session_id[:8]}",
+            daemon=True,
+        ).start()
+        return await completion
+
+    async def _quiesce_tasks(
+        self,
+        tasks: Sequence[asyncio.Task[Any]],
+        *,
+        deadline: float,
+    ) -> tuple[BaseException, ...]:
+        """Cancel producers and wait only within the collector-wide shutdown budget."""
+
+        all_tasks = tuple(dict.fromkeys(tasks))
+        for task in all_tasks:
+            if not task.done():
+                task.cancel()
+        if not all_tasks:
+            return ()
+        remaining_seconds = deadline - asyncio.get_running_loop().time()
+        if remaining_seconds > 0.0:
+            done, pending = await asyncio.wait(
+                all_tasks,
+                timeout=remaining_seconds,
+            )
+        else:
+            done = {task for task in all_tasks if task.done()}
+            pending = set(all_tasks) - done
+        errors: list[BaseException] = []
+        for task in done:
+            if task.cancelled():
+                continue
+            error = task.exception()
+            if error is not None:
+                errors.append(error)
+        if pending:
+            for task in pending:
+                task.cancel()
+                task.add_done_callback(_consume_background_task_exception)
+            task_names = ", ".join(sorted(task.get_name() for task in pending))
+            raise RuntimeError(
+                f"collector tasks did not stop before shutdown_flush_timeout_seconds: {task_names}"
+            )
+        return tuple(errors)
+
+    async def _coordinate_buffer(
+        self,
+        *,
+        flush_requested: asyncio.Event,
+        capacity_available: asyncio.Event,
+    ) -> None:
+        if self.flush_required:
+            flush_requested.set()
+        if not self.buffer_at_capacity:
+            return
+        capacity_available.clear()
+        flush_requested.set()
+        await capacity_available.wait()
+
+    async def _run_flush_worker(
+        self,
+        *,
+        stop_event: asyncio.Event,
+        flush_requested: asyncio.Event,
+        capacity_available: asyncio.Event,
+    ) -> None:
+        stop_task = asyncio.create_task(stop_event.wait())
+        flush_signal_task: asyncio.Task[bool] | None = None
+        try:
+            while True:
+                flush_signal_task = asyncio.create_task(flush_requested.wait())
+                done, _ = await asyncio.wait(
+                    {flush_signal_task, stop_task},
+                    timeout=self.flush_interval_seconds,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if flush_signal_task in done:
+                    flush_requested.clear()
+                else:
+                    flush_signal_task.cancel()
+                    await asyncio.gather(flush_signal_task, return_exceptions=True)
+                flush_signal_task = None
                 if self.pending_event_count:
-                    await asyncio.to_thread(self.flush)
+                    await self._flush_async()
+                if not self.buffer_at_capacity:
+                    capacity_available.set()
+                if stop_task in done and not self.pending_event_count:
+                    return
+        finally:
+            waiters = tuple(task for task in (flush_signal_task, stop_task) if task is not None)
+            for task in waiters:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*waiters, return_exceptions=True)
 
     def _ingest(
         self,
@@ -1039,62 +2256,101 @@ class BtcForwardCollector:
         if not stream_id:
             raise ValueError("stream_id is required")
         timing = replace(timing, ingest_version=self.ingest_version)
-        decision = self._validator(
-            source=timing.source,
-            instrument=timing.instrument,
-            stream_id=stream_id,
-        ).observe(timing)
-        if not decision.accepted:
-            if decision.reason == "duplicate":
-                self._record_partition_quality(timing, duplicate_count=1)
-            elif decision.reason == "out_of_order":
-                self._invalidate_state_after_quality_gap(timing, stream_id=stream_id)
-                self._record_unattributed_gap(
-                    source=timing.source,
-                    instrument=timing.instrument,
-                    stream_id=stream_id,
-                )
-            return _rejected(decision.reason)
-        event = RawCollectorEvent(
-            timing=timing,
-            event_type=event_type,
-            payload=payload,
-            epoch_id=self.epoch_id_offset + decision.epoch_id,
-        )
+        validator_key = (timing.source, timing.instrument, stream_id)
         with self._lock:
-            source_key = (timing.source, timing.instrument, stream_id)
-            gap_count = self._unattributed_gaps.pop(source_key, 0)
-            if gap_count:
-                _add_quality_counts(
-                    self._pending_quality_counts,
-                    _partition_key(timing),
-                    gap_count=gap_count,
+            validator = self._validator(
+                source=timing.source,
+                instrument=timing.instrument,
+                stream_id=stream_id,
+            )
+            prepared = validator.prepare(timing)
+            decision = prepared.decision
+            if not decision.accepted:
+                gap_event: RawCollectorEvent | None = None
+                if decision.reason == "out_of_order":
+                    gap_event = self._new_gap_event(
+                        source=timing.source,
+                        instrument=timing.instrument,
+                        stream_id=stream_id,
+                        reason="available_time_regression",
+                        observed_at=timing.collector_receive_ts or timing.available_ts,
+                        previous_available_ts=validator.last_available_ts,
+                    )
+                    self._ensure_capacity_locked((gap_event,))
+                validator.commit(prepared)
+                if decision.reason == "duplicate":
+                    _add_quality_counts(
+                        self._pending_quality_counts,
+                        _partition_key(
+                            timing,
+                            collector_session_id=self.collector_session_id,
+                        ),
+                        duplicate_count=1,
+                    )
+                elif decision.reason == "out_of_order":
+                    self._invalidate_state_after_quality_gap(timing, stream_id=stream_id)
+                    assert gap_event is not None
+                    self._append_gap_event_locked(
+                        event=gap_event,
+                        validator=validator,
+                        stream_id=stream_id,
+                    )
+                return _rejected(decision.reason).merged(
+                    CollectorIngressResult(
+                        resubscribe_required=_quality_gap_requires_resubscribe(
+                            source=timing.source,
+                            stream_id=stream_id,
+                        )
+                    )
                 )
-            self._pending.append(event)
+            event = RawCollectorEvent(
+                timing=timing,
+                event_type=event_type,
+                payload=payload,
+                collector_session_id=self.collector_session_id,
+                epoch_id=_session_epoch_id(
+                    epoch_id_offset=self.epoch_id_offset,
+                    local_epoch_id=decision.epoch_id,
+                ),
+            )
+            self._ensure_capacity_locked((event,))
+            validator.commit(prepared)
+            self._validators[validator_key] = validator
+            source_key = (timing.source, timing.instrument, stream_id)
+            self._unresolved_gaps.pop(source_key, None)
+            self._append_pending_event_locked(event)
             self._last_feed_event_at[source_key] = (
                 timing.collector_receive_ts or timing.available_ts
             ).astimezone(UTC)
         return CollectorIngressResult(accepted_events=1, stale_events=int(decision.stale))
 
-    def _record_partition_quality(
+    def _quality_would_accept(
         self,
-        timing: TimedMarketEvent,
         *,
-        duplicate_count: int = 0,
-        gap_count: int = 0,
-    ) -> None:
+        timing: TimedMarketEvent,
+        stream_id: str,
+    ) -> bool:
+        timing = replace(timing, ingest_version=self.ingest_version)
         with self._lock:
-            _add_quality_counts(
-                self._pending_quality_counts,
-                _partition_key(timing),
-                duplicate_count=duplicate_count,
-                gap_count=gap_count,
+            return (
+                self._validator(
+                    source=timing.source,
+                    instrument=timing.instrument,
+                    stream_id=stream_id,
+                )
+                .prepare(timing)
+                .decision.accepted
             )
 
-    def _record_unattributed_gap(self, *, source: str, instrument: str, stream_id: str) -> None:
-        with self._lock:
-            key = (source, instrument, stream_id)
-            self._unattributed_gaps[key] = self._unattributed_gaps.get(key, 0) + 1
+    def _ensure_capacity_locked(self, events: Sequence[RawCollectorEvent]) -> None:
+        added_events = len(events)
+        added_bytes = sum(event.estimated_size_bytes for event in events)
+        projected_events = len(self._pending) + self._inflight_events + added_events
+        projected_bytes = self._pending_bytes + self._inflight_bytes + added_bytes
+        if projected_events > self.max_pending_events:
+            raise CollectorBufferCapacityError("raw event buffer would exceed max_pending_events")
+        if projected_bytes > self.max_pending_bytes:
+            raise CollectorBufferCapacityError("raw event buffer would exceed max_pending_bytes")
 
     def _validator(self, *, source: str, instrument: str, stream_id: str) -> EventQualityValidator:
         key = (source, instrument, stream_id)
@@ -1104,11 +2360,124 @@ class BtcForwardCollector:
             self._validators[key] = validator
         return validator
 
+    def _new_gap_event(
+        self,
+        *,
+        source: str,
+        instrument: str,
+        stream_id: str,
+        reason: str,
+        observed_at: datetime | None,
+        previous_available_ts: datetime | None,
+    ) -> RawCollectorEvent:
+        source, instrument, stream_id, reason = _normalize_gap_identity(
+            source=source,
+            instrument=instrument,
+            stream_id=stream_id,
+            reason=reason,
+        )
+        boundary_at = _gap_boundary_time(
+            observed_at=observed_at,
+            previous_available_ts=previous_available_ts,
+        )
+        return RawCollectorEvent(
+            timing=TimedMarketEvent(
+                source_ts=boundary_at,
+                collector_receive_ts=boundary_at,
+                available_ts=boundary_at,
+                sequence_or_hash=f"gap:{stream_id}:{uuid4().hex}",
+                source=source,
+                instrument=instrument,
+                schema_version=_CONTINUITY_GAP_SCHEMA_VERSION,
+                ingest_version=self.ingest_version,
+            ),
+            event_type=_CONTINUITY_GAP_EVENT_TYPE,
+            payload={
+                "event_type": _CONTINUITY_GAP_EVENT_TYPE,
+                "stream_id": stream_id,
+                "reason": reason,
+            },
+            collector_session_id=self.collector_session_id,
+            epoch_id=0,
+        )
+
+    def _append_gap_event_locked(
+        self,
+        *,
+        event: RawCollectorEvent,
+        validator: EventQualityValidator,
+        stream_id: str,
+    ) -> None:
+        prepared = validator.prepare(event.timing)
+        if not prepared.decision.accepted:
+            raise RuntimeError("continuity gap boundary was not causally admissible")
+        event = RawCollectorEvent(
+            timing=event.timing,
+            event_type=event.event_type,
+            payload=dict(event.payload),
+            collector_session_id=event.collector_session_id,
+            epoch_id=_session_epoch_id(
+                epoch_id_offset=self.epoch_id_offset,
+                local_epoch_id=prepared.decision.epoch_id,
+            ),
+        )
+        validator.commit(prepared)
+        key = (event.timing.source, event.timing.instrument, stream_id)
+        self._validators[key] = validator
+        self._unresolved_gaps[key] = self._unresolved_gaps.get(key, 0) + 1
+        _add_quality_counts(
+            self._pending_quality_counts,
+            _partition_key(
+                event.timing,
+                collector_session_id=self.collector_session_id,
+            ),
+            gap_count=1,
+        )
+        self._append_pending_event_locked(event)
+
+    def _commit_gap_event_locked(
+        self,
+        *,
+        event: RawCollectorEvent,
+        validator: EventQualityValidator,
+        stream_id: str,
+        reason: str,
+    ) -> None:
+        validator.mark_gap(reason=reason)
+        self._append_gap_event_locked(
+            event=event,
+            validator=validator,
+            stream_id=stream_id,
+        )
+
+    def _append_pending_event_locked(self, event: RawCollectorEvent) -> None:
+        event = event.with_admission_sequence(self._next_admission_sequence)
+        self._next_admission_sequence += 1
+        if not self._pending:
+            self._oldest_pending_monotonic_ns = monotonic_ns()
+        self._pending.append(event)
+        self._pending_bytes += event.estimated_size_bytes
+        self._high_water_events = max(
+            self._high_water_events,
+            len(self._pending) + self._inflight_events,
+        )
+        self._high_water_bytes = max(
+            self._high_water_bytes,
+            self._pending_bytes + self._inflight_bytes,
+        )
+
     def _binance_depth_snapshot_url(self, source: str) -> str:
         if source == "binance_spot":
             return self.binance_depth_snapshot_url
         if source == "binance_perp":
             return self.binance_futures_depth_snapshot_url
+        raise ValueError("Binance source must be 'binance_spot' or 'binance_perp'")
+
+    def _binance_depth_snapshot_limit(self, source: str) -> int:
+        if source == "binance_spot":
+            return self.binance_spot_depth_snapshot_limit
+        if source == "binance_perp":
+            return self.binance_futures_depth_snapshot_limit
         raise ValueError("Binance source must be 'binance_spot' or 'binance_perp'")
 
     def _depth_synchronizer(self, *, source: str, instrument: str) -> BinanceDepthSynchronizer:
@@ -1141,6 +2510,105 @@ class BtcForwardCollector:
             self._okx_book_synchronizer(source=timing.source, instrument=timing.instrument).reset()
 
 
+def _session_epoch_id(
+    *,
+    epoch_id_offset: int,
+    local_epoch_id: int,
+) -> int:
+    epoch_id = epoch_id_offset + local_epoch_id
+    if epoch_id > (1 << 63) - 1:
+        raise OverflowError("collector epoch exceeds signed 64-bit storage")
+    return epoch_id
+
+
+def _normalize_gap_identity(
+    *,
+    source: str,
+    instrument: str,
+    stream_id: str,
+    reason: str,
+) -> tuple[str, str, str, str]:
+    normalized_source = source.strip().casefold()
+    normalized_instrument = instrument.strip()
+    normalized_stream_id = stream_id.strip()
+    if not normalized_source or not normalized_instrument or not normalized_stream_id:
+        raise ValueError("source, instrument, and stream_id are required")
+    normalized_reason = reason.strip()
+    if not normalized_reason:
+        raise ValueError("gap reason is required")
+    if len(normalized_reason) > _MAX_GAP_REASON_LENGTH:
+        raise ValueError(f"gap reason must not exceed {_MAX_GAP_REASON_LENGTH} characters")
+    return (
+        normalized_source,
+        normalized_instrument,
+        normalized_stream_id,
+        normalized_reason,
+    )
+
+
+def _consume_background_task_exception(task: asyncio.Task[Any]) -> None:
+    if not task.cancelled():
+        task.exception()
+
+
+def _cancel_background_task(task: asyncio.Task[Any]) -> None:
+    if not task.done():
+        task.cancel()
+        task.add_done_callback(_consume_background_task_exception)
+
+
+def _gap_boundary_time(
+    *,
+    observed_at: datetime | None,
+    previous_available_ts: datetime | None,
+) -> datetime:
+    boundary = datetime.now(UTC) if observed_at is None else observed_at
+    if boundary.tzinfo is None or boundary.utcoffset() is None:
+        raise ValueError("gap observed_at must be timezone-aware")
+    boundary = boundary.astimezone(UTC)
+    if previous_available_ts is not None:
+        boundary = max(
+            boundary,
+            previous_available_ts.astimezone(UTC) + timedelta(microseconds=1),
+        )
+    return boundary
+
+
+def _quality_gap_requires_resubscribe(*, source: str, stream_id: str) -> bool:
+    return source == "polymarket_clob" or (
+        source in {"okx_spot", "okx_swap"} and stream_id == _BOOK_STREAM
+    )
+
+
+def _raise_first_with_notes(
+    errors: Sequence[BaseException],
+    *,
+    note_prefix: str,
+) -> None:
+    if not errors:
+        raise ValueError("errors must not be empty")
+    first, *additional = errors
+    for error in additional:
+        first.add_note(f"{note_prefix}: {error!r}")
+    raise first
+
+
+def _pending_event_candidate(
+    *,
+    timing: TimedMarketEvent,
+    event_type: str,
+    payload: Mapping[str, object],
+    collector_session_id: str,
+) -> RawCollectorEvent:
+    return RawCollectorEvent(
+        timing=timing,
+        event_type=event_type,
+        payload=payload,
+        collector_session_id=collector_session_id,
+        epoch_id=0,
+    )
+
+
 def _rejected(reason: str) -> CollectorIngressResult:
     return CollectorIngressResult(rejected_events=1, reasons=(reason,))
 
@@ -1149,10 +2617,24 @@ def _with_depth_status(
     outcome: CollectorIngressResult,
     status: DepthUpdateStatus,
     reason: str | None,
+    *,
+    resubscribe_on_unavailable: bool = True,
 ) -> CollectorIngressResult:
     if status is DepthUpdateStatus.APPLIED:
         return outcome
-    return outcome.merged(CollectorIngressResult(reasons=(reason or status.value,)))
+    return outcome.merged(
+        CollectorIngressResult(
+            reasons=(reason or status.value,),
+            resubscribe_required=(
+                resubscribe_on_unavailable
+                and status
+                in {
+                    DepthUpdateStatus.GAP,
+                    DepthUpdateStatus.AWAITING_SNAPSHOT,
+                }
+            ),
+        )
+    )
 
 
 def _okx_source_for_instrument(instrument: str) -> str | None:
@@ -1247,10 +2729,14 @@ def _okx_stream_id(channel: object) -> str | None:
     return None
 
 
-type _RawPartitionKey = tuple[str, str, str, str, str, str]
+type _RawPartitionKey = tuple[str, str, str, str, str, str, str]
 
 
-def _partition_key(timing: TimedMarketEvent) -> _RawPartitionKey:
+def _partition_key(
+    timing: TimedMarketEvent,
+    *,
+    collector_session_id: str,
+) -> _RawPartitionKey:
     timestamp = timing.available_ts.astimezone(UTC)
     return (
         timing.source,
@@ -1259,6 +2745,7 @@ def _partition_key(timing: TimedMarketEvent) -> _RawPartitionKey:
         timestamp.strftime("%H"),
         timing.schema_version,
         timing.ingest_version,
+        collector_session_id,
     )
 
 
@@ -1276,4 +2763,10 @@ def _add_quality_counts(
     )
 
 
-__all__ = ["BtcForwardCollector", "CollectorIngressResult", "RequiredFeedHealth"]
+__all__ = [
+    "BtcForwardCollector",
+    "CollectorBufferCapacityError",
+    "CollectorBufferStats",
+    "CollectorIngressResult",
+    "RequiredFeedHealth",
+]

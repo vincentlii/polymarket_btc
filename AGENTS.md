@@ -19,6 +19,9 @@ features from the NautilusTrader documentation.
   evidence labeling, lifecycle cadence, and primary-source references.
 - Before changing BTC live authentication, order submission, heartbeat, or the
   execution hot path, also read `docs/btc-execution-latency-research.md`.
+- Before changing BTC forward market-data collection, sequence validation,
+  L2 snapshot/delta recovery, or raw replay, also read
+  `docs/btc-market-data-protocol-research.md`.
 - Keep changes tightly scoped to the request. Avoid unrelated refactors and
   formatting churn.
 - Do not add backwards-compatibility shims for old dependency APIs or old repo

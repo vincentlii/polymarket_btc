@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from math import isfinite
 from pathlib import Path
@@ -12,9 +13,9 @@ from pathlib import Path
 import httpx
 
 if __package__ in {None, ""}:
-    from _script_helpers import ensure_repo_root
+    from _script_helpers import ensure_repo_root, run_async_entrypoint
 else:
-    from ._script_helpers import ensure_repo_root
+    from ._script_helpers import ensure_repo_root, run_async_entrypoint
 
 ensure_repo_root(__file__)
 
@@ -33,6 +34,22 @@ from btc_short_horizon.data.forward import (  # noqa: E402
 )
 from btc_short_horizon.data.gamma import GammaMarketClient  # noqa: E402
 from btc_short_horizon.data.market_catalog import MarketCatalog  # noqa: E402
+
+
+@dataclass(frozen=True, slots=True)
+class WindowCollectorSettings:
+    flush_size: int
+    flush_interval_seconds: float
+    shutdown_flush_timeout_seconds: float
+    max_pending_events: int
+    max_pending_bytes: int
+    binance_spot_depth_snapshot_limit: int
+    binance_futures_depth_snapshot_limit: int
+    binance_depth_snapshot_retry_initial_seconds: float
+    binance_depth_snapshot_retry_max_seconds: float
+    polymarket_source_timestamp_regression_tolerance_seconds: float
+    ingest_version: str
+    epoch_id_offset: int
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -137,7 +154,23 @@ def build_collector(
         polymarket_token_ids=token_ids,
         flush_size=flush_size,
         flush_interval_seconds=flush_interval_seconds,
+        shutdown_flush_timeout_seconds=config.collection.shutdown_flush_timeout_seconds,
         ingest_version=config.collection.ingest_version,
+        max_pending_events=config.collection.max_pending_events,
+        max_pending_bytes=config.collection.max_pending_bytes,
+        binance_spot_depth_snapshot_limit=(config.collection.binance_spot_depth_snapshot_limit),
+        binance_futures_depth_snapshot_limit=(
+            config.collection.binance_futures_depth_snapshot_limit
+        ),
+        binance_depth_snapshot_retry_initial_seconds=(
+            config.collection.binance_depth_snapshot_retry_initial_seconds
+        ),
+        binance_depth_snapshot_retry_max_seconds=(
+            config.collection.binance_depth_snapshot_retry_max_seconds
+        ),
+        polymarket_source_timestamp_regression_tolerance_seconds=(
+            config.collection.polymarket_source_timestamp_regression_tolerance_seconds
+        ),
     )
 
 
@@ -186,6 +219,22 @@ async def collect(args: argparse.Namespace) -> None:
             ),
             flush_size=flush_size,
             flush_interval_seconds=flush_interval_seconds,
+            shutdown_flush_timeout_seconds=config.collection.shutdown_flush_timeout_seconds,
+            max_pending_events=config.collection.max_pending_events,
+            max_pending_bytes=config.collection.max_pending_bytes,
+            binance_spot_depth_snapshot_limit=(config.collection.binance_spot_depth_snapshot_limit),
+            binance_futures_depth_snapshot_limit=(
+                config.collection.binance_futures_depth_snapshot_limit
+            ),
+            binance_depth_snapshot_retry_initial_seconds=(
+                config.collection.binance_depth_snapshot_retry_initial_seconds
+            ),
+            binance_depth_snapshot_retry_max_seconds=(
+                config.collection.binance_depth_snapshot_retry_max_seconds
+            ),
+            polymarket_source_timestamp_regression_tolerance_seconds=(
+                config.collection.polymarket_source_timestamp_regression_tolerance_seconds
+            ),
             ingest_version=config.collection.ingest_version,
             binance_streams=streams,
             binance_futures_market_streams=futures_market_streams,
@@ -213,6 +262,14 @@ async def collect_current_market_windows(
     catalog_directory: Path,
     flush_size: int,
     flush_interval_seconds: float,
+    shutdown_flush_timeout_seconds: float,
+    max_pending_events: int,
+    max_pending_bytes: int,
+    binance_spot_depth_snapshot_limit: int,
+    binance_futures_depth_snapshot_limit: int,
+    binance_depth_snapshot_retry_initial_seconds: float,
+    binance_depth_snapshot_retry_max_seconds: float,
+    polymarket_source_timestamp_regression_tolerance_seconds: float,
     ingest_version: str,
     binance_streams: Sequence[str],
     binance_futures_market_streams: Sequence[str],
@@ -221,7 +278,10 @@ async def collect_current_market_windows(
     opening_handoff_delay_seconds: float,
     stop_event: asyncio.Event,
     gamma_client: GammaMarketClient | None = None,
-    collector_factory: Callable[[Path, tuple[str, ...], int, float, str, int], BtcForwardCollector]
+    collector_factory: Callable[
+        [Path, tuple[str, ...], WindowCollectorSettings],
+        BtcForwardCollector,
+    ]
     | None = None,
     on_market_active: Callable[[MarketWindow, MarketWindow | None, BtcForwardCollector], None]
     | None = None,
@@ -284,10 +344,24 @@ async def collect_current_market_windows(
         collector = factory(
             raw_data_root,
             token_ids,
-            flush_size,
-            flush_interval_seconds,
-            ingest_version,
-            int(market.t0.timestamp()),
+            WindowCollectorSettings(
+                flush_size=flush_size,
+                flush_interval_seconds=flush_interval_seconds,
+                shutdown_flush_timeout_seconds=shutdown_flush_timeout_seconds,
+                max_pending_events=max_pending_events,
+                max_pending_bytes=max_pending_bytes,
+                binance_spot_depth_snapshot_limit=(binance_spot_depth_snapshot_limit),
+                binance_futures_depth_snapshot_limit=(binance_futures_depth_snapshot_limit),
+                binance_depth_snapshot_retry_initial_seconds=(
+                    binance_depth_snapshot_retry_initial_seconds
+                ),
+                binance_depth_snapshot_retry_max_seconds=(binance_depth_snapshot_retry_max_seconds),
+                polymarket_source_timestamp_regression_tolerance_seconds=(
+                    polymarket_source_timestamp_regression_tolerance_seconds
+                ),
+                ingest_version=ingest_version,
+                epoch_id_offset=int(market.t0.timestamp()),
+            ),
         )
         if on_market_active is not None:
             on_market_active(market, lookahead, collector)
@@ -390,18 +464,29 @@ def _collection_settings(
 def _build_window_collector(
     raw_data_root: Path,
     token_ids: tuple[str, ...],
-    flush_size: int,
-    flush_interval_seconds: float,
-    ingest_version: str,
-    epoch_id_offset: int,
+    settings: WindowCollectorSettings,
 ) -> BtcForwardCollector:
     return BtcForwardCollector(
         raw_data_root=raw_data_root,
         polymarket_token_ids=token_ids,
-        flush_size=flush_size,
-        flush_interval_seconds=flush_interval_seconds,
-        ingest_version=ingest_version,
-        epoch_id_offset=epoch_id_offset,
+        flush_size=settings.flush_size,
+        flush_interval_seconds=settings.flush_interval_seconds,
+        shutdown_flush_timeout_seconds=settings.shutdown_flush_timeout_seconds,
+        ingest_version=settings.ingest_version,
+        epoch_id_offset=settings.epoch_id_offset,
+        max_pending_events=settings.max_pending_events,
+        max_pending_bytes=settings.max_pending_bytes,
+        binance_spot_depth_snapshot_limit=(settings.binance_spot_depth_snapshot_limit),
+        binance_futures_depth_snapshot_limit=(settings.binance_futures_depth_snapshot_limit),
+        binance_depth_snapshot_retry_initial_seconds=(
+            settings.binance_depth_snapshot_retry_initial_seconds
+        ),
+        binance_depth_snapshot_retry_max_seconds=(
+            settings.binance_depth_snapshot_retry_max_seconds
+        ),
+        polymarket_source_timestamp_regression_tolerance_seconds=(
+            settings.polymarket_source_timestamp_regression_tolerance_seconds
+        ),
     )
 
 
@@ -448,8 +533,14 @@ def _as_utc(value: datetime) -> datetime:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    shutdown_timeout_seconds = load_btc_project_config(
+        args.config
+    ).collection.shutdown_flush_timeout_seconds
     try:
-        asyncio.run(collect(args))
+        run_async_entrypoint(
+            collect(args),
+            shutdown_timeout_seconds=shutdown_timeout_seconds,
+        )
     except KeyboardInterrupt:
         return 0
     return 0

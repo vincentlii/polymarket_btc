@@ -24,6 +24,7 @@ def polymarket_market_subscription(token_ids: tuple[str, ...]) -> WebSocketSubsc
             "type": "market",
             "assets_ids": list(token_ids),
             "custom_feature_enabled": True,
+            "initial_dump": True,
         },
         heartbeat_payload="PING",
         heartbeat_interval_seconds=10.0,

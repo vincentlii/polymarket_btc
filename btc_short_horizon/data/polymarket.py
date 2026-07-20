@@ -31,6 +31,8 @@ class PolymarketL2Result:
     tick_size: float | None = None
     tick_size_changed: bool = False
     reason: str | None = None
+    starts_new_epoch: bool = False
+    requires_resubscribe: bool = False
 
 
 class PolymarketL2Normalizer:
@@ -55,66 +57,97 @@ class PolymarketL2Normalizer:
         self._has_snapshot = False
         self._tick_size: float | None = None
         self._last_available_ts: datetime | None = None
-        self._last_source_ts: datetime | None = None
+        self._source_ts_high_water: datetime | None = None
 
     @property
     def tick_size(self) -> float | None:
         return self._tick_size
 
+    @property
+    def has_snapshot(self) -> bool:
+        return self._has_snapshot
+
+    def fork(self) -> PolymarketL2Normalizer:
+        """Return copy-on-write candidate state for one atomic channel batch."""
+
+        candidate = PolymarketL2Normalizer(
+            token_id=self.token_id,
+            source=self.source,
+            source_timestamp_regression_tolerance=self.source_timestamp_regression_tolerance,
+        )
+        candidate._bids = self._bids
+        candidate._asks = self._asks
+        candidate._has_snapshot = self._has_snapshot
+        candidate._tick_size = self._tick_size
+        candidate._last_available_ts = self._last_available_ts
+        candidate._source_ts_high_water = self._source_ts_high_water
+        return candidate
+
     def reset(self) -> None:
         """Discard L2 state after a connection gap until a fresh snapshot arrives."""
 
-        self._bids.clear()
-        self._asks.clear()
+        self._bids = {}
+        self._asks = {}
         self._has_snapshot = False
         self._tick_size = None
         self._last_available_ts = None
-        self._last_source_ts = None
+        self._source_ts_high_water = None
 
     def apply(
         self, payload: Mapping[str, object], *, collector_receive_ts: datetime
     ) -> PolymarketL2Result:
         """Apply one market-channel payload and preserve source/receive timing."""
 
-        receive_ts = _as_utc(collector_receive_ts, "collector_receive_ts")
-        event_type = _text(payload.get("event_type"), "event_type")
-        if event_type == "book":
-            return self._apply_book(payload, receive_ts=receive_ts)
-        if event_type == "price_change":
-            return self._apply_price_change(payload, receive_ts=receive_ts)
-        if event_type == "last_trade_price":
-            return self._apply_trade(payload, receive_ts=receive_ts)
-        if event_type == "tick_size_change":
-            return self._apply_tick_size_change(payload, receive_ts=receive_ts)
-        if event_type in {"new_market", "market_resolved"}:
-            return self._apply_market_metadata(
-                payload, receive_ts=receive_ts, event_type=event_type
+        try:
+            receive_ts = _as_utc(collector_receive_ts, "collector_receive_ts")
+            event_type = _text(payload.get("event_type"), "event_type")
+            if event_type == "book":
+                return self._apply_book(payload, receive_ts=receive_ts)
+            if event_type == "price_change":
+                return self._apply_price_change(payload, receive_ts=receive_ts)
+            if event_type == "last_trade_price":
+                return self._apply_trade(payload, receive_ts=receive_ts)
+            if event_type == "tick_size_change":
+                return self._apply_tick_size_change(payload, receive_ts=receive_ts)
+            if event_type in {"new_market", "market_resolved"}:
+                return self._apply_market_metadata(
+                    payload, receive_ts=receive_ts, event_type=event_type
+                )
+            return PolymarketL2Result(
+                status=PolymarketL2Status.IGNORED,
+                timing=self._timing(payload, receive_ts=receive_ts),
+                event_type=event_type,
+                reason="unsupported_event_type",
             )
-        return PolymarketL2Result(
-            status=PolymarketL2Status.IGNORED,
-            timing=self._timing(payload, receive_ts=receive_ts),
-            event_type=event_type,
-            reason="unsupported_event_type",
-        )
+        except ValueError:
+            self.reset()
+            raise
 
     def _apply_book(
         self, payload: Mapping[str, object], *, receive_ts: datetime
     ) -> PolymarketL2Result:
         if _text(payload.get("asset_id"), "asset_id") != self.token_id:
             return self._ignored(payload, receive_ts, "other_token")
-        self._bids = dict(_levels(payload.get("bids", ())))
-        self._asks = dict(_levels(payload.get("asks", ())))
-        self._has_snapshot = True
+        bids = dict(_levels(payload.get("bids", ())))
+        asks = dict(_levels(payload.get("asks", ())))
         timing = self._timing(payload, receive_ts=receive_ts)
-        top = self._book_top(timing)
+        source_time_regressed = self._has_material_source_timestamp_regression(timing.source_ts)
+        top = self._book_top(timing, bids=bids, asks=asks)
         if top is None:
-            self._has_snapshot = False
+            self.reset()
             return PolymarketL2Result(
                 status=PolymarketL2Status.INVALID,
                 timing=timing,
                 event_type="book",
                 reason="empty_or_crossed_snapshot",
+                starts_new_epoch=True,
+                requires_resubscribe=True,
             )
+        if source_time_regressed:
+            self.reset()
+        self._bids = bids
+        self._asks = asks
+        self._has_snapshot = True
         self._accept_timing(timing)
         return PolymarketL2Result(
             status=PolymarketL2Status.APPLIED,
@@ -122,22 +155,38 @@ class PolymarketL2Normalizer:
             event_type="book",
             book_top=top,
             tick_size=self._tick_size,
+            reason=("source_timestamp_regression" if source_time_regressed else None),
+            starts_new_epoch=source_time_regressed,
         )
 
     def _apply_price_change(
         self, payload: Mapping[str, object], *, receive_ts: datetime
     ) -> PolymarketL2Result:
         timing = self._timing(payload, receive_ts=receive_ts)
+        if self._has_material_source_timestamp_regression(timing.source_ts):
+            self.reset()
+            return PolymarketL2Result(
+                status=PolymarketL2Status.INVALID,
+                timing=timing,
+                event_type="price_change",
+                reason="source_timestamp_regression",
+                starts_new_epoch=True,
+                requires_resubscribe=True,
+            )
         if not self._has_snapshot:
             return PolymarketL2Result(
                 status=PolymarketL2Status.AWAITING_SNAPSHOT,
                 timing=timing,
                 event_type="price_change",
                 reason="snapshot_required",
+                starts_new_epoch=True,
+                requires_resubscribe=True,
             )
         changes = payload.get("price_changes")
         if not isinstance(changes, Sequence) or isinstance(changes, str | bytes):
             raise ValueError("price_change payload requires price_changes sequence")
+        bids = self._bids.copy()
+        asks = self._asks.copy()
         matched = 0
         for change in changes:
             if not isinstance(change, Mapping):
@@ -148,7 +197,7 @@ class PolymarketL2Normalizer:
             side = _text(change.get("side"), "side").upper()
             if side not in {"BUY", "SELL"}:
                 raise ValueError("price change side must be BUY or SELL")
-            levels = self._bids if side == "BUY" else self._asks
+            levels = bids if side == "BUY" else asks
             price = _probability(change.get("price"), "price")
             size = _nonnegative_float(change.get("size"), "size")
             if size == 0.0:
@@ -157,15 +206,19 @@ class PolymarketL2Normalizer:
                 levels[price] = size
         if matched == 0:
             return self._ignored(payload, receive_ts, "other_token")
-        top = self._book_top(timing)
+        top = self._book_top(timing, bids=bids, asks=asks)
         if top is None:
-            self._has_snapshot = False
+            self.reset()
             return PolymarketL2Result(
                 status=PolymarketL2Status.INVALID,
                 timing=timing,
                 event_type="price_change",
                 reason="empty_or_crossed_book",
+                starts_new_epoch=True,
+                requires_resubscribe=True,
             )
+        self._bids = bids
+        self._asks = asks
         self._accept_timing(timing)
         return PolymarketL2Result(
             status=PolymarketL2Status.APPLIED,
@@ -181,6 +234,16 @@ class PolymarketL2Normalizer:
         if _text(payload.get("asset_id"), "asset_id") != self.token_id:
             return self._ignored(payload, receive_ts, "other_token")
         timing = self._timing(payload, receive_ts=receive_ts)
+        if self._has_material_source_timestamp_regression(timing.source_ts):
+            self.reset()
+            return PolymarketL2Result(
+                status=PolymarketL2Status.INVALID,
+                timing=timing,
+                event_type="last_trade_price",
+                reason="source_timestamp_regression",
+                starts_new_epoch=True,
+                requires_resubscribe=True,
+            )
         side = _text(payload.get("side"), "side").casefold()
         if side not in {"buy", "sell"}:
             raise ValueError("last_trade_price side must be BUY or SELL")
@@ -208,6 +271,16 @@ class PolymarketL2Normalizer:
         if asset_id is not None and _text(asset_id, "asset_id") != self.token_id:
             return self._ignored(payload, receive_ts, "other_token")
         timing = self._timing(payload, receive_ts=receive_ts)
+        if self._has_material_source_timestamp_regression(timing.source_ts):
+            self.reset()
+            return PolymarketL2Result(
+                status=PolymarketL2Status.INVALID,
+                timing=timing,
+                event_type="tick_size_change",
+                reason="source_timestamp_regression",
+                starts_new_epoch=True,
+                requires_resubscribe=True,
+            )
         new_tick_size = _probability(payload.get("new_tick_size"), "new_tick_size")
         changed = self._tick_size is not None and self._tick_size != new_tick_size
         self._tick_size = new_tick_size
@@ -226,6 +299,16 @@ class PolymarketL2Normalizer:
         if not _metadata_references_token(payload, self.token_id):
             return self._ignored(payload, receive_ts, "other_token")
         timing = self._timing(payload, receive_ts=receive_ts)
+        if self._has_material_source_timestamp_regression(timing.source_ts):
+            self.reset()
+            return PolymarketL2Result(
+                status=PolymarketL2Status.INVALID,
+                timing=timing,
+                event_type=event_type,
+                reason="source_timestamp_regression",
+                starts_new_epoch=True,
+                requires_resubscribe=True,
+            )
         self._accept_timing(timing)
         return PolymarketL2Result(
             status=PolymarketL2Status.APPLIED,
@@ -268,18 +351,29 @@ class PolymarketL2Normalizer:
         """Advance only on an applied token event; small source-clock jitter may delay, never rewind."""
 
         self._last_available_ts = timing.available_ts
-        self._last_source_ts = timing.source_ts
+        self._source_ts_high_water = max(
+            timing.source_ts,
+            self._source_ts_high_water or timing.source_ts,
+        )
 
     def _has_material_source_timestamp_regression(self, source_ts: datetime) -> bool:
-        if self._last_source_ts is None:
+        if self._source_ts_high_water is None:
             return False
-        return source_ts + self.source_timestamp_regression_tolerance <= self._last_source_ts
+        return source_ts + self.source_timestamp_regression_tolerance <= self._source_ts_high_water
 
-    def _book_top(self, timing: TimedMarketEvent) -> BtcBookTop | None:
-        if not self._bids or not self._asks:
+    def _book_top(
+        self,
+        timing: TimedMarketEvent,
+        *,
+        bids: Mapping[float, float] | None = None,
+        asks: Mapping[float, float] | None = None,
+    ) -> BtcBookTop | None:
+        bid_levels = self._bids if bids is None else bids
+        ask_levels = self._asks if asks is None else asks
+        if not bid_levels or not ask_levels:
             return None
-        bid = max(self._bids)
-        ask = min(self._asks)
+        bid = max(bid_levels)
+        ask = min(ask_levels)
         if bid >= ask:
             return None
         return BtcBookTop(
@@ -287,8 +381,8 @@ class PolymarketL2Normalizer:
             available_ts_ns=_datetime_to_ns(timing.available_ts),
             bid=bid,
             ask=ask,
-            bid_size=self._bids[bid],
-            ask_size=self._asks[ask],
+            bid_size=bid_levels[bid],
+            ask_size=ask_levels[ask],
             source=self.source,
             instrument=self.token_id,
         )

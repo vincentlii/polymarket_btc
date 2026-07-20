@@ -15,6 +15,7 @@ from btc_short_horizon.data import (
     write_market_catalog,
 )
 from scripts.btc_forward_collector import (
+    WindowCollectorSettings,
     _write_single_market_catalog,
     build_collector,
     collect_current_market_windows,
@@ -46,7 +47,11 @@ def test_forward_collector_cli_builds_btc_only_collector_from_explicit_token_ids
     assert collector.token_ids == ("up-token", "down-token")
     assert collector.flush_size == 25
     assert collector.flush_interval_seconds == 60.0
-    assert collector.ingest_version == "btc-short-horizon-v6"
+    assert collector.shutdown_flush_timeout_seconds == 30.0
+    assert collector.ingest_version == "btc-short-horizon-v8"
+    assert collector.polymarket_source_timestamp_regression_tolerance_seconds == 1.0
+    assert collector.max_pending_events == 100_000
+    assert collector.max_pending_bytes == 67_108_864
     assert args.binance_stream == ["btcusdt@trade"]
     assert args.binance_futures_public_stream == ["btcusdt@bookTicker"]
 
@@ -119,26 +124,14 @@ def test_follow_current_rotates_from_exact_gamma_catalog_and_persists_metadata(t
     gamma = _FakeGammaClient(catalog)
     started = asyncio.Event()
     outer_stop = asyncio.Event()
-    factory_calls: list[tuple[Path, tuple[str, ...], int, float, str, int]] = []
+    factory_calls: list[tuple[Path, tuple[str, ...], WindowCollectorSettings]] = []
 
     def collector_factory(
         raw_data_root: Path,
         token_ids: tuple[str, ...],
-        flush_size: int,
-        flush_interval_seconds: float,
-        ingest_version: str,
-        epoch_id_offset: int,
+        settings: WindowCollectorSettings,
     ) -> _FakeWindowCollector:
-        factory_calls.append(
-            (
-                raw_data_root,
-                token_ids,
-                flush_size,
-                flush_interval_seconds,
-                ingest_version,
-                epoch_id_offset,
-            )
-        )
+        factory_calls.append((raw_data_root, token_ids, settings))
         return _FakeWindowCollector(started)
 
     async def run() -> None:
@@ -154,6 +147,14 @@ def test_follow_current_rotates_from_exact_gamma_catalog_and_persists_metadata(t
             catalog_directory=tmp_path / "metadata",
             flush_size=25,
             flush_interval_seconds=60.0,
+            shutdown_flush_timeout_seconds=30.0,
+            max_pending_events=50,
+            max_pending_bytes=1_024,
+            binance_spot_depth_snapshot_limit=5_000,
+            binance_futures_depth_snapshot_limit=1_000,
+            binance_depth_snapshot_retry_initial_seconds=0.25,
+            binance_depth_snapshot_retry_max_seconds=10.0,
+            polymarket_source_timestamp_regression_tolerance_seconds=1.0,
             ingest_version="test-v2",
             binance_streams=("btcusdt@trade",),
             binance_futures_market_streams=(),
@@ -182,10 +183,20 @@ def test_follow_current_rotates_from_exact_gamma_catalog_and_persists_metadata(t
         (
             tmp_path / "raw",
             ("up-token", "down-token", "next-up-token", "next-down-token"),
-            25,
-            60.0,
-            "test-v2",
-            int(t0.timestamp()),
+            WindowCollectorSettings(
+                flush_size=25,
+                flush_interval_seconds=60.0,
+                shutdown_flush_timeout_seconds=30.0,
+                max_pending_events=50,
+                max_pending_bytes=1_024,
+                binance_spot_depth_snapshot_limit=5_000,
+                binance_futures_depth_snapshot_limit=1_000,
+                binance_depth_snapshot_retry_initial_seconds=0.25,
+                binance_depth_snapshot_retry_max_seconds=10.0,
+                polymarket_source_timestamp_regression_tolerance_seconds=1.0,
+                ingest_version="test-v2",
+                epoch_id_offset=int(t0.timestamp()),
+            ),
         )
     ]
     assert (tmp_path / "metadata" / f"{market.slug}-{market.rule_hash}.json").exists()

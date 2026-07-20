@@ -24,8 +24,16 @@ def test_baseline_config_is_path_relative_and_has_explicit_queue_scenarios() -> 
     assert config.maker.max_work_seconds == 15.0
     assert config.collection.flush_size == 50_000
     assert config.collection.flush_interval_seconds == 60.0
+    assert config.collection.shutdown_flush_timeout_seconds == 30.0
+    assert config.collection.binance_spot_depth_snapshot_limit == 1_000
+    assert config.collection.binance_futures_depth_snapshot_limit == 1_000
+    assert config.collection.binance_depth_snapshot_retry_initial_seconds == 0.5
+    assert config.collection.binance_depth_snapshot_retry_max_seconds == 30.0
+    assert config.collection.polymarket_source_timestamp_regression_tolerance_seconds == 1.0
+    assert config.collection.max_pending_events == 100_000
+    assert config.collection.max_pending_bytes == 67_108_864
     assert config.collection.opening_handoff_delay_seconds == 180.0
-    assert config.collection.ingest_version == "btc-short-horizon-v6"
+    assert config.collection.ingest_version == "btc-short-horizon-v8"
     assert config.require_scenario("p99_pessimistic").execution.queue_position
     assert config.paths.raw_data_root.is_absolute()
     assert config.paths.raw_data_root.name == "btc_short_horizon"

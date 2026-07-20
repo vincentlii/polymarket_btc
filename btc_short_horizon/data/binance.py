@@ -229,6 +229,7 @@ class BinanceDiffDepthBook:
     ) -> None:
         if not instrument:
             raise ValueError("instrument is required")
+        _validate_depth_source(source)
         if availability_delay < timedelta(0):
             raise ValueError("availability_delay must be non-negative")
         self.instrument = instrument
@@ -238,6 +239,7 @@ class BinanceDiffDepthBook:
         self._asks: dict[float, float] = {}
         self._last_update_id: int | None = None
         self._synchronized = False
+        self._has_processed_delta = False
 
     @property
     def last_update_id(self) -> int | None:
@@ -253,16 +255,37 @@ class BinanceDiffDepthBook:
         last_update_id = _nonnegative_int(payload, "lastUpdateId")
         bids = _levels(payload.get("bids", payload.get("b", ())))
         asks = _levels(payload.get("asks", payload.get("a", ())))
-        self._bids = dict(bids)
-        self._asks = dict(asks)
-        self._last_update_id = last_update_id
-        self._synchronized = True
         source_ts = _timestamp_from_millis(
             _first_present(payload, "T", "E"), "T/E", default=receive_ts
         )
+        candidate_bids = {price: quantity for price, quantity in bids if quantity > 0.0}
+        candidate_asks = {price: quantity for price, quantity in asks if quantity > 0.0}
+        book_top = self._book_top(
+            source_ts=source_ts,
+            receive_ts=receive_ts,
+            bids=candidate_bids,
+            asks=candidate_asks,
+        )
+        if book_top is None:
+            self._bids.clear()
+            self._asks.clear()
+            self._last_update_id = None
+            self._synchronized = False
+            self._has_processed_delta = False
+            return DepthApplyResult(
+                status=DepthUpdateStatus.GAP,
+                book_top=None,
+                last_update_id=None,
+                reason="empty_or_crossed_snapshot",
+            )
+        self._bids = candidate_bids
+        self._asks = candidate_asks
+        self._last_update_id = last_update_id
+        self._synchronized = True
+        self._has_processed_delta = False
         return DepthApplyResult(
             status=DepthUpdateStatus.APPLIED,
-            book_top=self._book_top(source_ts=source_ts, receive_ts=receive_ts),
+            book_top=book_top,
             last_update_id=self._last_update_id,
         )
 
@@ -280,28 +303,52 @@ class BinanceDiffDepthBook:
             )
         first_update_id = _nonnegative_int(payload, "U")
         final_update_id = _nonnegative_int(payload, "u")
-        if final_update_id <= self._last_update_id:
+        if first_update_id > final_update_id:
+            return self._gap_result("invalid_update_id_range")
+        if final_update_id < self._last_update_id or (
+            final_update_id == self._last_update_id
+            and (self.source != "binance_perp" or self._has_processed_delta)
+        ):
             return DepthApplyResult(
                 status=DepthUpdateStatus.STALE,
                 book_top=None,
                 last_update_id=self._last_update_id,
                 reason="already_covered",
             )
-        expected_update_id = self._last_update_id + 1
-        previous_final = payload.get("pu")
-        if previous_final is not None and _nonnegative_int(payload, "pu") != self._last_update_id:
-            return self._gap_result("previous_update_id_mismatch")
-        if not first_update_id <= expected_update_id <= final_update_id:
-            return self._gap_result("update_id_gap")
+        if self.source == "binance_perp":
+            if self._has_processed_delta:
+                if payload.get("pu") is None:
+                    return self._gap_result("previous_update_id_missing")
+                if _nonnegative_int(payload, "pu") != self._last_update_id:
+                    return self._gap_result("previous_update_id_mismatch")
+            elif not first_update_id <= self._last_update_id <= final_update_id:
+                return self._gap_result("snapshot_overlap_missing")
+        else:
+            expected_update_id = self._last_update_id + 1
+            if not first_update_id <= expected_update_id <= final_update_id:
+                return self._gap_result("update_id_gap")
 
-        self._apply_levels(self._bids, _levels(payload.get("b", ())))
-        self._apply_levels(self._asks, _levels(payload.get("a", ())))
-        self._last_update_id = final_update_id
+        bid_changes = _levels(payload.get("b", ()))
+        ask_changes = _levels(payload.get("a", ()))
         source_ts = _timestamp_from_millis(_first_present(payload, "T", "E"), "T/E")
         receive_ts = _normalize_receive_ts(collector_receive_ts)
+        bid_undo = self._apply_levels(self._bids, bid_changes)
+        ask_undo = self._apply_levels(self._asks, ask_changes)
+        book_top = self._book_top(
+            source_ts=source_ts,
+            receive_ts=receive_ts,
+            bids=self._bids,
+            asks=self._asks,
+        )
+        if book_top is None:
+            self._rollback_levels(self._asks, ask_undo)
+            self._rollback_levels(self._bids, bid_undo)
+            return self._gap_result("empty_or_crossed_book")
+        self._last_update_id = final_update_id
+        self._has_processed_delta = True
         return DepthApplyResult(
             status=DepthUpdateStatus.APPLIED,
-            book_top=self._book_top(source_ts=source_ts, receive_ts=receive_ts),
+            book_top=book_top,
             last_update_id=self._last_update_id,
         )
 
@@ -315,18 +362,42 @@ class BinanceDiffDepthBook:
         )
 
     @staticmethod
-    def _apply_levels(levels: dict[float, float], changes: Sequence[tuple[float, float]]) -> None:
+    def _apply_levels(
+        levels: dict[float, float],
+        changes: Sequence[tuple[float, float]],
+    ) -> tuple[tuple[float, float | None], ...]:
+        undo: list[tuple[float, float | None]] = []
         for price, quantity in changes:
+            undo.append((price, levels.get(price)))
             if quantity == 0.0:
                 levels.pop(price, None)
             else:
                 levels[price] = quantity
+        return tuple(undo)
 
-    def _book_top(self, *, source_ts: datetime, receive_ts: datetime | None) -> BtcBookTop | None:
-        if not self._bids or not self._asks:
+    @staticmethod
+    def _rollback_levels(
+        levels: dict[float, float],
+        undo: Sequence[tuple[float, float | None]],
+    ) -> None:
+        for price, prior_quantity in reversed(undo):
+            if prior_quantity is None:
+                levels.pop(price, None)
+            else:
+                levels[price] = prior_quantity
+
+    def _book_top(
+        self,
+        *,
+        source_ts: datetime,
+        receive_ts: datetime | None,
+        bids: Mapping[float, float],
+        asks: Mapping[float, float],
+    ) -> BtcBookTop | None:
+        if not bids or not asks:
             return None
-        bid = max(self._bids)
-        ask = min(self._asks)
+        bid = max(bids)
+        ask = min(asks)
         if bid >= ask:
             return None
         available_ts = _available_time(source_ts, receive_ts, self.availability_delay)
@@ -335,8 +406,8 @@ class BinanceDiffDepthBook:
             available_ts_ns=_datetime_to_ns(available_ts),
             bid=bid,
             ask=ask,
-            bid_size=self._bids[bid],
-            ask_size=self._asks[ask],
+            bid_size=bids[bid],
+            ask_size=asks[ask],
             source=self.source,
             instrument=self.instrument,
         )
@@ -361,6 +432,7 @@ class BinanceDepthSynchronizer:
     ) -> None:
         if max_buffered_events < 1:
             raise ValueError("max_buffered_events must be >= 1")
+        _validate_depth_source(source)
         self.instrument = instrument
         self.source = source
         self.availability_delay = availability_delay
@@ -368,6 +440,7 @@ class BinanceDepthSynchronizer:
         self._book = self._new_book()
         self._buffer: deque[_BufferedDepthUpdate] = deque()
         self._synchronized = False
+        self._snapshot_loaded = False
 
     @property
     def synchronized(self) -> bool:
@@ -376,6 +449,10 @@ class BinanceDepthSynchronizer:
     @property
     def needs_snapshot(self) -> bool:
         return not self._synchronized
+
+    @property
+    def requires_snapshot(self) -> bool:
+        return not self._synchronized and not self._snapshot_loaded
 
     @property
     def buffered_event_count(self) -> int:
@@ -387,19 +464,28 @@ class BinanceDepthSynchronizer:
         self._book = self._new_book()
         self._buffer.clear()
         self._synchronized = False
+        self._snapshot_loaded = False
 
     def observe_delta(
         self, payload: Mapping[str, object], *, collector_receive_ts: datetime | None
     ) -> DepthApplyResult:
         """Apply an update only after snapshot-to-delta continuity is established."""
 
-        if not self._synchronized:
+        if not self._synchronized and not self._snapshot_loaded:
             return self._buffer_update(payload, collector_receive_ts=collector_receive_ts)
         result = self._book.apply_delta(payload, collector_receive_ts=collector_receive_ts)
+        if self._snapshot_loaded and result.status is DepthUpdateStatus.APPLIED:
+            self._snapshot_loaded = False
+            self._synchronized = True
+            self._buffer.clear()
+            return result
+        if self._snapshot_loaded and result.status is DepthUpdateStatus.STALE:
+            return result
         if result.status is not DepthUpdateStatus.GAP:
             return result
         self._book = self._new_book()
         self._synchronized = False
+        self._snapshot_loaded = False
         self._buffer.clear()
         self._buffer.append(
             _BufferedDepthUpdate(payload=dict(payload), collector_receive_ts=collector_receive_ts)
@@ -415,15 +501,22 @@ class BinanceDepthSynchronizer:
         retained = tuple(
             item
             for item in self._buffer
-            if _nonnegative_int(item.payload, "u") > snapshot_update_id
+            if _retains_depth_update(
+                source=self.source,
+                final_update_id=_nonnegative_int(item.payload, "u"),
+                snapshot_update_id=snapshot_update_id,
+            )
         )
         if retained:
             first_update_id = _nonnegative_int(retained[0].payload, "U")
             first_final_update_id = _nonnegative_int(retained[0].payload, "u")
-            expected_update_id = snapshot_update_id + 1
+            expected_update_id = (
+                snapshot_update_id if self.source == "binance_perp" else snapshot_update_id + 1
+            )
             if not first_update_id <= expected_update_id <= first_final_update_id:
                 self._book = self._new_book()
                 self._synchronized = False
+                self._snapshot_loaded = False
                 return DepthApplyResult(
                     status=DepthUpdateStatus.AWAITING_SNAPSHOT,
                     book_top=None,
@@ -433,6 +526,23 @@ class BinanceDepthSynchronizer:
 
         candidate = self._new_book()
         result = candidate.apply_snapshot(payload, collector_receive_ts=collector_receive_ts)
+        if result.status is not DepthUpdateStatus.APPLIED:
+            self._book = self._new_book()
+            self._synchronized = False
+            self._snapshot_loaded = False
+            return result
+        if not retained:
+            self._book = candidate
+            self._buffer.clear()
+            self._synchronized = False
+            self._snapshot_loaded = True
+            return DepthApplyResult(
+                status=DepthUpdateStatus.AWAITING_SNAPSHOT,
+                book_top=None,
+                last_update_id=snapshot_update_id,
+                reason="delta_bridge_required",
+            )
+        last_applied = result
         for index, item in enumerate(retained):
             result = candidate.apply_delta(
                 item.payload,
@@ -442,12 +552,16 @@ class BinanceDepthSynchronizer:
                 self._book = self._new_book()
                 self._buffer = deque(retained[index:])
                 self._synchronized = False
+                self._snapshot_loaded = False
                 return result
+            if result.status is DepthUpdateStatus.APPLIED:
+                last_applied = result
 
         self._book = candidate
         self._buffer.clear()
         self._synchronized = True
-        return result
+        self._snapshot_loaded = False
+        return last_applied
 
     def _buffer_update(
         self, payload: Mapping[str, object], *, collector_receive_ts: datetime | None
@@ -476,6 +590,22 @@ class BinanceDepthSynchronizer:
             source=self.source,
             availability_delay=self.availability_delay,
         )
+
+
+def _validate_depth_source(source: str) -> None:
+    if source not in {"binance_spot", "binance_perp"}:
+        raise ValueError("depth source must be 'binance_spot' or 'binance_perp'")
+
+
+def _retains_depth_update(
+    *,
+    source: str,
+    final_update_id: int,
+    snapshot_update_id: int,
+) -> bool:
+    if source == "binance_perp":
+        return final_update_id >= snapshot_update_id
+    return final_update_id > snapshot_update_id
 
 
 def _required_text(payload: Mapping[str, object], key: str) -> str:

@@ -32,9 +32,17 @@ max_feature_lookback_seconds = 3600
 [collection]
 flush_size = 50000
 flush_interval_seconds = 60.0
+shutdown_flush_timeout_seconds = 30.0
+max_pending_events = 100000
+max_pending_bytes = 67108864
 rotation_poll_seconds = 2.0
 opening_handoff_delay_seconds = 180.0
-ingest_version = "btc-short-horizon-v6"
+binance_spot_depth_snapshot_limit = 1000
+binance_futures_depth_snapshot_limit = 1000
+binance_depth_snapshot_retry_initial_seconds = 0.5
+binance_depth_snapshot_retry_max_seconds = 30.0
+polymarket_source_timestamp_regression_tolerance_seconds = 1.0
+ingest_version = "btc-short-horizon-v8"
 
 [maker]
 structure = "single"

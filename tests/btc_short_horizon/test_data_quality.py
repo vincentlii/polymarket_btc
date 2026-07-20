@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pyarrow.parquet as pq
+import pytest
 
 from btc_short_horizon.data.collector import PartitionedRawEventWriter, RawCollectorEvent
 from btc_short_horizon.data.contracts import TimedMarketEvent
@@ -74,11 +75,41 @@ def test_quality_validator_tolerates_bounded_source_clock_lead() -> None:
     assert excessive.accepted and excessive.stale
 
 
+def test_quality_validator_prepare_does_not_mutate_until_commit() -> None:
+    validator = EventQualityValidator()
+    assert validator.observe(_event(sequence="one")).accepted
+
+    prepared = validator.prepare(_event(sequence="two", available_offset_ms=1))
+
+    assert validator.stats.accepted_events == 1
+    assert validator.stats.total_events == 1
+    assert prepared.decision.accepted
+
+    committed = validator.commit(prepared)
+
+    assert committed.accepted
+    assert validator.stats.accepted_events == 2
+    assert validator.stats.total_events == 2
+
+
+def test_quality_validator_rejects_prepared_decision_after_epoch_change() -> None:
+    validator = EventQualityValidator()
+    prepared = validator.prepare(_event(sequence="one"))
+
+    validator.mark_gap(reason="socket_reconnect")
+
+    with pytest.raises(RuntimeError, match="quality decision is stale"):
+        validator.commit(prepared)
+    assert validator.stats.total_events == 0
+    assert validator.stats.gap_events == 1
+
+
 def test_raw_event_writer_outputs_immutable_partition_and_timing_columns(tmp_path) -> None:  # type: ignore[no-untyped-def]
     event = RawCollectorEvent(
         timing=_event(sequence="one"),
         event_type="trade",
         payload={"price": "100000"},
+        collector_session_id="test-session",
         epoch_id=0,
     )
     manifests = PartitionedRawEventWriter(tmp_path).write((event,))

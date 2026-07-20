@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
+import json
 from math import isfinite
 
 from btc_short_horizon.data.binance import DepthApplyResult, DepthUpdateStatus
@@ -80,7 +82,7 @@ def normalize_okx_book_update(
     if not instrument:
         raise ValueError("instrument is required")
     sequence = _nonnegative(payload, "seqId")
-    _signed_integer(payload, "prevSeqId")
+    previous_sequence = _signed_integer(payload, "prevSeqId")
     _levels(payload.get("bids"), "bids")
     _levels(payload.get("asks"), "asks")
     source_ts = _timestamp_from_millis(payload.get("ts"), "ts")
@@ -89,10 +91,10 @@ def normalize_okx_book_update(
         source_ts=source_ts,
         collector_receive_ts=receive_ts,
         available_ts=_available_time(source_ts, receive_ts, timedelta(0)),
-        sequence_or_hash=f"{action}:{sequence}",
+        sequence_or_hash=(f"{action}:{previous_sequence}:{sequence}:{_payload_hash(payload)}"),
         source=source,
         instrument=instrument,
-        schema_version="okx-books-v1",
+        schema_version="okx-books-v2",
         ingest_version="btc-short-horizon-v1",
     )
 
@@ -138,11 +140,43 @@ class OkxBookSynchronizer:
         receive_ts = _receive_time(collector_receive_ts)
 
         if action == "snapshot":
-            self._bids = dict(bids)
-            self._asks = dict(asks)
+            if previous_sequence != -1:
+                self.reset()
+                return DepthApplyResult(
+                    status=DepthUpdateStatus.GAP,
+                    book_top=None,
+                    last_update_id=None,
+                    reason="snapshot_previous_sequence_not_minus_one",
+                )
+            candidate_bids: dict[float, float] = {}
+            candidate_asks: dict[float, float] = {}
+            _apply_levels(candidate_bids, bids)
+            _apply_levels(candidate_asks, asks)
+            book_top = _book_top(
+                bids=candidate_bids,
+                asks=candidate_asks,
+                source_ts=source_ts,
+                receive_ts=receive_ts,
+                source=self.source,
+                instrument=self.instrument,
+            )
+            if book_top is None:
+                self.reset()
+                return DepthApplyResult(
+                    status=DepthUpdateStatus.GAP,
+                    book_top=None,
+                    last_update_id=None,
+                    reason="empty_or_crossed_snapshot",
+                )
+            self._bids = candidate_bids
+            self._asks = candidate_asks
             self._last_seq_id = sequence
             self._synchronized = True
-            return self._applied(source_ts=source_ts, receive_ts=receive_ts)
+            return DepthApplyResult(
+                status=DepthUpdateStatus.APPLIED,
+                book_top=book_top,
+                last_update_id=self._last_seq_id,
+            )
 
         if not self._synchronized or self._last_seq_id is None:
             return DepthApplyResult(
@@ -163,37 +197,47 @@ class OkxBookSynchronizer:
                 last_update_id=self._last_seq_id,
                 reason="heartbeat",
             )
-        if sequence <= self._last_seq_id:
-            return DepthApplyResult(
-                status=DepthUpdateStatus.STALE,
-                book_top=None,
-                last_update_id=self._last_seq_id,
-                reason="already_covered",
-            )
         if previous_sequence != self._last_seq_id:
-            self._synchronized = False
+            last_sequence = self._last_seq_id
+            self.reset()
             return DepthApplyResult(
                 status=DepthUpdateStatus.GAP,
                 book_top=None,
-                last_update_id=self._last_seq_id,
+                last_update_id=last_sequence,
                 reason="previous_sequence_mismatch",
+            )
+        if sequence == self._last_seq_id:
+            last_sequence = self._last_seq_id
+            self.reset()
+            return DepthApplyResult(
+                status=DepthUpdateStatus.GAP,
+                book_top=None,
+                last_update_id=last_sequence,
+                reason="nonempty_same_sequence",
             )
         _apply_levels(self._bids, bids)
         _apply_levels(self._asks, asks)
+        book_top = _book_top(
+            bids=self._bids,
+            asks=self._asks,
+            source_ts=source_ts,
+            receive_ts=receive_ts,
+            source=self.source,
+            instrument=self.instrument,
+        )
+        if book_top is None:
+            last_sequence = self._last_seq_id
+            self.reset()
+            return DepthApplyResult(
+                status=DepthUpdateStatus.GAP,
+                book_top=None,
+                last_update_id=last_sequence,
+                reason="empty_or_crossed_book",
+            )
         self._last_seq_id = sequence
-        return self._applied(source_ts=source_ts, receive_ts=receive_ts)
-
-    def _applied(self, *, source_ts: datetime, receive_ts: datetime | None) -> DepthApplyResult:
         return DepthApplyResult(
             status=DepthUpdateStatus.APPLIED,
-            book_top=_book_top(
-                bids=self._bids,
-                asks=self._asks,
-                source_ts=source_ts,
-                receive_ts=receive_ts,
-                source=self.source,
-                instrument=self.instrument,
-            ),
+            book_top=book_top,
             last_update_id=self._last_seq_id,
         )
 
@@ -306,7 +350,18 @@ def _receive_time(value: datetime | None) -> datetime | None:
 def _available_time(
     source_ts: datetime, receive_ts: datetime | None, availability_delay: timedelta
 ) -> datetime:
-    return receive_ts if receive_ts is not None else source_ts + availability_delay
+    delayed_source = source_ts + availability_delay
+    return delayed_source if receive_ts is None else max(delayed_source, receive_ts)
+
+
+def _payload_hash(payload: Mapping[str, object]) -> str:
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return sha256(encoded).hexdigest()
 
 
 def _datetime_to_ns(value: datetime) -> int:

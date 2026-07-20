@@ -12,9 +12,9 @@ from pathlib import Path
 import signal
 
 if __package__ in {None, ""}:
-    from _script_helpers import ensure_repo_root
+    from _script_helpers import ensure_repo_root, run_async_entrypoint
 else:
-    from ._script_helpers import ensure_repo_root
+    from ._script_helpers import ensure_repo_root, run_async_entrypoint
 
 ensure_repo_root(__file__)
 
@@ -158,12 +158,29 @@ async def run_async(args: argparse.Namespace) -> None:
             stale_after_seconds=args.feed_stale_after_seconds,
         )
         quality = tuple(active.collector.quality_stats.values())
+        buffer = active.collector.buffer_stats
         effective_market = _effective_market(active, now=datetime.now(UTC))
         details.update(
             {
                 "active_market": effective_market.slug,
                 "lookahead_market": (None if active.lookahead is None else active.lookahead.slug),
-                "pending_events": active.collector.pending_event_count,
+                "collector_session_id": active.collector.collector_session_id,
+                "pending_events": buffer.pending_events,
+                "pending_bytes": buffer.pending_bytes,
+                "buffer": {
+                    "pending_events": buffer.pending_events,
+                    "pending_bytes": buffer.pending_bytes,
+                    "inflight_events": buffer.inflight_events,
+                    "inflight_bytes": buffer.inflight_bytes,
+                    "total_events": buffer.total_events,
+                    "total_bytes": buffer.total_bytes,
+                    "high_water_events": buffer.high_water_events,
+                    "high_water_bytes": buffer.high_water_bytes,
+                    "flush_count": buffer.flush_count,
+                    "flush_failures": buffer.flush_failures,
+                    "last_flush_duration_ms": buffer.last_flush_duration_ms,
+                    "max_queue_delay_ms": buffer.max_queue_delay_ms,
+                },
                 "feeds": list(health.feeds),
                 "required_feeds_healthy": health.healthy,
                 "required_feeds_reason": health.reason,
@@ -191,6 +208,24 @@ async def run_async(args: argparse.Namespace) -> None:
                 args.flush_interval_seconds
                 if args.flush_interval_seconds is not None
                 else project.collection.flush_interval_seconds
+            ),
+            shutdown_flush_timeout_seconds=(project.collection.shutdown_flush_timeout_seconds),
+            max_pending_events=project.collection.max_pending_events,
+            max_pending_bytes=project.collection.max_pending_bytes,
+            binance_spot_depth_snapshot_limit=(
+                project.collection.binance_spot_depth_snapshot_limit
+            ),
+            binance_futures_depth_snapshot_limit=(
+                project.collection.binance_futures_depth_snapshot_limit
+            ),
+            binance_depth_snapshot_retry_initial_seconds=(
+                project.collection.binance_depth_snapshot_retry_initial_seconds
+            ),
+            binance_depth_snapshot_retry_max_seconds=(
+                project.collection.binance_depth_snapshot_retry_max_seconds
+            ),
+            polymarket_source_timestamp_regression_tolerance_seconds=(
+                project.collection.polymarket_source_timestamp_regression_tolerance_seconds
             ),
             ingest_version=project.collection.ingest_version,
             binance_streams=binance_streams,
@@ -233,8 +268,15 @@ async def run_async(args: argparse.Namespace) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv)
+    shutdown_timeout_seconds = load_btc_project_config(
+        args.config
+    ).collection.shutdown_flush_timeout_seconds
     try:
-        asyncio.run(run_async(parse_args(argv)))
+        run_async_entrypoint(
+            run_async(args),
+            shutdown_timeout_seconds=shutdown_timeout_seconds,
+        )
     except KeyboardInterrupt:
         return 0
     return 0

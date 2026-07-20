@@ -54,6 +54,8 @@ def test_public_subscription_builders_follow_current_channel_heartbeats() -> Non
 
     assert market.heartbeat_payload == "PING"
     assert market.heartbeat_interval_seconds == 10.0
+    assert market.subscribe_payload is not None
+    assert market.subscribe_payload["initial_dump"] is True
     assert rtds.heartbeat_interval_seconds == 5.0
     assert (
         "streams=btcusdt@trade/btcusdt@kline_1s/btcusdt@depth@100ms/btcusdt@bookTicker"

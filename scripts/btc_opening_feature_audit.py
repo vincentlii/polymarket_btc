@@ -102,6 +102,9 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         end_time=end_time,
         decision_ts_ns=decisions,
         ingest_version=config.collection.ingest_version,
+        polymarket_source_timestamp_regression_tolerance_seconds=(
+            config.collection.polymarket_source_timestamp_regression_tolerance_seconds
+        ),
         required_venue_sources=_CORE_VENUE_SOURCES,
     )
     output = args.output_directory

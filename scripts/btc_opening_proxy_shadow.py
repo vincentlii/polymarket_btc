@@ -178,6 +178,9 @@ async def run_async(args: argparse.Namespace) -> dict[str, object]:
         start_time=book_start,
         end_time=book_end,
         ingest_version=config.collection.ingest_version,
+        expected_source_timestamp_regression_tolerance_seconds=(
+            config.collection.polymarket_source_timestamp_regression_tolerance_seconds
+        ),
     )
     down = load_forward_polymarket_book_events(
         raw_data_root=raw_root,
@@ -185,7 +188,15 @@ async def run_async(args: argparse.Namespace) -> dict[str, object]:
         start_time=book_start,
         end_time=book_end,
         ingest_version=config.collection.ingest_version,
+        expected_source_timestamp_regression_tolerance_seconds=(
+            config.collection.polymarket_source_timestamp_regression_tolerance_seconds
+        ),
     )
+    if (
+        up.polymarket_source_timestamp_regression_tolerance_seconds
+        != down.polymarket_source_timestamp_regression_tolerance_seconds
+    ):
+        raise ValueError("Up/Down raw manifests use different Polymarket timestamp tolerances")
     observations = build_opening_market_observations(
         market=market,
         up_events=up.events,

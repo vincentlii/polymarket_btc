@@ -172,6 +172,7 @@ def test_raw_event_writer_does_not_mix_schema_versions_in_one_manifest(tmp_path:
             ),
             event_type="event",
             payload={},
+            collector_session_id="test-session",
             epoch_id=0,
         )
 
@@ -179,6 +180,58 @@ def test_raw_event_writer_does_not_mix_schema_versions_in_one_manifest(tmp_path:
 
     assert {manifest.schema_version for manifest in manifests} == {"schema-v1", "schema-v2"}
     assert {manifest.row_count for manifest in manifests} == {1}
+
+
+def test_raw_event_writer_attributes_quality_to_each_collector_session(tmp_path: Path) -> None:
+    timestamp = datetime(2026, 7, 11, 12, tzinfo=UTC)
+
+    def event(session_id: str) -> RawCollectorEvent:
+        return RawCollectorEvent(
+            timing=TimedMarketEvent(
+                source_ts=timestamp,
+                collector_receive_ts=timestamp,
+                available_ts=timestamp,
+                sequence_or_hash=session_id,
+                source="binance_spot",
+                instrument="BTCUSDT",
+                schema_version="schema-v1",
+                ingest_version="ingest-v1",
+            ),
+            event_type="trade",
+            payload={},
+            collector_session_id=session_id,
+            epoch_id=0,
+        )
+
+    manifests = PartitionedRawEventWriter(tmp_path).write(
+        (event("session-a"), event("session-b")),
+        quality_counts={
+            (
+                "binance_spot",
+                "BTCUSDT",
+                "2026-07-11",
+                "12",
+                "schema-v1",
+                "ingest-v1",
+                "session-a",
+            ): (1, 0),
+            (
+                "binance_spot",
+                "BTCUSDT",
+                "2026-07-11",
+                "12",
+                "schema-v1",
+                "ingest-v1",
+                "session-b",
+            ): (0, 2),
+        },
+    )
+    by_session = {manifest.attributes["collector_session_id"]: manifest for manifest in manifests}
+
+    assert by_session["session-a"].duplicate_count == 1
+    assert by_session["session-a"].gap_count == 0
+    assert by_session["session-b"].duplicate_count == 0
+    assert by_session["session-b"].gap_count == 2
 
 
 def test_raw_event_payload_json_round_trips_without_losing_nested_values() -> None:
@@ -204,9 +257,40 @@ def test_raw_event_payload_json_round_trips_without_losing_nested_values() -> No
         ),
         event_type="price_change",
         payload=payload,
+        collector_session_id="test-session",
         epoch_id=0,
     )
+    payload["price_changes"][0]["size"] = "999"  # type: ignore[index]
 
     row = event.as_row()
+    frozen_changes = event.payload["price_changes"]
+    assert isinstance(frozen_changes, tuple)
+    with pytest.raises(TypeError):
+        frozen_changes[0]["size"] = "888"  # type: ignore[index]
 
-    assert json.loads(str(row["payload_json"])) == payload
+    assert json.loads(str(row["payload_json"]))["price_changes"][0]["size"] == "10"
+    assert row["collector_session_id"] == "test-session"
+    assert event.estimated_size_bytes > len(str(row["payload_json"]))
+
+
+@pytest.mark.parametrize("invalid", [float("nan"), {"not-json"}, object()])
+def test_raw_event_payload_rejects_non_json_evidence(invalid: object) -> None:
+    timestamp = datetime(2026, 7, 11, 12, tzinfo=UTC)
+
+    with pytest.raises(ValueError, match="finite JSON object"):
+        RawCollectorEvent(
+            timing=TimedMarketEvent(
+                source_ts=timestamp,
+                collector_receive_ts=timestamp,
+                available_ts=timestamp,
+                sequence_or_hash="invalid-json",
+                source="polymarket_clob",
+                instrument="up-token",
+                schema_version="polymarket-market-ws-v1",
+                ingest_version="ingest-v1",
+            ),
+            event_type="book",
+            payload={"invalid": invalid},
+            collector_session_id="test-session",
+            epoch_id=0,
+        )

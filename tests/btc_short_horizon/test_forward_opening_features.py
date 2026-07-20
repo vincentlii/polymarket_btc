@@ -9,8 +9,11 @@ from btc_short_horizon.data import BTC_15M_MARKET_FAMILY, MarketWindow, TimedMar
 from btc_short_horizon.data.collector import PartitionedRawEventWriter, RawCollectorEvent
 from btc_short_horizon.features import opening_feature_schema
 from btc_short_horizon.research.opening_features import (
+    ForwardFeatureStateEvent,
+    _feature_event_sort_key,
     build_forward_opening_feature_observations,
 )
+from btc_short_horizon.research.opening_evidence import RawPayloadError
 
 
 T0 = datetime(2026, 4, 13, tzinfo=UTC)
@@ -41,6 +44,9 @@ def _raw_event(
     event_type: str,
     payload: dict[str, object],
     epoch_id: int = 0,
+    collector_session_id: str = "test-session",
+    ingest_version: str = INGEST_VERSION,
+    admission_sequence: int = 0,
 ) -> RawCollectorEvent:
     return RawCollectorEvent(
         timing=TimedMarketEvent(
@@ -51,16 +57,24 @@ def _raw_event(
             source=source,
             instrument=instrument,
             schema_version="test-v1",
-            ingest_version=INGEST_VERSION,
+            ingest_version=ingest_version,
         ),
         event_type=event_type,
         payload=payload,
+        collector_session_id=collector_session_id,
         epoch_id=epoch_id,
+        admission_sequence=admission_sequence,
     )
 
 
 def _clob_book(
-    *, token_id: str, at: datetime, bid: str, ask: str, epoch_id: int = 0
+    *,
+    token_id: str,
+    at: datetime,
+    bid: str,
+    ask: str,
+    epoch_id: int = 0,
+    ingest_version: str = INGEST_VERSION,
 ) -> RawCollectorEvent:
     return _raw_event(
         at=at,
@@ -68,6 +82,7 @@ def _clob_book(
         instrument=token_id,
         event_type="book",
         epoch_id=epoch_id,
+        ingest_version=ingest_version,
         payload={
             "event_type": "book",
             "asset_id": token_id,
@@ -76,6 +91,83 @@ def _clob_book(
             "asks": [{"price": ask, "size": "11"}],
         },
     )
+
+
+def test_forward_feature_sort_preserves_gap_before_same_time_admission() -> None:
+    timestamp = int(T0.timestamp() * 1_000_000_000)
+    gap = ForwardFeatureStateEvent(
+        raw_source="polymarket_clob",
+        state_source="polymarket_clob",
+        state_instrument=UP_TOKEN,
+        source_ts_ns=timestamp,
+        collector_receive_ts_ns=timestamp,
+        available_ts_ns=timestamp,
+        sequence_or_hash="gap",
+        collector_session_id="session",
+        epoch_id=1,
+        admission_sequence=10,
+        gap_before=True,
+    )
+    snapshot = ForwardFeatureStateEvent(
+        raw_source="polymarket_clob",
+        state_source="polymarket_clob",
+        state_instrument=UP_TOKEN,
+        source_ts_ns=timestamp - 1_000_000_000,
+        collector_receive_ts_ns=timestamp,
+        available_ts_ns=timestamp,
+        sequence_or_hash="snapshot",
+        collector_session_id="session",
+        epoch_id=1,
+        admission_sequence=11,
+        gap_before=True,
+    )
+
+    assert sorted((snapshot, gap), key=_feature_event_sort_key) == [gap, snapshot]
+
+
+def test_forward_features_reject_different_up_down_polymarket_tolerances(
+    tmp_path: Path,
+) -> None:
+    v8 = "btc-short-horizon-v8"
+    PartitionedRawEventWriter(
+        tmp_path,
+        manifest_attributes={"polymarket_source_timestamp_regression_tolerance_seconds": "0.25"},
+    ).write(
+        (
+            _clob_book(
+                token_id=UP_TOKEN,
+                at=T0,
+                bid="0.60",
+                ask="0.61",
+                ingest_version=v8,
+            ),
+        )
+    )
+    PartitionedRawEventWriter(
+        tmp_path,
+        manifest_attributes={"polymarket_source_timestamp_regression_tolerance_seconds": "0.5"},
+    ).write(
+        (
+            _clob_book(
+                token_id=DOWN_TOKEN,
+                at=T0,
+                bid="0.39",
+                ask="0.40",
+                ingest_version=v8,
+            ),
+        )
+    )
+
+    with pytest.raises(RawPayloadError, match="different Polymarket timestamp tolerances"):
+        build_forward_opening_feature_observations(
+            raw_data_root=tmp_path,
+            market=_market(),
+            start_time=T0,
+            end_time=T0 + timedelta(seconds=1),
+            decision_ts_ns=(int(T0.timestamp() * 1_000_000_000),),
+            ingest_version=v8,
+            required_venue_sources=("binance_spot",),
+        )
 
 
 def _binance_trade(
@@ -215,6 +307,58 @@ def test_forward_raw_epoch_change_marks_opening_feature_observation_ineligible(
     )
 
     assert "gap" in result.observations[0].quality_flags
+
+
+def test_forward_raw_treats_epoch_ids_as_opaque_not_monotonic(tmp_path: Path) -> None:
+    non_chainlink = tuple(
+        event for event in _events() if event.timing.source != "polymarket_rtds_chainlink"
+    )
+    PartitionedRawEventWriter(tmp_path).write(
+        (
+            *non_chainlink,
+            _chainlink(at=T0 - timedelta(seconds=2), price=99.0, epoch_id=900),
+            _chainlink(at=T0 - timedelta(seconds=1), price=100.0, epoch_id=100),
+        )
+    )
+    decision = int((T0 + timedelta(seconds=3)).timestamp() * 1_000_000_000)
+
+    result = build_forward_opening_feature_observations(
+        raw_data_root=tmp_path,
+        market=_market(),
+        start_time=T0 - timedelta(minutes=5),
+        end_time=T0 + timedelta(seconds=3),
+        decision_ts_ns=(decision,),
+        ingest_version=INGEST_VERSION,
+        required_venue_sources=("binance_spot", "binance_perp"),
+    )
+
+    assert "gap" in result.observations[0].quality_flags
+
+
+def test_forward_raw_rejects_a_completed_epoch_that_reappears(tmp_path: Path) -> None:
+    non_chainlink = tuple(
+        event for event in _events() if event.timing.source != "polymarket_rtds_chainlink"
+    )
+    PartitionedRawEventWriter(tmp_path).write(
+        (
+            *non_chainlink,
+            _chainlink(at=T0 - timedelta(seconds=3), price=98.0, epoch_id=900),
+            _chainlink(at=T0 - timedelta(seconds=2), price=99.0, epoch_id=100),
+            _chainlink(at=T0 - timedelta(seconds=1), price=100.0, epoch_id=900),
+        )
+    )
+    decision = int((T0 + timedelta(seconds=3)).timestamp() * 1_000_000_000)
+
+    with pytest.raises(RawPayloadError, match="epoch reappeared"):
+        build_forward_opening_feature_observations(
+            raw_data_root=tmp_path,
+            market=_market(),
+            start_time=T0 - timedelta(minutes=5),
+            end_time=T0 + timedelta(seconds=3),
+            decision_ts_ns=(decision,),
+            ingest_version=INGEST_VERSION,
+            required_venue_sources=("binance_spot", "binance_perp"),
+        )
 
 
 def test_forward_raw_scopes_binance_epochs_to_each_logical_stream(tmp_path: Path) -> None:

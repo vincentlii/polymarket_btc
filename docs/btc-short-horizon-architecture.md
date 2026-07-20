@@ -65,9 +65,11 @@ from the configuration file, so runners do not depend on the shell working
 directory.
 
 Its `[collection]` section controls raw-data durability and file granularity:
-`flush_size` caps in-memory events, `flush_interval_seconds` bounds the time
-to the next append-only Parquet write, and `rotation_poll_seconds` controls
-only how quickly a newly opened Gamma market is retried.
+`flush_size` triggers a write, `max_pending_events` and `max_pending_bytes`
+enforce a hard bound across queued and in-flight raw events, and
+`flush_interval_seconds` bounds the time to the next append-only Parquet write.
+`rotation_poll_seconds` controls only how quickly a newly opened Gamma market
+is retried.
 `opening_handoff_delay_seconds` keeps the old connection alive through the
 configured opening interval after the next market starts. CLI overrides are
 available for a deliberately bounded operator run; do not lower these defaults
@@ -87,9 +89,18 @@ Version `btc-short-horizon-v3` introduced this rule. Version v4 split Binance
 Futures `aggTrade` onto `/market/stream` and depth/Book Ticker onto
 `/public/stream`, matching the official channel layout. Version v5 made closed
 Binance Spot `kline_1s` the lightweight default and left trade/depth,
-perpetual, and OKX streams as explicit opt-ins. The current v6 boundary adds
-look-ahead CLOB subscription and namespaces epoch IDs by market-window start,
-so overlapping handoff connections cannot silently reuse the same epoch.
+perpetual, and OKX streams as explicit opt-ins. Version v6 added look-ahead
+CLOB subscription and namespaced epoch IDs by market-window start. The current
+v8 boundary retains the v7 collector-session identity and opaque composite
+`(collector_session_id, epoch_id)` as opaque rather than globally monotonic,
+prevents old/new raw schemas in the same hour from being mixed, bounds queued
+plus in-flight raw evidence by both event count and serialized bytes, and
+persists every declared continuity loss as its own causal raw event. The same
+version records the configured Polymarket source-timestamp regression tolerance
+in each manifest and a collector-session monotonic `admission_sequence` in each
+row. Offline reconstruction therefore cannot silently use a different threshold
+or reorder two messages that shared the same source, receive, and availability
+timestamp.
 
 `paths.raw_data_root` is the root of the project's immutable collector store;
 it contains `raw/<source>/<instrument-directory>/...` parts and manifests. The
@@ -107,11 +118,15 @@ insert, update, and cancellation latency.
 ## Data Contracts
 
 Every stored event carries `source_ts`, optional collector receive time,
-`available_ts`, source/instrument identity, schema/ingest versions, and an
-epoch identifier. Historical event-time-only data is allowed for direction
-research but is not evidence about network latency. A duplicate, ordering
-regression, or declared continuity gap starts a new epoch rather than silently
-mixing state.
+`available_ts`, source/instrument identity, schema/ingest versions, a
+collector-session identity, and an opaque epoch identifier. Historical
+event-time-only data is allowed for direction research but is not evidence
+about network latency. A duplicate, ordering regression, process restart, or
+declared continuity gap creates an explicit identity boundary rather than
+silently mixing state. Readers detect a completed epoch identity that
+reappears, but never infer ordering from the numeric epoch value. Within one
+collector session, `admission_sequence` is the authoritative tie-breaker for
+live arrival order, including across separate immutable parts.
 
 PMXT v2 records retain source time as `ts_event` and exporter receive time as
 `ts_init`. Its `last_trade_price` rows are converted to `TradeTick` evidence
@@ -119,31 +134,53 @@ for L2 matching. L2 data does not recover L3 FIFO order position; queue results
 remain a stressed heuristic, not a claim of exact fills.
 
 The forward collector stores accepted, normalized public messages as append-only
-Parquet. Each part manifest carries duplicate and gap counts for its partition;
-a declared disconnect or ordering regression is attached to the first accepted
-post-gap partition and creates a new epoch. Rejected events that have no
-accepted event in their partition remain visible in the collector's quality
-summary and are never fabricated into a raw-data row.
+Parquet. Each part manifest carries duplicate and gap counts for its partition.
+A declared disconnect, ordering regression, malformed state transition, or
+local admission failure immediately writes a `continuity_gap` event at the
+local causal boundary and creates a new epoch. This remains reproducible even
+when no later venue message arrives; offline feature and book reconstruction
+invalidate the prior state at the same timestamp.
+
+Every source event plus any gap it causes is capacity-admitted as one batch
+before normalizer, quality-validator, or book state is committed. If the bounded
+buffer has insufficient remaining room, the async collector requests a flush,
+waits for capacity, and retries the unchanged batch. A batch larger than the
+configured hard limit fails without partially changing live state.
 
 Part and manifest filenames use a 128-bit content-hash prefix to stay below
 Windows path limits for CLOB token IDs. The manifest retains the full SHA-256;
 a prefix collision fails explicitly rather than reusing the wrong data. The
-collector expands batch envelopes, ignores documented `PONG` replies and empty
-subscription control frames, and only persists messages that pass a source
-normalizer. In particular, an RTDS history envelope is not treated as a
-real-time Chainlink update without its documented message fields.
+reader discovers parts only through manifests and verifies source, instrument,
+schema, ingest version, session, filename, full SHA-256, row count, and source/
+availability bounds before reading rows. It rejects missing referenced parts,
+orphan parts, tampering, or mixed ingest versions. This directory-local proof
+cannot detect deletion of both a part and its manifest; the planned session
+inventory closes that remaining storage-audit boundary.
 
-`payload_json` is canonical, syntactically valid JSON. Any reader must reject
-a malformed payload rather than infer or repair missing delimiters. The
+The collector expands batch envelopes, ignores documented `PONG` replies and empty
+subscription control frames, sends heartbeats independently of message
+activity, and only persists messages that pass a source normalizer. Reconnects
+use bounded exponential backoff with jitter and reset only after a payload is
+successfully processed. All feed, snapshot, and error admissions share one
+async ingress lock; multi-stream error gaps are also committed atomically. In
+particular, an RTDS history envelope is not treated as a real-time Chainlink
+update without its documented message fields.
+
+`payload_json` is canonical, finite, syntactically valid JSON and is frozen at
+admission so later caller mutation cannot alter persisted evidence. Any reader
+must reject a malformed payload rather than infer or repair missing delimiters. The
 2026-07-13 forward raw parts written before this invariant was fixed are kept
 only for provenance; they are excluded from research and will not be migrated
 or silently mixed with valid collection epochs.
 
 For CLOB events, a small source-clock timestamp regression is conservatively
-held at the prior available time, while a regression of one second or more
-starts a new epoch. This prevents millisecond source-clock jitter from being
-misreported as a transport disconnect without allowing a material ordering
-regression to reuse the prior L2 state.
+held at the prior available time, while a regression at or beyond
+`collection.polymarket_source_timestamp_regression_tolerance_seconds` starts a
+new epoch. The value is project policy rather than a documented Polymarket
+guarantee. Persisting it in v8 manifests keeps live admission and offline
+reconstruction identical. Dual-token research rejects either a manifest/config
+mismatch or different Up/Down tolerances; changing this policy requires a new
+ingest boundary.
 
 ## Forward Collection
 
@@ -212,7 +249,14 @@ the public VPS runner. The higher-frequency streams must not be enabled on a
 bounded VPS until their measured daily storage rate fits an explicit budget.
 The swap contract quantity is normalized only after fetching current OKX
 instrument metadata; it is never hard-coded. Each enabled Binance
-spot/perpetual depth sequence has an independent synchronizer.
+spot/perpetual depth sequence has an independent synchronizer. A Binance depth
+socket is subscribed before its REST snapshot is requested; no book is usable
+until a retained delta bridges that snapshot. Spot uses its documented `U/u`
+bridge and Futures uses the separate `U/u` bootstrap followed by strict
+`pu == previous u` continuity. Snapshot retries are bounded and source-specific
+depth limits are enforced. OKX `books` requires an initial snapshot, validates
+`prevSeqId/seqId`, accepts only the documented empty heartbeat and maintenance
+reset, and forces resubscription after any other continuity failure.
 For the subscribed BTC token pair, it also persists `new_market` and
 `market_resolved` metadata events as raw evidence; outcome handling remains in
 the isolated label pipeline rather than the strategy event stream.
@@ -222,7 +266,14 @@ Ticker and REST snapshot do not carry a venue event time, so their schema marks
 them as receive-time-only evidence. Add a stream only when it is part of the
 pre-registered collection protocol, for example `--binance-stream
 btcusdt@aggTrade`. Stop with Ctrl+C; the collector flushes accepted buffered
-records before it exits.
+records before it exits. Shutdown waits at most
+`collection.shutdown_flush_timeout_seconds` for producer quiescence and the
+durability drain together, then returns a failure if the shared deadline
+expires. The CLI runner also bounds cancellation-resistant background tasks so
+the Python process cannot hang indefinitely during event-loop teardown. A
+blocking filesystem call already running in a worker thread cannot be killed
+safely by Python, so the VPS service must still enforce a process-level stop
+deadline before its final hard kill.
 
 ## Opening Mispricing Research Protocol
 
@@ -502,7 +553,7 @@ entries at 1.67c/share, but the 95% CI crosses zero (-0.59c to 4.17c). These
 one-minute observations cannot establish executable prices, passive fills,
 queue position, fees, or latency-adjusted maker P&L.
 
-The v6 look-ahead collector completed a full opening on
+The historical v6 look-ahead collector completed a full opening on
 `btc-updown-15m-1784214900`. The bounded dual-token Shadow reconstructed all 36
 five-second decisions through `t0+180s`, produced all 36 predictions, and
 submitted zero orders. The enhanced spot/perpetual/Chainlink/CLOB audit observed
@@ -510,6 +561,9 @@ all 36 decisions; 32 were quality-eligible and four failed closed because
 Binance Spot trade or BBO evidence was older than one second. There were no gap
 flags. This validates causal runtime compatibility while preserving the data
 freshness boundary; one window does not establish statistical stability.
+Because v8 changes the collector-session, epoch, buffer, gap, manifest, and
+raw-schema contracts, this v6 run remains provenance only; fresh v8 forward
+evidence is required for any new promotion decision.
 
 These results still cannot establish passive fills, queue position, or
 latency-adjusted maker P&L. No market advances beyond shadow until synchronized

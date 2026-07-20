@@ -37,8 +37,16 @@ class ResearchTimingConfig:
 class ForwardCollectionConfig:
     flush_size: int
     flush_interval_seconds: float
+    shutdown_flush_timeout_seconds: float
+    max_pending_events: int
+    max_pending_bytes: int
     rotation_poll_seconds: float
     opening_handoff_delay_seconds: float
+    binance_spot_depth_snapshot_limit: int
+    binance_futures_depth_snapshot_limit: int
+    binance_depth_snapshot_retry_initial_seconds: float
+    binance_depth_snapshot_retry_max_seconds: float
+    polymarket_source_timestamp_regression_tolerance_seconds: float
     ingest_version: str
 
 
@@ -164,13 +172,54 @@ def _scenario(section: Mapping[str, object]) -> ExecutionScenario:
 
 
 def _forward_collection(section: Mapping[str, object]) -> ForwardCollectionConfig:
-    return ForwardCollectionConfig(
+    config = ForwardCollectionConfig(
         flush_size=_positive_int(section, "flush_size"),
         flush_interval_seconds=_positive_float(section, "flush_interval_seconds"),
+        shutdown_flush_timeout_seconds=_positive_float(
+            section,
+            "shutdown_flush_timeout_seconds",
+        ),
+        max_pending_events=_positive_int(section, "max_pending_events"),
+        max_pending_bytes=_positive_int(section, "max_pending_bytes"),
         rotation_poll_seconds=_positive_float(section, "rotation_poll_seconds"),
         opening_handoff_delay_seconds=_positive_float(section, "opening_handoff_delay_seconds"),
+        binance_spot_depth_snapshot_limit=_positive_int(
+            section,
+            "binance_spot_depth_snapshot_limit",
+        ),
+        binance_futures_depth_snapshot_limit=_positive_int(
+            section,
+            "binance_futures_depth_snapshot_limit",
+        ),
+        binance_depth_snapshot_retry_initial_seconds=_positive_float(
+            section,
+            "binance_depth_snapshot_retry_initial_seconds",
+        ),
+        binance_depth_snapshot_retry_max_seconds=_positive_float(
+            section,
+            "binance_depth_snapshot_retry_max_seconds",
+        ),
+        polymarket_source_timestamp_regression_tolerance_seconds=_nonnegative_float(
+            section,
+            "polymarket_source_timestamp_regression_tolerance_seconds",
+        ),
         ingest_version=_text(section, "ingest_version"),
     )
+    if config.max_pending_events < config.flush_size:
+        raise ValueError("collection.max_pending_events must be >= flush_size")
+    if config.binance_spot_depth_snapshot_limit > 5_000:
+        raise ValueError("collection.binance_spot_depth_snapshot_limit must be <= 5000")
+    if config.binance_futures_depth_snapshot_limit > 1_000:
+        raise ValueError("collection.binance_futures_depth_snapshot_limit must be <= 1000")
+    if (
+        config.binance_depth_snapshot_retry_max_seconds
+        < config.binance_depth_snapshot_retry_initial_seconds
+    ):
+        raise ValueError(
+            "collection.binance_depth_snapshot_retry_max_seconds must be >= "
+            "binance_depth_snapshot_retry_initial_seconds"
+        )
+    return config
 
 
 def _family(section: Mapping[str, object]) -> BtcMarketFamily:

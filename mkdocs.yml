@@ -30,6 +30,7 @@ nav:
       - Research And Optimizers: research.md
       - Polymarket Account Ledger Replay: account-ledger-replay.md
       - BTC Short-Horizon Architecture: btc-short-horizon-architecture.md
+      - BTC Market-Data Protocol Boundaries: btc-market-data-protocol-research.md
       - BTC Execution And Latency Research: btc-execution-latency-research.md
   - Project:
       - Project Status: project-status.md
