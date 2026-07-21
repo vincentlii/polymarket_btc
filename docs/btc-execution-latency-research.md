@@ -141,7 +141,7 @@ WebSocket event / 5s decision tick
 
 官方当前说明 matching engine primary servers 位于 `eu-west-2`；最近的非受限区域是 `eu-west-1`。通过 KYC/KYB 后才可能获得 `eu-west-2` direct co-location。[Trading Overview：Server Infrastructure](https://docs.polymarket.com/trading/overview#server-infrastructure)
 
-截至核对日，官方 geoblock 文档将德国 `DE` 列为 `Blocked`。**因此法兰克福 VPS 不能作为开仓服务器**；订单提交前必须从候选 VPS IP 调用官方 `GET https://polymarket.com/api/geoblock` 并 fail closed。地区限制和法律资格优先于延迟优化。[Geographic Restrictions](https://docs.polymarket.com/api-reference/geoblock)
+截至 2026-07-21 核对，官方 geoblock 文档将德国 `DE` 与英国 `GB` 都列为 `Blocked`。**因此法兰克福和伦敦 VPS 都不能作为开仓服务器**；订单提交前必须从候选 VPS IP 调用官方 `GET https://polymarket.com/api/geoblock` 并 fail closed。地区限制和法律资格优先于延迟优化。[Geographic Restrictions](https://docs.polymarket.com/api-reference/geoblock)
 
 ## 截至 2026-07-16 的不确定性
 
@@ -159,7 +159,22 @@ WebSocket event / 5s decision tick
 4. 不实现“order nonce 预估”；明确区分 L1 API-key nonce、V2 order salt/timestamp 和 L2 request timestamp。
 5. 只在订单参数确定后签名。若以后要维护短寿命 pre-signed price grid，必须先取得 timestamp-age 实测证据并评估泄漏/错误提交风险。
 6. 保留 REST heartbeat、启动检查和重连对账；删除的只能是实时行情与订单状态的 REST 轮询。
-7. 首尔 VPS 首次只运行 collector、Shadow 与 dashboard，并记录至少一周网络分布；未来是否迁往更靠近 `eu-west-2` 的合规区域由实测决定。法兰克福当前官方规则下不可作为开仓部署默认值。
+7. 首尔 VPS 首次只运行 collector、Shadow 与 dashboard，并记录至少一周网络分布；未来是否迁往更靠近 `eu-west-2` 的合规区域由实测决定。法兰克福与伦敦在当前官方规则下都不可作为开仓部署默认值。
+
+### 已实现的控制面边界
+
+`LiveOperationsController` 已将 authenticated heartbeat、完整账户 ledger
+刷新、REST reconciliation、User-channel gap admission、状态和 dashboard
+投影组成独立 cadence 的有界 supervisor。官方 heartbeat 当前可能返回
+历史 `heartbeat_id`，也可能只返回 `{"status":"ok"}`；gateway 对两种明确
+成功响应兼容，其他响应 fail closed。
+
+WAL checkpoint/rotation 只允许在服务已 halt、无未终态 order/trade、无
+reserved notional 且市场状态无歧义时执行。segment 之间保留全局 sequence
+与 hash 连续性，完整读取仍审计全部历史 segment。目标 VPS 必须先运行
+`scripts/btc_vps_preflight.py`，把 release revision、rule epoch、官方
+geoblock、NTP、CLOB clock offset 与 CLOB/Gamma/Binance 延迟分布写入不可变
+receipt；任何失败都不能启用后续服务。
 
 ## 2026-07-20 回放执行契约补充
 

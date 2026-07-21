@@ -286,6 +286,8 @@ function renderLifecycle(strategy) {
 
 function healthFromRuntime(payload) {
   const items=(payload.statuses||[]).map(item=>({key:`runtime-${item.service}`,label:runtimeServiceLabel(item.service),state:item.health&&item.health.healthy?'ok':'error',detail:`${runtimeModeLabel(item.mode)} · ${item.state==='running'?'运行中':readableIdentifier(item.state)}`,updated_at:item.updated_at,latency_ms:null,age_seconds:item.health&&item.health.age_seconds}));
+  const projection=payload.snapshot_health, hasLive=(payload.statuses||[]).some(item=>item.service==='live_operations');
+  if(payload.snapshot||hasLive) items.push({key:'performance-projection',label:'账户与盈亏快照',state:projection&&projection.healthy?'ok':'error',detail:projection&&projection.healthy?'真实账户账本投影新鲜':`投影不可用 · ${readableIdentifier(projection&&projection.reason||'missing_snapshot')}`,updated_at:payload.snapshot&&payload.snapshot.generated_at||payload.generated_at,latency_ms:null,age_seconds:projection&&projection.age_seconds});
   const shadow=payload.shadow, coverage=shadow&&shadow.coverage;
   if(shadow) items.push({key:'shadow-evidence',label:'Shadow 证据',state:'ok',detail:`${shadow.market_slug} · 合格 ${coverage&&coverage.quality_eligible||0}/${coverage&&coverage.predictions||0} · 未提交订单`,updated_at:payload.generated_at,latency_ms:null,age_seconds:null});
   const collector=(payload.statuses||[]).find(item=>item.service==='forward_collector');
@@ -315,12 +317,12 @@ function renderAlerts(payload,snapshot) {
 }
 
 function render(payload) {
-  const snapshot=payload.snapshot||null; const snapshotHealth=(snapshot&&snapshot.health)||[]; const overallState=!payload.health||!payload.health.healthy||(payload.errors||[]).length>0||snapshotHealth.some(item=>item.state==='error')?'error':payload.stop_request||snapshotHealth.some(item=>item.state==='warning'||item.state==='unknown')?'warning':'ok';
+  const snapshot=payload.snapshot||null; const snapshotHealth=(snapshot&&snapshot.health)||[]; const staleProjection=snapshot&&(!payload.snapshot_health||!payload.snapshot_health.healthy); const overallState=!payload.health||!payload.health.healthy||(payload.errors||[]).length>0||staleProjection||snapshotHealth.some(item=>item.state==='error')?'error':payload.stop_request||snapshotHealth.some(item=>item.state==='warning'||item.state==='unknown')?'warning':'ok';
   const overall=byId('overall'); overall.className=`pill ${overallState}`; overall.replaceChildren(); const dot=document.createElement('span'); dot.className='dot'; const label=document.createElement('span'); label.textContent=overallState==='ok'?'Bot 运行正常':overallState==='warning'?'需要关注':'运行异常'; overall.append(dot,label);
   const mode=byId('run-mode'); mode.textContent=snapshot?String(snapshot.run_mode).replaceAll('_',' ').toUpperCase():payload.shadow?'POST-WINDOW SHADOW':'NO PERFORMANCE SNAPSHOT'; mode.className=`pill ${snapshot||payload.shadow?'ok':''}`;
   const collector=(payload.statuses||[]).find(item=>item.service==='forward_collector'); const market=collector&&collector.details&&(collector.details.active_market||collector.details.scheduled_market); byId('active-market').textContent=market?`当前市场 · ${market}`:'当前市场尚未上报';
   byId('freshness-title').textContent=payload.health&&payload.health.healthy?'运行状态新鲜':'运行状态不可用'; byId('freshness-time').textContent=`刷新 ${localTime(payload.generated_at)} · ${ageText(payload.health&&payload.health.age_seconds)}`;
-  byId('snapshot-source').textContent=snapshot?`Snapshot ${localTime(snapshot.generated_at)}`:payload.shadow?'Shadow evidence · no account PnL':'Runtime status only';
+  byId('snapshot-source').textContent=snapshot?`Snapshot ${localTime(snapshot.generated_at)}${staleProjection?' · STALE':''}`:payload.shadow?'Shadow evidence · no account PnL':'Runtime status only';
   renderAlerts(payload,snapshot); renderSummary(snapshot); renderLifecycle(snapshot&&snapshot.strategy); renderHealth(payload,snapshot);
 }
 

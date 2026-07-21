@@ -68,8 +68,24 @@ and reporting plumbing without importing archived BTC strategy logic.
   failures, User WebSocket gaps/subscription changes, heartbeat failures, and
   failed terminal trades close the trading gate and trigger cancel-all instead
   of retrying. User order/trade updates are independently idempotent, and only
-  confirmed fills advance canary counts. This establishes the live safety
-  primitives; it does not yet constitute a production runner or VPS approval.
+  confirmed fills advance canary counts. A bounded operations supervisor now
+  schedules heartbeat, exact daily account-ledger refresh, authenticated REST
+  reconciliation, User-channel gap admission, runtime status and real dashboard
+  publication. Immutable WAL segments support safe halted-state checkpoint and
+  rotation without resetting the global hash/sequence chain; restart restores
+  market-cycle guards and canary counts from the latest verified checkpoint.
+  Operator recovery is durable and cannot override unresolved venue evidence.
+  This is a fail-closed control plane, not a trading decision runner or VPS
+  approval.
+- Deployment hardening: the target-host preflight binds the exact release Git
+  revision and rule epoch, verifies non-symlink durable mounts, capacity, NTP,
+  official geoblock, CLOB clock offset and CLOB/Gamma/Binance latency, and
+  persists a content-addressed receipt. Compose services run read-only as an
+  unprivileged user with all capabilities dropped, `no-new-privileges`, bounded
+  PIDs and explicit pre-created bind mounts. Live secrets support strict
+  mutually exclusive `POLY_*_FILE` injection and are excluded from Git and the
+  image context. The dashboard health endpoint fails when the real ledger
+  projection is missing, future-dated or stale.
 - Historical three-minute fair-probability proxy: the reproducible exact
   `stride=1` run used all 7,295 resolved markets and 262,620 causal five-second snapshots.
   Paired daily-block candidate selection retained `logistic-c0.1` because
@@ -167,13 +183,16 @@ the input/output contract and operational commands.
 
 ## Known Issues
 
-- The live safety components are not yet wired into one long-running production
-  supervisor. Durable daily-PnL coverage, periodic account/geo/rule and User
-  channel reconciliation, dead-man heartbeat scheduling, WAL checkpoint and
-  operator recovery, real dashboard projection, secret injection, service
-  management, backup, retention, and restore drills remain required before VPS
-  deployment. Startup reconciliation uses conservative REST timestamp
-  boundaries until the durable ledger records exact covered trade IDs.
+- Runtime/model/WAL/ledger backup, retention and destructive restore drills are
+  not yet one release-gated workflow. They remain required before the VPS can
+  be treated as replaceable. The existing raw-data v9 archive protects forward
+  source sessions only; it does not by itself protect models, account ledgers,
+  WAL checkpoints, status or reports.
+- The operations supervisor is intentionally not exposed as a real-order
+  Compose service. There is no production decision runner connecting the
+  opening model to live placement, and the direction/maker evidence gates are
+  still No-Go. First deployment remains collector, optional post-window Shadow
+  and read-only dashboard only.
 - A single fresh 36-decision Shadow window proves runtime compatibility, not
   statistical stability. Promotion still requires accumulated forward windows,
   target holdout counts, synchronized executable L2/TradeTick evidence, and the

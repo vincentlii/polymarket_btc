@@ -299,6 +299,43 @@ def test_shadow_mode_never_calls_gateway_and_records_hash_chained_wal(tmp_path: 
     assert records[-1]["sequence"] == len(records)
 
 
+def test_service_checkpoint_requires_halt_and_restores_compacted_state(
+    tmp_path: Path,
+) -> None:
+    service, gateway = _service(tmp_path)
+    assert isinstance(gateway, _Gateway)
+    result = service.submit(request=_request(), account=_account(), ts_ns=BASE_TS_NS + 1)
+    service.request_cancel(client_order_id=result.client_order_id, ts_ns=BASE_TS_NS + 2)
+
+    with pytest.raises(ValueError, match="halted"):
+        service.checkpoint_and_rotate_wal(ts_ns=BASE_TS_NS + 3)
+
+    service.emergency_stop(ts_ns=BASE_TS_NS + 4, reason="maintenance")
+    receipt = service.checkpoint_and_rotate_wal(ts_ns=BASE_TS_NS + 5)
+
+    restored, _ = _service(
+        tmp_path,
+        reconcile=False,
+        filename="wal.jsonl",
+    )
+    restored_count = restored.restore_from_wal()
+
+    assert receipt.checkpoint_sequence > receipt.archived_through_sequence
+    assert restored_count == 0
+    assert restored.halted
+    assert restored.recovery_required
+    assert restored.canary_progress.submitted_orders == 1
+    duplicate = restored.submit(
+        request=_request(),
+        account=_account(),
+        ts_ns=BASE_TS_NS + 6,
+    )
+    assert duplicate.reason == "kill_switch_active"
+    recovery_events = [record["event_type"] for record in restored.wal.read_recovery_window()]
+    assert recovery_events[0] == "service_checkpoint"
+    assert "order_live" not in recovery_events
+
+
 def test_canary_requires_startup_reconciliation_then_explicit_risk_enablement(
     tmp_path: Path,
 ) -> None:
@@ -853,6 +890,55 @@ def test_successful_heartbeats_do_not_grow_the_trading_wal(tmp_path: Path) -> No
     service.send_venue_heartbeat(ts_ns=BASE_TS_NS + 2)
 
     assert len(service.wal.read()) == before
+
+
+def test_operator_recovery_requires_fresh_empty_authoritative_reconciliation(
+    tmp_path: Path,
+) -> None:
+    service, _ = _service(tmp_path)
+    service.emergency_stop(ts_ns=BASE_TS_NS + 1, reason="test_halt")
+    account = _account(observed_at_ns=BASE_TS_NS + 2)
+
+    with pytest.raises(ValueError, match="fresh startup reconciliation"):
+        service.authorize_operator_recovery(
+            account=account,
+            evidence=_evidence(account),
+            ts_ns=BASE_TS_NS + 3,
+            approval_sha256="d" * 64,
+            reason="operator reviewed incident",
+        )
+
+    service.complete_startup_reconciliation(
+        account=account,
+        evidence=_evidence(account),
+        ts_ns=BASE_TS_NS + 3,
+    )
+    with pytest.raises(ValueError, match="approval_sha256"):
+        service.authorize_operator_recovery(
+            account=account,
+            evidence=_evidence(account),
+            ts_ns=BASE_TS_NS + 4,
+            approval_sha256="not-a-hash",
+            reason="operator reviewed incident",
+        )
+
+    service.authorize_operator_recovery(
+        account=account,
+        evidence=_evidence(account),
+        ts_ns=BASE_TS_NS + 4,
+        approval_sha256="d" * 64,
+        reason="operator reviewed incident",
+    )
+
+    assert not service.halted
+    assert not service.recovery_required
+    assert "operator_recovery_authorized" in service.wal.path.read_text(encoding="utf-8")
+
+    restored = LiveExecutionService(config=_config(), wal=service.wal, gateway=_Gateway())
+    restored.restore_from_wal()
+    assert not restored.halted
+    assert not restored.recovery_required
+    assert not restored.startup_reconciled
 
 
 def test_service_restores_idempotency_and_requires_fresh_startup_reconciliation(

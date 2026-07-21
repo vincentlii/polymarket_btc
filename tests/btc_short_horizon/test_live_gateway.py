@@ -337,6 +337,13 @@ def test_gateway_recovers_expired_heartbeat_id_once() -> None:
     assert client.heartbeat_ids == ["heartbeat-expired", "heartbeat-current"]
 
 
+def test_gateway_accepts_the_current_documented_stateless_heartbeat_ack() -> None:
+    client = _CurrentV2Client()
+    client.post_heartbeat = lambda heartbeat_id: {"status": "ok"}  # type: ignore[method-assign]
+
+    assert _gateway(client).send_heartbeat("legacy-id") == ""
+
+
 def test_gateway_heartbeat_failure_is_explicit() -> None:
     client = _CurrentV2Client()
     gateway = _gateway(client)

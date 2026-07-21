@@ -518,9 +518,11 @@ class PyClobV2Gateway:
         if not isinstance(response, Mapping):
             raise GatewayHeartbeatError("invalid CLOB heartbeat response")
         next_id = response.get("heartbeat_id") or response.get("heartbeatId")
-        if not isinstance(next_id, str) or not next_id:
-            raise GatewayHeartbeatError("CLOB heartbeat response has no heartbeat ID")
-        return next_id
+        if isinstance(next_id, str) and next_id:
+            return next_id
+        if response.get("status") == "ok":
+            return ""
+        raise GatewayHeartbeatError("CLOB heartbeat response is not an acknowledgement")
 
 
 def _parse_order_response(

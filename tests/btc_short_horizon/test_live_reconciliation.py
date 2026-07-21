@@ -8,6 +8,7 @@ import pytest
 from btc_short_horizon.live.reconciliation import (
     ClobStartupReconciler,
     DailyLedgerSnapshot,
+    LedgerTradeCoverage,
     LocalOrderExpectation,
     StartupReadiness,
     account_snapshot_sha256,
@@ -135,10 +136,23 @@ def _ledger(**overrides: object) -> DailyLedgerSnapshot:
         "realized_pnl": -1.25,
         "observed_at_ns": BASE_TS_NS,
         "covered_through_ns": BASE_TS_NS - 1_000_000_000,
+        "trade_coverage": (),
         "ledger_sha256": "a" * 64,
     }
     values.update(overrides)
     return DailyLedgerSnapshot(**values)  # type: ignore[arg-type]
+
+
+def _trade_coverage(**overrides: object) -> LedgerTradeCoverage:
+    values: dict[str, object] = {
+        "trade_id": "trade-covered",
+        "status": "TRADE_STATUS_CONFIRMED",
+        "match_time_ns": BASE_TS_NS - 1_000_000_000,
+        "last_update_ns": BASE_TS_NS - 1_000_000_000,
+        "transaction_hash": "0x" + ("c" * 64),
+    }
+    values.update(overrides)
+    return LedgerTradeCoverage(**values)  # type: ignore[arg-type]
 
 
 def _readiness(**overrides: object) -> StartupReadiness:
@@ -346,6 +360,34 @@ def test_trade_already_covered_by_the_ledger_is_not_reported_pending() -> None:
         "match_time_nano": str(covered_through_ns),
         "match_time": str(covered_through_ns // 1_000_000_000),
         "last_update": str(covered_through_ns // 1_000_000_000),
+        "transaction_hash": "0x" + ("c" * 64),
+    }
+    result = ClobStartupReconciler(
+        _ClobClient(orders=[], trades=[trade]),
+        http_client=_HttpClient(positions=[]),
+        funder=FUNDER,
+        signature_type=2,
+        clock_ns=_clock(),
+    ).reconcile(
+        expected_orders=(),
+        ledger=_ledger(
+            covered_through_ns=covered_through_ns,
+            trade_coverage=(_trade_coverage(),),
+        ),
+        readiness=_readiness(),
+    )
+
+    assert result.account.account_reconciled
+    assert not result.evidence.pending_trade_ids
+
+
+def test_same_second_trade_missing_from_exact_ledger_coverage_is_pending() -> None:
+    covered_through_ns = BASE_TS_NS - 100
+    trade = {
+        "id": "trade-same-second-new",
+        "status": "TRADE_STATUS_MATCHED",
+        "match_time": str(covered_through_ns // 1_000_000_000),
+        "last_update": str(covered_through_ns // 1_000_000_000),
     }
     result = ClobStartupReconciler(
         _ClobClient(orders=[], trades=[trade]),
@@ -359,8 +401,50 @@ def test_trade_already_covered_by_the_ledger_is_not_reported_pending() -> None:
         readiness=_readiness(),
     )
 
-    assert result.account.account_reconciled
-    assert not result.evidence.pending_trade_ids
+    assert result.evidence.pending_trade_ids == {"trade-same-second-new"}
+    assert not result.account.account_reconciled
+
+
+def test_trade_status_or_transaction_change_after_ledger_snapshot_is_pending() -> None:
+    trade = {
+        "id": "trade-covered",
+        "status": "TRADE_STATUS_CONFIRMED",
+        "match_time": str((BASE_TS_NS - 1_000_000_000) // 1_000_000_000),
+        "match_time_nano": str(BASE_TS_NS - 1_000_000_000),
+        "last_update": str(BASE_TS_NS // 1_000_000_000),
+        "transaction_hash": "0x" + ("d" * 64),
+    }
+    result = ClobStartupReconciler(
+        _ClobClient(orders=[], trades=[trade]),
+        http_client=_HttpClient(positions=[]),
+        funder=FUNDER,
+        signature_type=2,
+        clock_ns=_clock(),
+    ).reconcile(
+        expected_orders=(),
+        ledger=_ledger(
+            trade_coverage=(_trade_coverage(status="TRADE_STATUS_MATCHED", transaction_hash=None),),
+        ),
+        readiness=_readiness(),
+    )
+
+    assert result.evidence.pending_trade_ids == {"trade-covered"}
+
+
+def test_trade_recorded_in_ledger_but_missing_from_complete_venue_query_is_pending() -> None:
+    result = ClobStartupReconciler(
+        _ClobClient(orders=[], trades=[]),
+        http_client=_HttpClient(positions=[]),
+        funder=FUNDER,
+        signature_type=2,
+        clock_ns=_clock(),
+    ).reconcile(
+        expected_orders=(),
+        ledger=_ledger(trade_coverage=(_trade_coverage(),)),
+        readiness=_readiness(),
+    )
+
+    assert result.evidence.pending_trade_ids == {"trade-covered"}
 
 
 def test_geo_block_is_reported_without_making_partial_sources_look_missing() -> None:

@@ -642,10 +642,45 @@ rules, open orders, trades, positions, WAL integrity, and User-channel
 generation. Secrets are rejected from persisted payloads. No operator flag can
 turn an unproven unknown submission into a known-safe state.
 
-These components are safety primitives, not yet a complete production daemon.
-Periodic reconciliation, exact durable daily-PnL coverage, heartbeat
-scheduling, WAL checkpoint/rotation, operator recovery, health publication,
-deployment, backup, and retention remain part of the pre-VPS operations phase.
+`LiveOperationsController` now composes these primitives into one bounded
+supervisor. It schedules the authenticated dead-man heartbeat, exact account
+ledger refresh, REST order/trade/position reconciliation, User-channel gap
+admission and dashboard publication on independent cadences. Any failed safety
+cycle persists a failed service status, closes the trading gate and propagates
+the error after best-effort cleanup; cleanup errors are never converted into a
+successful shutdown.
+
+Daily account ledgers are immutable, content-addressed snapshots. Every refresh
+records exact trade IDs, status, timestamps and response hashes together with
+closed positions, realized PnL and account equity. The dashboard may project
+real PnL only from this ledger. A missing, future-dated or stale projection is
+visibly unhealthy; its last value remains visible but is labelled `STALE`.
+
+The WAL maintains one global sequence and hash chain across immutable segments.
+Checkpoint/rotation is allowed only while the service is halted, has no
+ambiguous market, no non-terminal order/trade and no reserved notional. The
+checkpoint captures mode, halt state, market-cycle guards and canary counts;
+restart can restore from the latest verified checkpoint and replay only the
+remaining active window. Full WAL reads still audit every segment, so rotation
+does not weaken tamper or truncation detection. Operator recovery is a durable,
+explicit authorization and cannot bypass unresolved venue evidence.
+
+Live credentials may be supplied directly for local tests or through mutually
+exclusive `POLY_*_FILE` variables. Secret files must be absolute regular
+non-symlink UTF-8 files of bounded size. Neither the files nor their paths are
+written to WAL, ledger, status, preflight reports or the image build context.
+
+`scripts/btc_vps_preflight.py` is the target-host admission receipt. It binds an
+exact clean release revision and rule epoch, verifies separate durable writable
+data/output mounts, disk capacity, NTP, the official geoblock response, CLOB
+clock offset and CLOB/Gamma/Binance latency distributions, then writes an
+immutable content-addressed report. Any failed check exits non-zero. It does
+not authorize trading: the first VPS release remains collector, optional
+post-window Shadow and read-only dashboard only.
+
+Runtime/model/WAL/ledger backup, retention and restore-drill automation remains
+the next pre-VPS durability phase. A real decision runner and Canary promotion
+remain blocked by the documented model and execution-evidence gates.
 
 ## Windows Native Build
 

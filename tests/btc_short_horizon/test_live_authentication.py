@@ -76,6 +76,45 @@ def test_credentials_do_not_implicitly_derive_or_create_api_keys() -> None:
         LiveCredentials.from_environment(environment)
 
 
+def test_credentials_load_secret_files_without_putting_values_in_environment(
+    tmp_path,
+) -> None:
+    values = _environment()
+    environment = {
+        "POLY_FUNDER": values["POLY_FUNDER"],
+        "POLY_SIGNATURE_TYPE": values["POLY_SIGNATURE_TYPE"],
+    }
+    for name in (
+        "POLY_PRIVATE_KEY",
+        "POLY_API_KEY",
+        "POLY_API_SECRET",
+        "POLY_PASSPHRASE",
+    ):
+        path = (tmp_path / name.casefold()).resolve()
+        path.write_text(values[name] + "\n", encoding="utf-8")
+        environment[f"{name}_FILE"] = str(path)
+
+    credentials = LiveCredentials.from_environment(environment)
+
+    assert credentials.private_key == PRIVATE_KEY
+    assert credentials.user_channel_auth()["apiKey"] == "api-key-value"
+    assert PRIVATE_KEY not in repr(credentials)
+
+
+def test_credentials_reject_ambiguous_or_relative_secret_files(tmp_path) -> None:
+    secret_path = (tmp_path / "private-key").resolve()
+    secret_path.write_text(PRIVATE_KEY, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="both"):
+        LiveCredentials.from_environment(_environment(POLY_PRIVATE_KEY_FILE=str(secret_path)))
+
+    environment = _environment()
+    del environment["POLY_PRIVATE_KEY"]
+    environment["POLY_PRIVATE_KEY_FILE"] = "relative-secret"
+    with pytest.raises(ValueError, match="absolute"):
+        LiveCredentials.from_environment(environment)
+
+
 def test_sdk_version_check_is_exact(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "btc_short_horizon.live.authentication.package_version",

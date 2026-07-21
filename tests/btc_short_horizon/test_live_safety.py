@@ -389,3 +389,49 @@ def test_wal_serializes_two_writer_instances_without_duplicate_sequences(tmp_pat
 
     records = first.read()
     assert [record["sequence"] for record in records] == list(range(1, 41))
+
+
+def test_wal_rotation_preserves_global_chain_and_limits_recovery_window(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "rotated.jsonl"
+    wal = JsonlWriteAheadLog(path)
+    wal.append(event_type="first", ts_ns=1, payload={"value": 1})
+    wal.append(event_type="second", ts_ns=2, payload={"value": 2})
+
+    receipt = wal.rotate(
+        event_type="service_checkpoint",
+        ts_ns=3,
+        payload={"state": "safe"},
+    )
+    wal.append(event_type="tail", ts_ns=4, payload={"value": 4})
+
+    records = wal.read()
+    recovery = wal.read_recovery_window()
+    assert [record["sequence"] for record in records] == [1, 2, 3, 4]
+    assert [record["sequence"] for record in recovery] == [3, 4]
+    assert recovery[0]["event_type"] == "service_checkpoint"
+    assert recovery[0]["prev_hash"] == records[1]["record_hash"]
+    assert receipt.archived_through_sequence == 2
+    assert receipt.checkpoint_sequence == 3
+    assert receipt.checkpoint_record_hash == records[2]["record_hash"]
+    assert receipt.archived_path.exists()
+    assert path.read_text(encoding="utf-8").count("\n") == 2
+
+
+def test_wal_full_audit_detects_tampered_rotated_segment(tmp_path: Path) -> None:
+    wal = JsonlWriteAheadLog(tmp_path / "rotated.jsonl")
+    wal.append(event_type="first", ts_ns=1, payload={"value": 1})
+    receipt = wal.rotate(
+        event_type="service_checkpoint",
+        ts_ns=2,
+        payload={"state": "safe"},
+    )
+    archived = receipt.archived_path.read_text(encoding="utf-8")
+    receipt.archived_path.write_text(
+        archived.replace('"value":1', '"value":9'),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="hash"):
+        wal.read()

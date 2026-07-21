@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from btc_short_horizon.live.dashboard_page import dashboard_html
-from btc_short_horizon.live.dashboard_state import DashboardSnapshotStore
+from btc_short_horizon.live.dashboard_state import BotDashboardSnapshot, DashboardSnapshotStore
 from btc_short_horizon.live.runtime import (
     RuntimeControl,
     RuntimeHealth,
@@ -67,6 +67,11 @@ def build_dashboard_payload(
     if not statuses and errors:
         primary = RuntimeHealth(False, "invalid_runtime_status", primary.age_seconds)
     shadow = _shadow_projection(by_service.get("opening_shadow"), errors)
+    snapshot_health = _snapshot_health(
+        snapshot,
+        now=current_time,
+        max_age_seconds=config.max_age_seconds,
+    )
     return {
         "generated_at": current_time.isoformat(),
         "health_service": config.health_service,
@@ -79,6 +84,7 @@ def build_dashboard_payload(
             _status_payload(status, current_time, config.max_age_seconds) for status in statuses
         ],
         "snapshot": None if snapshot is None else snapshot.to_json(),
+        "snapshot_health": snapshot_health,
         "shadow": shadow,
         "stop_request": (
             None
@@ -90,6 +96,27 @@ def build_dashboard_payload(
         ),
         "errors": errors,
     }
+
+
+def _snapshot_health(
+    snapshot: BotDashboardSnapshot | None,
+    *,
+    now: datetime,
+    max_age_seconds: float,
+) -> dict[str, object]:
+    if snapshot is None:
+        return {"healthy": False, "reason": "missing_snapshot", "age_seconds": None}
+    generated_at = snapshot.generated_at
+    age_seconds = (now - generated_at).total_seconds()
+    if age_seconds < -5.0:
+        return {
+            "healthy": False,
+            "reason": "snapshot_timestamp_in_future",
+            "age_seconds": age_seconds,
+        }
+    if age_seconds > max_age_seconds:
+        return {"healthy": False, "reason": "stale_snapshot", "age_seconds": age_seconds}
+    return {"healthy": True, "reason": "ok", "age_seconds": age_seconds}
 
 
 def _shadow_projection(

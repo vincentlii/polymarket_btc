@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from importlib.metadata import PackageNotFoundError, version as package_version
 import os
+from pathlib import Path
 import re
 from typing import Any
 from urllib.parse import urlsplit
@@ -88,14 +89,14 @@ class LiveCredentials:
         environment: Mapping[str, str] | None = None,
     ) -> LiveCredentials:
         source = os.environ if environment is None else environment
-        required = (
+        secret_names = (
             "POLY_PRIVATE_KEY",
             "POLY_API_KEY",
             "POLY_API_SECRET",
             "POLY_PASSPHRASE",
-            "POLY_FUNDER",
-            "POLY_SIGNATURE_TYPE",
         )
+        secrets = {name: _environment_secret(source, name) for name in secret_names}
+        required = ("POLY_FUNDER", "POLY_SIGNATURE_TYPE")
         missing = [
             name for name in required if not isinstance(source.get(name), str) or not source[name]
         ]
@@ -107,10 +108,10 @@ class LiveCredentials:
         except (TypeError, ValueError) as exc:
             raise ValueError("signature type must be one of 0, 1, 2, or 3") from exc
         return cls(
-            private_key=source["POLY_PRIVATE_KEY"],
-            api_key=source["POLY_API_KEY"],
-            api_secret=source["POLY_API_SECRET"],
-            api_passphrase=source["POLY_PASSPHRASE"],
+            private_key=secrets["POLY_PRIVATE_KEY"],
+            api_key=secrets["POLY_API_KEY"],
+            api_secret=secrets["POLY_API_SECRET"],
+            api_passphrase=secrets["POLY_PASSPHRASE"],
             funder=source["POLY_FUNDER"],
             signature_type=signature_type,
         )
@@ -193,6 +194,33 @@ def _required_secret(value: object, name: str) -> str:
     if any(ord(character) < 32 or ord(character) == 127 for character in value):
         raise ValueError(f"{name} must not contain control characters")
     return value
+
+
+def _environment_secret(source: Mapping[str, str], name: str) -> str:
+    direct = source.get(name)
+    file_value = source.get(f"{name}_FILE")
+    has_direct = isinstance(direct, str) and bool(direct)
+    has_file = isinstance(file_value, str) and bool(file_value)
+    if has_direct and has_file:
+        raise ValueError(f"{name} and {name}_FILE cannot both be set")
+    if has_direct:
+        return _required_secret(direct, name)
+    if not has_file:
+        raise ValueError(f"missing required live environment value: {name} or {name}_FILE")
+    assert isinstance(file_value, str)
+    path = Path(file_value)
+    if not path.is_absolute():
+        raise ValueError(f"{name}_FILE must be an absolute path")
+    if not path.is_file() or path.is_symlink():
+        raise ValueError(f"{name}_FILE must identify a regular non-symlink file")
+    if path.stat().st_size > 4098:
+        raise ValueError(f"{name}_FILE is unreasonably large")
+    try:
+        value = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"{name}_FILE could not be read as UTF-8") from exc
+    value = value.removesuffix("\n").removesuffix("\r")
+    return _required_secret(value, name)
 
 
 __all__ = [

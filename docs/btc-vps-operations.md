@@ -58,6 +58,37 @@ uv run python scripts/btc_runtime_control.py --clear-stop
 
 ## Deployment
 
+### 目标主机强制预检
+
+先在目标 VPS 创建两个彼此独立、不会被容器镜像替换的目录，并确保它们是
+普通目录而不是 symlink。预检必须针对将要发布的 clean Git revision 和当前
+已核实的 rule epoch 执行；不能使用 `latest`、dirty worktree 或占位值：
+
+```bash
+mkdir -p deploy/runtime/data deploy/runtime/output deploy/runtime/preflight
+sudo chown -R 10001:10001 deploy/runtime
+
+uv run python scripts/btc_vps_preflight.py \
+  --code-revision "$(git rev-parse HEAD)" \
+  --rule-epoch "$BTC_RULE_EPOCH" \
+  --data-root deploy/runtime/data \
+  --output-root deploy/runtime/output \
+  --runtime-root deploy/runtime/output/btc_short_horizon/runtime
+```
+
+命令会检查 release identity、目录耐久性/可写性/容量、host NTP、官方
+Geo-block、CLOB clock offset，以及 CLOB、Gamma、Binance 的
+P50/P95/P99。任何一项失败都会返回非零并写入不可变、content-addressed
+receipt。报告不保存公网 IP 或凭据。当前官方限制同时把 `GB` 与 `DE` 列为
+blocked，因此伦敦和法兰克福不能用于开仓；首尔也必须以目标 IP 的实际返回
+为准，不能根据城市名称推断资格。
+
+首次部署不创建 `deploy/secrets/`，也不配置任何 `POLY_*` 凭据。未来只有
+独立 Canary 发布审查通过后，才允许由宿主机 secret manager 创建权限最小的
+secret files，并通过 mutually exclusive `POLY_*_FILE` 变量注入。文件必须是
+absolute、regular、non-symlink、UTF-8；不得进入 Git、镜像 build context、
+日志、WAL 或状态报告。
+
 首次部署只需要 Docker Engine 与 Compose。将 `.env.example` 复制为部署目录中的 `.env`，填入经过当期 Gamma/市场规则核实的 `BTC_RULE_EPOCH`。不要从旧市场或旧文档盲目复制该值。
 
 ```bash

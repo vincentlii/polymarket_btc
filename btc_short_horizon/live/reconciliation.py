@@ -20,6 +20,7 @@ from btc_short_horizon.live.risk import AccountSnapshot
 _ADDRESS = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _CONDITION_ID = re.compile(r"^0x[0-9a-fA-F]{64}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_TRANSACTION_HASH = re.compile(r"^0x[0-9a-fA-F]{64}$")
 _FIXED_SCALE = Decimal(1_000_000)
 
 
@@ -56,12 +57,47 @@ class StartupReconciliationConfig:
             raise ValueError("max_position_records must be in [1, 10000]")
 
 
+class VenueTradeStatus(StrEnum):
+    MATCHED = "TRADE_STATUS_MATCHED"
+    MINED = "TRADE_STATUS_MINED"
+    CONFIRMED = "TRADE_STATUS_CONFIRMED"
+    RETRYING = "TRADE_STATUS_RETRYING"
+    FAILED = "TRADE_STATUS_FAILED"
+
+
+@dataclass(frozen=True, slots=True)
+class LedgerTradeCoverage:
+    """Exact authenticated trade revision included in one durable ledger snapshot."""
+
+    trade_id: str
+    status: VenueTradeStatus
+    match_time_ns: int
+    last_update_ns: int
+    transaction_hash: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "trade_id", _required_text(self.trade_id, "trade ID"))
+        if not isinstance(self.status, VenueTradeStatus):
+            object.__setattr__(self, "status", VenueTradeStatus(self.status))
+        _nonnegative_int(self.match_time_ns, "trade match_time_ns")
+        _nonnegative_int(self.last_update_ns, "trade last_update_ns")
+        if self.last_update_ns // 1_000_000_000 < self.match_time_ns // 1_000_000_000:
+            raise ValueError("trade last_update_ns cannot precede the match second")
+        if self.transaction_hash is not None:
+            if not isinstance(self.transaction_hash, str) or not _TRANSACTION_HASH.fullmatch(
+                self.transaction_hash
+            ):
+                raise ValueError("trade transaction_hash must be a 0x-prefixed 32-byte hash")
+            object.__setattr__(self, "transaction_hash", self.transaction_hash.casefold())
+
+
 @dataclass(frozen=True, slots=True)
 class DailyLedgerSnapshot:
     day: date
     realized_pnl: float
     observed_at_ns: int
     covered_through_ns: int
+    trade_coverage: tuple[LedgerTradeCoverage, ...]
     ledger_sha256: str
 
     def __post_init__(self) -> None:
@@ -72,6 +108,18 @@ class DailyLedgerSnapshot:
         _nonnegative_int(self.covered_through_ns, "ledger covered_through_ns")
         if self.covered_through_ns > self.observed_at_ns:
             raise ValueError("ledger coverage cannot exceed its observation time")
+        if not isinstance(self.trade_coverage, tuple) or not all(
+            isinstance(item, LedgerTradeCoverage) for item in self.trade_coverage
+        ):
+            raise ValueError("trade_coverage must be a tuple of LedgerTradeCoverage records")
+        trade_ids = tuple(item.trade_id for item in self.trade_coverage)
+        if len(set(trade_ids)) != len(trade_ids):
+            raise ValueError("trade_coverage contains a duplicate trade ID")
+        if any(
+            max(item.match_time_ns, item.last_update_ns) > self.covered_through_ns
+            for item in self.trade_coverage
+        ):
+            raise ValueError("trade coverage extends beyond covered_through_ns")
         if not isinstance(self.ledger_sha256, str) or not _SHA256.fullmatch(self.ledger_sha256):
             raise ValueError("ledger_sha256 must be a lowercase SHA-256")
 
@@ -373,7 +421,7 @@ class ClobStartupReconciler:
         balance, allowance = self._fetch_collateral()
         orders = self._fetch_open_orders()
         terminal_orders = self._fetch_terminal_orders(local_orders, orders)
-        pending_trade_ids = self._fetch_pending_trade_ids(ledger.covered_through_ns)
+        pending_trade_ids = self._fetch_pending_trade_ids(ledger)
         positions = self._fetch_positions()
         blocked, country, region = self._fetch_geo()
         observed_at_ns = self.clock_ns()
@@ -534,33 +582,42 @@ class ClobStartupReconciler:
             result.append(terminal)
         return tuple(result)
 
-    def _fetch_pending_trade_ids(self, covered_through_ns: int) -> frozenset[str]:
+    def _fetch_pending_trade_ids(self, ledger: DailyLedgerSnapshot) -> frozenset[str]:
         try:
             from py_clob_client_v2 import TradeParams
         except ImportError as exc:  # pragma: no cover - optional live dependency
             raise RuntimeError("Install the project's live dependency group.") from exc
+        day_start_ns = int(
+            datetime(
+                ledger.day.year,
+                ledger.day.month,
+                ledger.day.day,
+                tzinfo=UTC,
+            ).timestamp()
+            * 1_000_000_000
+        )
+        earliest_ns = min(
+            (item.match_time_ns for item in ledger.trade_coverage),
+            default=day_start_ns,
+        )
+        after_seconds = max(0, min(day_start_ns, earliest_ns) // 1_000_000_000 - 1)
         raw = self.clob_client.get_trades(
-            TradeParams(
-                maker_address=self.funder,
-                after=covered_through_ns // 1_000_000_000,
-            )
+            TradeParams(maker_address=self.funder, after=after_seconds)
         )
         if not isinstance(raw, Sequence) or isinstance(raw, str | bytes):
             raise ValueError("trades response must be an array")
-        result: set[str] = set()
-        valid_statuses = {
-            "TRADE_STATUS_MATCHED",
-            "TRADE_STATUS_MINED",
-            "TRADE_STATUS_CONFIRMED",
-            "TRADE_STATUS_RETRYING",
-            "TRADE_STATUS_FAILED",
-        }
+        covered = {item.trade_id: item for item in ledger.trade_coverage}
+        observed: dict[str, LedgerTradeCoverage] = {}
         for item in raw:
             if not isinstance(item, Mapping):
                 raise ValueError("trade must be an object")
             trade_id = _required_text(item.get("id"), "trade ID")
-            if item.get("status") not in valid_statuses:
-                raise ValueError("trade has an unsupported status")
+            if trade_id in observed:
+                raise ValueError("trades response contains a duplicate trade ID")
+            try:
+                status = VenueTradeStatus(item.get("status"))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("trade has an unsupported status") from exc
             match_seconds = _unix_seconds(item.get("match_time"), "trade match_time")
             raw_match_nano = item.get("match_time_nano")
             if raw_match_nano is None:
@@ -574,9 +631,31 @@ class ClobStartupReconciler:
             )
             if last_update_ns < match_seconds * 1_000_000_000:
                 raise ValueError("trade last_update precedes match_time")
-            if max(match_ns, last_update_ns) > covered_through_ns:
-                result.add(trade_id)
-        return frozenset(result)
+            transaction_hash = item.get("transaction_hash")
+            if transaction_hash is not None and not isinstance(transaction_hash, str):
+                raise ValueError("trade transaction_hash must be a string or null")
+            record = LedgerTradeCoverage(
+                trade_id=trade_id,
+                status=status,
+                match_time_ns=match_ns,
+                last_update_ns=last_update_ns,
+                transaction_hash=transaction_hash,
+            )
+            observed[trade_id] = record
+
+        pending = set(covered) ^ set(observed)
+        for trade_id in set(covered) & set(observed):
+            local = covered[trade_id]
+            venue = observed[trade_id]
+            if venue.match_time_ns != local.match_time_ns:
+                raise ValueError("trade match_time changed after ledger persistence")
+            if (
+                venue.status is not local.status
+                or venue.last_update_ns != local.last_update_ns
+                or venue.transaction_hash != local.transaction_hash
+            ):
+                pending.add(trade_id)
+        return frozenset(pending)
 
     def _fetch_positions(self) -> _PositionTotals:
         records: list[Mapping[str, object]] = []
@@ -893,6 +972,7 @@ def _text_set(values: Iterable[str], name: str) -> frozenset[str]:
 __all__ = [
     "ClobStartupReconciler",
     "DailyLedgerSnapshot",
+    "LedgerTradeCoverage",
     "LocalOrderExpectation",
     "RecoveredOrderBinding",
     "RecoveredTerminalOrder",
@@ -902,5 +982,6 @@ __all__ = [
     "StartupReconciliationResult",
     "TerminalVenueOrderStatus",
     "VenueOpenOrder",
+    "VenueTradeStatus",
     "account_snapshot_sha256",
 ]

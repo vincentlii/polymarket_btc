@@ -16,4 +16,5 @@ dist
 target
 crates/*/target
 deploy/.env
+deploy/secrets
 deploy/runtime

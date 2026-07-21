@@ -43,11 +43,12 @@ from btc_short_horizon.live.state import (
     LiveTrade,
     LiveTradeStatus,
 )
-from btc_short_horizon.live.wal import JsonlWriteAheadLog
+from btc_short_horizon.live.wal import JsonlWriteAheadLog, WalRotationReceipt
 
 
 _CONDITION_ID = re.compile(r"^0x[0-9a-fA-F]{64}$")
 _TOKEN_ID = re.compile(r"^[0-9]{1,78}$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 class LiveMode(StrEnum):
@@ -118,6 +119,14 @@ class CanaryProgress:
         return self.submitted_orders >= 2_000 and self.fills >= 300
 
 
+@dataclass(frozen=True, slots=True)
+class _ServiceCheckpoint:
+    halted_at_ts_ns: int
+    market_cycles: tuple[str, ...]
+    submitted_orders: int
+    confirmed_fills: int
+
+
 class LiveExecutionService:
     """Owns the local lifecycle, reservation, idempotency, and recovery invariants."""
 
@@ -151,6 +160,8 @@ class LiveExecutionService:
         self._startup_reconciled = config.mode is not LiveMode.CANARY
         self._recovery_required = False
         self._halted = False
+        self._halted_at_ts_ns: int | None = None
+        self._last_reconciliation: tuple[int, str, str, int] | None = None
         self._lock = RLock()
         self._wal_buffer: list[tuple[str, int, object]] | None = None
 
@@ -339,6 +350,12 @@ class LiveExecutionService:
             }
             if not self._ambiguous_markets and not self._halted:
                 self._recovery_required = False
+            self._last_reconciliation = (
+                ts_ns,
+                evidence.ledger_sha256,
+                evidence.account_snapshot_sha256,
+                evidence.observed_at_ns,
+            )
             with self._batch_wal():
                 for event_type, recovered_order in recovery_events:
                     self._write_order(event_type, ts_ns, recovered_order)
@@ -354,6 +371,78 @@ class LiveExecutionService:
                         "account_snapshot_sha256": evidence.account_snapshot_sha256,
                     },
                 )
+
+    def authorize_operator_recovery(
+        self,
+        *,
+        account: AccountSnapshot,
+        evidence: StartupReconciliationEvidence,
+        ts_ns: int,
+        approval_sha256: str,
+        reason: str,
+    ) -> None:
+        """Clear a durable halt only after fresh proof and an external operator approval."""
+
+        _require_ts(ts_ns)
+        if not isinstance(approval_sha256, str) or not _SHA256.fullmatch(approval_sha256):
+            raise ValueError("approval_sha256 must be a lowercase SHA-256")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("operator recovery reason is required")
+        with self._lock:
+            if not self._recovery_required:
+                raise ValueError("service has no recovery requirement")
+            if not self._startup_reconciled or self._last_reconciliation is None:
+                raise ValueError("operator recovery requires a fresh startup reconciliation")
+            reconciled_at, ledger_hash, account_hash, observed_at_ns = self._last_reconciliation
+            if self._halted_at_ts_ns is not None and reconciled_at < self._halted_at_ts_ns:
+                raise ValueError("operator recovery requires a fresh startup reconciliation")
+            if not evidence.reconciled or not account.account_reconciled:
+                raise ValueError("operator recovery evidence is not reconciled")
+            if evidence.account_snapshot_sha256 != account_snapshot_sha256(account):
+                raise ValueError("operator recovery evidence does not match the account")
+            if (
+                ledger_hash != evidence.ledger_sha256
+                or account_hash != evidence.account_snapshot_sha256
+                or observed_at_ns != evidence.observed_at_ns
+                or observed_at_ns != account.observed_at_ns
+            ):
+                raise ValueError(
+                    "operator recovery evidence differs from the latest reconciliation"
+                )
+            if (
+                evidence.expected_open_order_ids
+                or evidence.venue_open_order_ids
+                or account.open_orders != 0
+                or account.open_order_notional > 1e-12
+            ):
+                raise ValueError("operator recovery requires zero open orders")
+            if self._ambiguous_markets:
+                raise ValueError("operator recovery cannot clear ambiguous markets")
+            if any(
+                order.status
+                in {
+                    LiveOrderStatus.SUBMITTED,
+                    LiveOrderStatus.LIVE,
+                    LiveOrderStatus.UNKNOWN,
+                    LiveOrderStatus.CANCEL_REQUESTED,
+                    LiveOrderStatus.NOT_CANCELED,
+                }
+                for order in self.orders.values()
+            ):
+                raise ValueError("operator recovery requires terminal local orders")
+            self._write(
+                "operator_recovery_authorized",
+                ts_ns,
+                {
+                    "approval_sha256": approval_sha256,
+                    "reason": reason.strip(),
+                    "ledger_sha256": ledger_hash,
+                    "account_snapshot_sha256": account_hash,
+                },
+            )
+            self._halted = False
+            self._recovery_required = False
+            self._halted_at_ts_ns = None
 
     @staticmethod
     def _apply_startup_binding(
@@ -680,15 +769,83 @@ class LiveExecutionService:
                 self.emergency_stop(ts_ns=ts_ns, reason="invalid_user_channel_event")
                 return False
 
+    def checkpoint_and_rotate_wal(self, *, ts_ns: int) -> WalRotationReceipt:
+        """Compact only terminal local state after the service has failed closed."""
+
+        _require_ts(ts_ns)
+        with self._lock:
+            if not self._halted or not self._recovery_required:
+                raise ValueError("WAL checkpoint requires a halted service")
+            if self._wal_buffer is not None:
+                raise RuntimeError("WAL checkpoint cannot run inside a write batch")
+            if self._ambiguous_markets:
+                raise ValueError("WAL checkpoint cannot discard ambiguous markets")
+            if any(not order.is_terminal for order in self.orders.values()):
+                raise ValueError("WAL checkpoint requires terminal local orders")
+            if any(not trade.is_terminal for trade in self.trades.values()):
+                raise ValueError("WAL checkpoint requires terminal local trades")
+            if self._reserved_by_client:
+                raise ValueError("WAL checkpoint requires zero reserved notional")
+            if self._halted_at_ts_ns is None or self._halted_at_ts_ns > ts_ns:
+                raise ValueError("WAL checkpoint requires a causal halt timestamp")
+            payload = {
+                "checkpoint_schema_version": 1,
+                "mode": self.config.mode.value,
+                "halted": True,
+                "recovery_required": True,
+                "halted_at_ts_ns": self._halted_at_ts_ns,
+                "market_cycles": sorted(self._market_cycles),
+                "submitted_orders": self._progress.submitted_orders,
+                "confirmed_fills": self._progress.fills,
+            }
+            receipt = self.wal.rotate(
+                event_type="service_checkpoint",
+                ts_ns=ts_ns,
+                payload=payload,
+            )
+            self.orders.clear()
+            self.trades.clear()
+            self._client_order_by_venue.clear()
+            self._placement_order.clear()
+            self._placement_by_client.clear()
+            self._prewarmed.clear()
+            return receipt
+
     def restore_from_wal(self) -> int:
         with self._lock:
             if self.orders or self.trades:
                 raise ValueError("restore_from_wal requires an empty service state")
             restored = 0
-            for record in self.wal.read():
+            base_submitted_orders = 0
+            base_confirmed_fills = 0
+            records = self.wal.read_recovery_window()
+            if not records or str(records[0]["event_type"]) != "service_checkpoint":
+                records = self.wal.read()
+            for record in records:
                 event_type = str(record["event_type"])
                 payload = record["payload"]
                 if not isinstance(payload, Mapping):
+                    continue
+                if event_type == "service_checkpoint":
+                    checkpoint = _service_checkpoint_from_json(
+                        payload,
+                        mode=self.config.mode,
+                        checkpoint_ts_ns=int(record["ts_ns"]),
+                    )
+                    self.orders.clear()
+                    self.trades.clear()
+                    self._client_order_by_venue.clear()
+                    self._placement_order.clear()
+                    self._placement_by_client.clear()
+                    self._reserved_by_client.clear()
+                    self._ambiguous_markets.clear()
+                    self._market_cycles = set(checkpoint.market_cycles)
+                    self._halted = True
+                    self._recovery_required = True
+                    self._halted_at_ts_ns = checkpoint.halted_at_ts_ns
+                    base_submitted_orders = checkpoint.submitted_orders
+                    base_confirmed_fills = checkpoint.confirmed_fills
+                    restored = 0
                     continue
                 raw_order = payload.get("order")
                 if isinstance(raw_order, Mapping):
@@ -727,17 +884,21 @@ class LiveExecutionService:
                 if event_type == "kill_switch_activated":
                     self._halted = True
                     self._recovery_required = True
+                    self._halted_at_ts_ns = int(record["ts_ns"])
+                elif event_type == "operator_recovery_authorized":
+                    self._halted = False
+                    self._recovery_required = False
+                    self._halted_at_ts_ns = None
             for order in self.orders.values():
                 self._sync_reservation(order)
             self._progress = CanaryProgress(
-                submitted_orders=sum(
-                    order.venue_order_id is not None for order in self.orders.values()
-                ),
-                fills=sum(
-                    trade.status is LiveTradeStatus.CONFIRMED for trade in self.trades.values()
-                ),
+                submitted_orders=base_submitted_orders
+                + sum(order.venue_order_id is not None for order in self.orders.values()),
+                fills=base_confirmed_fills
+                + sum(trade.status is LiveTradeStatus.CONFIRMED for trade in self.trades.values()),
             )
             self._startup_reconciled = self.config.mode is not LiveMode.CANARY
+            self._last_reconciliation = None
             self._recovery_required = self._recovery_required or bool(self._ambiguous_markets)
             self._heartbeat_id = ""
             self._last_heartbeat_ts_ns = None
@@ -1266,6 +1427,7 @@ class LiveExecutionService:
             return False
         self._halted = True
         self._recovery_required = True
+        self._halted_at_ts_ns = ts_ns
         self._write("kill_switch_activated", ts_ns, {"reason": reason})
         return True
 
@@ -1333,6 +1495,55 @@ class LiveExecutionService:
             self._wal_buffer.append((event_type, ts_ns, payload))
         else:
             self.wal.append(event_type=event_type, ts_ns=ts_ns, payload=payload)
+
+
+def _service_checkpoint_from_json(
+    value: Mapping[str, object],
+    *,
+    mode: LiveMode,
+    checkpoint_ts_ns: int,
+) -> _ServiceCheckpoint:
+    expected_keys = {
+        "checkpoint_schema_version",
+        "mode",
+        "halted",
+        "recovery_required",
+        "halted_at_ts_ns",
+        "market_cycles",
+        "submitted_orders",
+        "confirmed_fills",
+    }
+    if set(value) != expected_keys or value.get("checkpoint_schema_version") != 1:
+        raise ValueError("unsupported service checkpoint schema")
+    if value.get("mode") != mode.value:
+        raise ValueError("service checkpoint mode does not match runtime mode")
+    if value.get("halted") is not True or value.get("recovery_required") is not True:
+        raise ValueError("service checkpoint must preserve the fail-closed state")
+    halted_at_ts_ns = _checkpoint_counter(value.get("halted_at_ts_ns"), "halted_at_ts_ns")
+    if halted_at_ts_ns > checkpoint_ts_ns:
+        raise ValueError("service checkpoint halt timestamp is future-dated")
+    raw_market_cycles = value.get("market_cycles")
+    if not isinstance(raw_market_cycles, list) or not all(
+        isinstance(item, str) and _CONDITION_ID.fullmatch(item) for item in raw_market_cycles
+    ):
+        raise ValueError("service checkpoint has invalid market cycles")
+    market_cycles = tuple(raw_market_cycles)
+    if len(set(market_cycles)) != len(market_cycles) or market_cycles != tuple(
+        sorted(market_cycles)
+    ):
+        raise ValueError("service checkpoint market cycles must be unique and sorted")
+    return _ServiceCheckpoint(
+        halted_at_ts_ns=halted_at_ts_ns,
+        market_cycles=market_cycles,
+        submitted_orders=_checkpoint_counter(value.get("submitted_orders"), "submitted_orders"),
+        confirmed_fills=_checkpoint_counter(value.get("confirmed_fills"), "confirmed_fills"),
+    )
+
+
+def _checkpoint_counter(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"service checkpoint {name} must be a non-negative integer")
+    return value
 
 
 def _client_order_id(request: LiveOrderRequest) -> str:

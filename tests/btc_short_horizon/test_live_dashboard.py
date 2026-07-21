@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from http.client import HTTPConnection
 import json
@@ -133,6 +134,36 @@ def test_dashboard_payload_includes_validated_performance_and_lifecycle_snapshot
     assert payload["snapshot"]["performance"]["equity"] == 1_024.5
     assert payload["snapshot"]["strategy"]["stage"] == "challenge"
     assert payload["snapshot"]["health"][1]["latency_ms"] == 182.0
+    assert payload["snapshot_health"] == {
+        "healthy": True,
+        "reason": "ok",
+        "age_seconds": 0.0,
+    }
+
+
+def test_dashboard_marks_stale_performance_projection_without_hiding_values(tmp_path) -> None:
+    RuntimeStatusStore(tmp_path).write(
+        RuntimeStatus(
+            service="forward_collector",
+            mode="forward_collection",
+            state="running",
+            healthy=True,
+            started_at=_now() - timedelta(minutes=2),
+            updated_at=_now(),
+        )
+    )
+    DashboardSnapshotStore(tmp_path).write(
+        replace(_dashboard_snapshot(), generated_at=_now() - timedelta(seconds=31))
+    )
+
+    payload = build_dashboard_payload(DashboardConfig(runtime_root=tmp_path), now=_now())
+
+    assert payload["snapshot"] is not None
+    assert payload["snapshot_health"] == {
+        "healthy": False,
+        "reason": "stale_snapshot",
+        "age_seconds": 31.0,
+    }
 
 
 def test_dashboard_projects_shadow_evidence_without_fabricating_performance(tmp_path) -> None:
@@ -215,6 +246,7 @@ def test_dashboard_page_prioritizes_health_performance_and_lifecycle_without_raw
     assert "资金曲线" in page
     assert "最近订单与逐单盈亏" in page
     assert "策略生命周期" in page
+    assert "performance-projection" in page
     assert "JSON.stringify(value,null,2)" not in page
 
 
