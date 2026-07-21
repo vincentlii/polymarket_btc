@@ -611,6 +611,42 @@ repository. Production remains disabled until account, jurisdiction, market
 rules, tick size, fee schedule, clock, and current SDK behavior are verified
 by the operator.
 
+### Live Order Identity And Recovery
+
+The live boundary uses the current CLOB V2 order hash as the only durable
+venue identity. Preparing an order builds and signs it locally, computes that
+hash with the pinned official SDK, and records both the intent and expected
+venue ID in the append-only hash-chained WAL before any network write. An
+accepted POST response must return the same ID. Batch responses are applied
+per order because partial success is valid venue behavior.
+
+One placement cycle has two WAL durability points: all prepared/submitting
+records are committed in one `fsync` before POST, then all received per-order
+results are committed in a second `fsync`. A connection failure is never a
+retry signal. On restart, reconciliation checks both current open orders and
+`GET /order/{expected_hash}` so an order that filled, canceled, or became
+invalid between the POST and restart can be recovered without inventing a new
+order. A submission with neither an open-order match nor terminal venue proof
+stays unknown, closes the trading gate, and triggers best-effort cancel-all.
+
+The User WebSocket is a non-durable low-latency projection, not the source of
+recovery truth. Reconnect and dynamic market replacement both create a gap;
+the generation may be acknowledged only after a fresh authenticated REST
+reconciliation. Order cumulative matches and trade lifecycle updates have
+separate idempotency keys. Failed terminal trades close the gate, while only
+confirmed fills advance canary evidence.
+
+Startup admission binds credentials, SDK version, official CLOB origin,
+signer/funder relationship, geo eligibility, clock, balance/allowance, market
+rules, open orders, trades, positions, WAL integrity, and User-channel
+generation. Secrets are rejected from persisted payloads. No operator flag can
+turn an unproven unknown submission into a known-safe state.
+
+These components are safety primitives, not yet a complete production daemon.
+Periodic reconciliation, exact durable daily-PnL coverage, heartbeat
+scheduling, WAL checkpoint/rotation, operator recovery, health publication,
+deployment, backup, and retention remain part of the pre-VPS operations phase.
+
 ## Windows Native Build
 
 The PMXT native extension requires Rust plus the Visual Studio C++ build tools

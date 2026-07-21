@@ -1,8 +1,8 @@
 # Codebase UML Inventory
 
 This file is generated from Python AST metadata and excludes `tests/` plus git-ignored private strategy/research directories.
-Generated: 2026-07-20T17:16:57+00:00
-Modules: 200 | Classes: 353 | Functions/methods: 2604
+Generated: 2026-07-21T09:57:46+00:00
+Modules: 203 | Classes: 376 | Functions/methods: 2736
 
 ## Backtesting Data Flow
 
@@ -768,6 +768,19 @@ flowchart TD
 ### `btc_short_horizon/live/__init__.py`
 - Imports: `btc_short_horizon`
 
+### `btc_short_horizon/live/authentication.py`
+- Imports: `__future__, collections, dataclasses, enum, importlib, os, re, typing, urllib`
+- Function L128: `assert_live_sdk_version() -> str`
+- Function L143: `build_live_clob_client(credentials: LiveCredentials, *, settings: ClobClientSettings = ClobClientSettings(), client_factory: Callable[..., Any] | None = None, api_creds_factory: Callable[..., Any] | None = None) -> Any`
+- Function L188: `_required_secret(value: object, name: str) -> str`
+- Class L22: `SignatureType(IntEnum)`
+- Class L30: `ClobClientSettings`
+  - Method L34: `__post_init__(self) -> None`
+- Class L55: `LiveCredentials`
+  - Method L65: `__post_init__(self) -> None`
+  - Method L86: `from_environment(cls, environment: Mapping[str, str] | None = None) -> LiveCredentials`
+  - Method L118: `user_channel_auth(self) -> dict[str, str]`
+
 ### `btc_short_horizon/live/dashboard.py`
 - Imports: `__future__, btc_short_horizon, collections, dataclasses, datetime, http, json, pathlib, urllib`
 - Function L38: `build_dashboard_payload(config: DashboardConfig, *, now: datetime | None = None) -> dict[str, object]`
@@ -849,46 +862,123 @@ flowchart TD
   - Method L27: `__post_init__(self) -> None`
 
 ### `btc_short_horizon/live/gateway.py`
-- Imports: `__future__, dataclasses, httpx, time, typing`
-- Function L225: `_is_ambiguous_request_error(exc: Exception) -> bool`
-- Class L13: `LiveOrderRequest`
-  - Method L21: `__post_init__(self) -> None`
-- Class L33: `GatewayOrderResponse`
-- Class L40: `GatewaySubmissionUnknownError(RuntimeError)`
-- Class L44: `GatewayCancellationUnknownError(RuntimeError)`
-- Class L49: `PreparedPostOnlyOrder`
-- Class L55: `LiveOrderGateway(Protocol)`
-  - Method L56: `submit_post_only_buy(self, request: LiveOrderRequest) -> GatewayOrderResponse`
-  - Method L58: `cancel_order(self, venue_order_id: str) -> None`
-  - Method L60: `cancel_market(self, condition_id: str, token_id: str | None = None) -> None`
-  - Method L62: `cancel_all(self) -> None`
-  - Method L64: `send_heartbeat(self, heartbeat_id: str = '') -> str`
-- Class L67: `PaperOrderGateway`
-  - Method L70: `__init__(self) -> None`
-  - Method L75: `open_orders(self) -> dict[str, LiveOrderRequest]`
-  - Method L78: `submit_post_only_buy(self, request: LiveOrderRequest) -> GatewayOrderResponse`
-  - Method L84: `cancel_order(self, venue_order_id: str) -> None`
-  - Method L87: `cancel_market(self, condition_id: str, token_id: str | None = None) -> None`
-  - Method L95: `cancel_all(self) -> None`
-  - Method L98: `send_heartbeat(self, heartbeat_id: str = '') -> str`
-- Class L102: `PyClobV2Gateway`
-  - Method L105: `__init__(self, client) -> None`
-  - Method L108: `submit_post_only_buy(self, request: LiveOrderRequest) -> GatewayOrderResponse`
-  - Method L112: `prepare_post_only_buy(self, request: LiveOrderRequest) -> PreparedPostOnlyOrder`
-  - Method L139: `submit_prepared_post_only_buy(self, prepared: PreparedPostOnlyOrder) -> GatewayOrderResponse`
-  - Method L171: `cancel_order(self, venue_order_id: str) -> None`
-  - Method L187: `cancel_market(self, condition_id: str, token_id: str | None = None) -> None`
-  - Method L205: `cancel_all(self) -> None`
-  - Method L215: `send_heartbeat(self, heartbeat_id: str = '') -> str`
+- Imports: `__future__, collections, dataclasses, decimal, httpx, math, re, time, types, typing`
+- Function L526: `_parse_order_response(raw: object, *, order_build_ns: int, submit_round_trip_ns: int) -> GatewayOrderResponse`
+- Function L562: `_verify_prepared_response(response: GatewayOrderResponse, prepared: PreparedPostOnlyOrder) -> GatewayOrderResponse`
+- Function L577: `_parse_cancel_response(raw: object) -> GatewayCancelResult`
+- Function L594: `_v2_order_id(client, signed_order: object, *, neg_risk: bool) -> str`
+- Function L621: `_definite_rejection(exc: Exception) -> str | None`
+- Function L637: `_expired_heartbeat_id(exc: Exception) -> str | None`
+- Function L647: `_safe_reason(value: object, *, fallback: str = 'venue_rejected') -> str`
+- Function L658: `_required_text(value: object, name: str) -> str`
+- Class L25: `LiveOrderRequest`
+  - Method L41: `__post_init__(self) -> None`
+  - Method L105: `notional(self) -> Decimal`
+- Class L110: `GatewayMarketPrewarm`
+  - Method L116: `__post_init__(self) -> None`
+- Class L131: `GatewayOrderResponse`
+  - Method L139: `__post_init__(self) -> None`
+- Class L161: `GatewayCancelResult`
+  - Method L165: `__post_init__(self) -> None`
+- Class L182: `GatewaySubmissionUnknownError(RuntimeError)`
+- Class L186: `GatewayCancellationUnknownError(RuntimeError)`
+- Class L190: `GatewayHeartbeatError(RuntimeError)`
+- Class L195: `PreparedPostOnlyOrder`
+  - Method L201: `__post_init__(self) -> None`
+- Class L215: `LiveOrderGateway(Protocol)`
+  - Method L216: `prewarm_market(self, request: LiveOrderRequest) -> GatewayMarketPrewarm`
+  - Method L218: `prepare_post_only_buy(self, request: LiveOrderRequest) -> PreparedPostOnlyOrder`
+  - Method L220: `submit_prepared_post_only_buy(self, prepared: PreparedPostOnlyOrder) -> GatewayOrderResponse`
+  - Method L224: `submit_prepared_post_only_buys(self, prepared: Sequence[PreparedPostOnlyOrder]) -> tuple[GatewayOrderResponse, ...]`
+  - Method L228: `cancel_order(self, venue_order_id: str) -> GatewayCancelResult`
+  - Method L230: `cancel_market(self, condition_id: str, token_id: str | None = None) -> GatewayCancelResult`
+  - Method L234: `cancel_all(self) -> GatewayCancelResult`
+  - Method L236: `send_heartbeat(self, heartbeat_id: str = '') -> str`
+- Class L239: `PaperOrderGateway`
+  - Method L242: `__init__(self) -> None`
+  - Method L247: `open_orders(self) -> dict[str, LiveOrderRequest]`
+  - Method L250: `prewarm_market(self, request: LiveOrderRequest) -> GatewayMarketPrewarm`
+  - Method L253: `prepare_post_only_buy(self, request: LiveOrderRequest) -> PreparedPostOnlyOrder`
+  - Method L263: `submit_prepared_post_only_buy(self, prepared: PreparedPostOnlyOrder) -> GatewayOrderResponse`
+  - Method L278: `submit_prepared_post_only_buys(self, prepared: Sequence[PreparedPostOnlyOrder]) -> tuple[GatewayOrderResponse, ...]`
+  - Method L283: `cancel_order(self, venue_order_id: str) -> GatewayCancelResult`
+  - Method L288: `cancel_market(self, condition_id: str, token_id: str | None = None) -> GatewayCancelResult`
+  - Method L299: `cancel_all(self) -> GatewayCancelResult`
+  - Method L304: `send_heartbeat(self, heartbeat_id: str = '') -> str`
+- Class L308: `PyClobV2Gateway`
+  - Method L311: `__init__(self, client, *, order_id_resolver: Callable[[object, bool], str] | None = None) -> None`
+  - Method L325: `prewarm_market(self, request: LiveOrderRequest) -> GatewayMarketPrewarm`
+  - Method L345: `prepare_post_only_buy(self, request: LiveOrderRequest) -> PreparedPostOnlyOrder`
+  - Method L381: `submit_prepared_post_only_buy(self, prepared: PreparedPostOnlyOrder) -> GatewayOrderResponse`
+  - Method L417: `submit_prepared_post_only_buys(self, prepared: Sequence[PreparedPostOnlyOrder]) -> tuple[GatewayOrderResponse, ...]`
+  - Method L470: `cancel_order(self, venue_order_id: str) -> GatewayCancelResult`
+  - Method L484: `cancel_market(self, condition_id: str, token_id: str | None = None) -> GatewayCancelResult`
+  - Method L495: `cancel_all(self) -> GatewayCancelResult`
+  - Method L498: `_cancel(self, operation) -> GatewayCancelResult`
+  - Method L507: `send_heartbeat(self, heartbeat_id: str = '') -> str`
+
+### `btc_short_horizon/live/reconciliation.py`
+- Imports: `__future__, btc_short_horizon, collections, dataclasses, datetime, decimal, enum, hashlib, json, math, re, time, typing`
+- Function L667: `_local_order_expectations(values: Sequence[LocalOrderExpectation]) -> tuple[LocalOrderExpectation, ...]`
+- Function L691: `_venue_order_identity(item: Mapping[str, object]) -> tuple[str, str, str, float, float, float]`
+- Function L709: `_match_open_orders(local_orders: tuple[LocalOrderExpectation, ...], venue_orders: tuple[VenueOpenOrder, ...], terminal_orders: tuple[RecoveredTerminalOrder, ...]) -> tuple[frozenset[str], frozenset[str], frozenset[str], tuple[RecoveredOrderBinding, ...], frozenset[str]]`
+- Function L776: `_same_order_identity(local: LocalOrderExpectation, venue: VenueOpenOrder | RecoveredTerminalOrder) -> bool`
+- Function L788: `account_snapshot_sha256(account: AccountSnapshot) -> str`
+- Function L801: `_fixed_amount(value: object, name: str) -> float`
+- Function L807: `_decimal_amount(value: object, name: str) -> float`
+- Function L819: `_finite_number(value: object, name: str) -> float`
+- Function L825: `_nonnegative_number(value: object, name: str) -> float`
+- Function L832: `_positive_number(value: object, name: str) -> float`
+- Function L839: `_probability(value: object, name: str) -> float`
+- Function L846: `_unix_seconds(value: object, name: str) -> int`
+- Function L852: `_unix_nanoseconds(value: object, name: str) -> int`
+- Function L858: `_nonnegative_int(value: object, name: str) -> int`
+- Function L864: `_required_text(value: object, name: str) -> str`
+- Function L870: `_condition_id(value: object, name: str) -> str`
+- Function L877: `_token_id(value: object, name: str) -> str`
+- Function L884: `_text_set(values: Iterable[str], name: str) -> frozenset[str]`
+- Class L27: `StartupReconciliationConfig`
+  - Method L35: `__post_init__(self) -> None`
+- Class L60: `DailyLedgerSnapshot`
+  - Method L67: `__post_init__(self) -> None`
+- Class L80: `StartupReadiness`
+  - Method L88: `__post_init__(self) -> None`
+- Class L102: `LocalOrderExpectation`
+  - Method L112: `__post_init__(self) -> None`
+- Class L131: `VenueOpenOrder`
+  - Method L141: `__post_init__(self) -> None`
+  - Method L152: `remaining_notional(self) -> float`
+- Class L157: `RecoveredOrderBinding`
+  - Method L167: `__post_init__(self) -> None`
+- Class L178: `TerminalVenueOrderStatus(StrEnum)`
+- Class L186: `RecoveredTerminalOrder`
+  - Method L198: `__post_init__(self) -> None`
+- Class L221: `StartupReconciliationEvidence`
+  - Method L237: `__post_init__(self) -> None`
+  - Method L305: `reconciled(self) -> bool`
+- Class L315: `StartupReconciliationResult`
+- Class L321: `_PositionTotals`
+- Class L328: `ClobStartupReconciler`
+  - Method L331: `__init__(self, clob_client, *, http_client, funder: str, signature_type: int, config: StartupReconciliationConfig = StartupReconciliationConfig(), clock_ns: Callable[[], int] = time_ns) -> None`
+  - Method L352: `reconcile(self, *, expected_orders: Sequence[LocalOrderExpectation], ledger: DailyLedgerSnapshot, readiness: StartupReadiness) -> StartupReconciliationResult`
+  - Method L437: `_validate_local_snapshot_age(self, now_ns: int, observed_ns: int, *, name: str) -> None`
+  - Method L444: `_fetch_collateral(self) -> tuple[float, float]`
+  - Method L462: `_fetch_open_orders(self) -> tuple[VenueOpenOrder, ...]`
+  - Method L491: `_fetch_terminal_orders(self, local_orders: tuple[LocalOrderExpectation, ...], open_orders: tuple[VenueOpenOrder, ...]) -> tuple[RecoveredTerminalOrder, ...]`
+  - Method L540: `_fetch_pending_trade_ids(self, covered_through_ns: int) -> frozenset[str]`
+  - Method L584: `_fetch_positions(self) -> _PositionTotals`
+  - Method L645: `_fetch_geo(self) -> tuple[bool, str, str]`
 
 ### `btc_short_horizon/live/risk.py`
-- Imports: `__future__, dataclasses, math`
-- Function L65: `evaluate_order_risk(*, config: TradingSafetyConfig, account: AccountSnapshot, order_notional: float) -> RiskDecision`
-- Class L8: `TradingSafetyConfig`
-  - Method L18: `__post_init__(self) -> None`
-- Class L36: `AccountSnapshot`
-  - Method L45: `__post_init__(self) -> None`
-- Class L60: `RiskDecision`
+- Imports: `__future__, dataclasses, datetime, math`
+- Function L181: `evaluate_order_risk(*, config: TradingSafetyConfig, account: AccountSnapshot, order_notional: float, market_id: str, now_ts_ns: int, reservations: RiskReservations = RiskReservations()) -> RiskDecision`
+- Class L11: `TradingSafetyConfig`
+  - Method L28: `__post_init__(self) -> None`
+- Class L66: `AccountSnapshot`
+  - Method L88: `__post_init__(self) -> None`
+- Class L144: `RiskReservations`
+  - Method L151: `__post_init__(self) -> None`
+- Class L174: `RiskDecision`
 
 ### `btc_short_horizon/live/runtime.py`
 - Imports: `__future__, collections, dataclasses, datetime, hashlib, json, os, pathlib, shutil, subprocess, uuid`
@@ -930,39 +1020,71 @@ flowchart TD
   - Method L169: `clear_stop(self) -> bool`
 
 ### `btc_short_horizon/live/service.py`
-- Imports: `__future__, btc_short_horizon, dataclasses, enum, math, typing, uuid`
-- Function L402: `_mapping_sequence(value: object) -> tuple[Mapping[str, object], ...]`
-- Function L408: `_nonnegative_float(value: object, name: str) -> float`
-- Function L418: `_positive_float(value: object, name: str) -> float`
-- Function L425: `_live_order_from_json(value: Mapping[str, object]) -> LiveOrder`
-- Function L440: `_live_trade_from_json(value: Mapping[str, object]) -> LiveTrade`
-- Class L23: `LiveMode(StrEnum)`
-- Class L30: `LiveExecutionConfig`
-  - Method L36: `__post_init__(self) -> None`
-- Class L46: `SubmitResult`
-- Class L54: `CanaryProgress`
-  - Method L59: `ready_for_extended_canary(self) -> bool`
-  - Method L63: `ready_for_scale_review(self) -> bool`
-- Class L67: `LiveExecutionService`
-  - Method L70: `__init__(self, *, config: LiveExecutionConfig, wal: JsonlWriteAheadLog, gateway: LiveOrderGateway | None = None) -> None`
-  - Method L95: `canary_progress(self) -> CanaryProgress`
-  - Method L99: `halted(self) -> bool`
-  - Method L102: `submit(self, *, request: LiveOrderRequest, account: AccountSnapshot, ts_ns: int) -> SubmitResult`
-  - Method L174: `request_cancel(self, *, client_order_id: str, ts_ns: int) -> None`
-  - Method L195: `cancel_all(self, *, ts_ns: int, reason: str) -> None`
-  - Method L205: `emergency_stop(self, *, ts_ns: int, reason: str) -> bool`
-  - Method L222: `record_heartbeat(self, *, ts_ns: int) -> None`
-  - Method L229: `send_venue_heartbeat(self, *, ts_ns: int) -> str`
-  - Method L241: `enforce_heartbeat_timeout(self, *, now_ts_ns: int) -> bool`
-  - Method L255: `reconcile_user_event(self, event: Mapping[str, object], *, ts_ns: int) -> None`
-  - Method L262: `restore_from_wal(self) -> int`
-  - Method L298: `resolve_submission_unknown(self, *, client_order_id: str, ts_ns: int, venue_order_id: str | None = None, confirmed_absent: bool = False) -> LiveOrder`
-  - Method L327: `_reconcile_order(self, event: Mapping[str, object], *, ts_ns: int) -> None`
-  - Method L349: `_reconcile_trade(self, event: Mapping[str, object], *, ts_ns: int) -> None`
-  - Method L382: `_order_for_venue_event(self, event: Mapping[str, object]) -> LiveOrder | None`
-  - Method L388: `_record_cumulative_match(order: LiveOrder, cumulative: float) -> LiveOrder`
-  - Method L393: `_write(self, event_type: str, ts_ns: int, payload: Mapping[str, object]) -> None`
-  - Method L396: `_block_order(self, order: LiveOrder, *, ts_ns: int, reason: str) -> None`
+- Imports: `__future__, btc_short_horizon, collections, contextlib, dataclasses, enum, hashlib, json, math, re, threading`
+- Function L1342: `_client_order_id(request: LiveOrderRequest) -> str`
+- Function L1358: `_trade_status_is_stale(current: LiveTradeStatus, desired: LiveTradeStatus) -> bool`
+- Function L1367: `_order_event_identity(event: Mapping[str, object]) -> tuple[str, str, float, float]`
+- Function L1379: `_mapping_sequence(value: object) -> tuple[Mapping[str, object], ...]`
+- Function L1387: `_nonnegative_float(value: object, name: str) -> float`
+- Function L1399: `_positive_float(value: object, name: str) -> float`
+- Function L1406: `_probability_float(value: object, name: str) -> float`
+- Function L1413: `_event_unix_seconds_ns(value: object, name: str) -> int`
+- Function L1419: `_required_event_text(value: object, name: str) -> str`
+- Function L1425: `_event_condition_id(value: object, name: str) -> str`
+- Function L1432: `_event_token_id(value: object, name: str) -> str`
+- Function L1439: `_optional_text(value: object) -> str | None`
+- Function L1443: `_require_ts(value: object, *, name: str = 'ts_ns') -> None`
+- Function L1448: `_live_order_from_json(value: Mapping[str, object]) -> LiveOrder`
+- Function L1469: `_live_trade_from_json(value: Mapping[str, object]) -> LiveTrade`
+- Class L53: `LiveMode(StrEnum)`
+- Class L60: `LiveExecutionConfig`
+  - Method L69: `__post_init__(self) -> None`
+- Class L100: `SubmitResult`
+- Class L108: `CanaryProgress`
+  - Method L113: `ready_for_extended_canary(self) -> bool`
+  - Method L117: `ready_for_scale_review(self) -> bool`
+- Class L121: `LiveExecutionService`
+  - Method L124: `__init__(self, *, config: LiveExecutionConfig, wal: JsonlWriteAheadLog, gateway: LiveOrderGateway | None = None) -> None`
+  - Method L158: `canary_progress(self) -> CanaryProgress`
+  - Method L162: `halted(self) -> bool`
+  - Method L166: `recovery_required(self) -> bool`
+  - Method L170: `startup_reconciled(self) -> bool`
+  - Method L174: `reserved_notional(self) -> float`
+  - Method L179: `startup_order_expectations(self) -> tuple[LocalOrderExpectation, ...]`
+  - Method L203: `prewarm_market(self, request: LiveOrderRequest, *, ts_ns: int) -> GatewayMarketPrewarm`
+  - Method L228: `complete_startup_reconciliation(self, *, account: AccountSnapshot, evidence: StartupReconciliationEvidence, ts_ns: int) -> None`
+  - Method L359: `_apply_startup_binding(orders: dict[str, LiveOrder], venue_map: dict[str, str], binding: RecoveredOrderBinding) -> LiveOrder`
+  - Method L395: `_apply_startup_terminal_order(orders: dict[str, LiveOrder], venue_map: dict[str, str], terminal: RecoveredTerminalOrder) -> LiveOrder`
+  - Method L439: `submit(self, *, request: LiveOrderRequest, account: AccountSnapshot, ts_ns: int) -> SubmitResult`
+  - Method L448: `submit_many(self, *, requests: Sequence[LiveOrderRequest], account: AccountSnapshot, ts_ns: int) -> tuple[SubmitResult, ...]`
+  - Method L476: `request_cancel(self, *, client_order_id: str, ts_ns: int) -> None`
+  - Method L526: `cancel_all(self, *, ts_ns: int, reason: str) -> None`
+  - Method L608: `emergency_stop(self, *, ts_ns: int, reason: str) -> bool`
+  - Method L625: `record_heartbeat(self, *, ts_ns: int) -> None`
+  - Method L631: `send_venue_heartbeat(self, *, ts_ns: int) -> str`
+  - Method L647: `enforce_heartbeat_timeout(self, *, now_ts_ns: int) -> bool`
+  - Method L661: `reconcile_user_event(self, event: Mapping[str, object], *, ts_ns: int) -> bool`
+  - Method L683: `restore_from_wal(self) -> int`
+  - Method L746: `_submit_new_orders(self, items: tuple[LiveOrderRequest, ...], *, account: AccountSnapshot, ts_ns: int) -> tuple[SubmitResult, ...]`
+  - Method L871: `_submission_response_ids_are_valid(self, orders: Sequence[LiveOrder], responses: Sequence[GatewayOrderResponse]) -> bool`
+  - Method L894: `_validate_batch(self, items: tuple[LiveOrderRequest, ...]) -> None`
+  - Method L908: `_create_order(self, request: LiveOrderRequest, *, ts_ns: int) -> LiveOrder`
+  - Method L924: `_admission_reason(self, items: tuple[LiveOrderRequest, ...], *, account: AccountSnapshot, ts_ns: int) -> str | None`
+  - Method L965: `_risk_reservations(self) -> RiskReservations`
+  - Method L975: `_block_orders(self, orders: Sequence[LiveOrder], *, ts_ns: int, reason: str) -> tuple[SubmitResult, ...]`
+  - Method L987: `_reject_before_network(self, orders: Sequence[LiveOrder], *, ts_ns: int, reason: str, error_type: str) -> tuple[SubmitResult, ...]`
+  - Method L1011: `_submission_unknown(self, orders: Sequence[LiveOrder], *, ts_ns: int, error_type: str) -> tuple[SubmitResult, ...]`
+  - Method L1029: `_apply_submission_response(self, original: LiveOrder, response: GatewayOrderResponse, *, ts_ns: int) -> SubmitResult`
+  - Method L1063: `_reconcile_order(self, event: Mapping[str, object], *, ts_ns: int) -> bool`
+  - Method L1135: `_reconcile_trade(self, event: Mapping[str, object], *, ts_ns: int) -> bool`
+  - Method L1251: `_record_cancel_unknown(self, order: LiveOrder, *, ts_ns: int, event_type: str, error_type: str) -> None`
+  - Method L1268: `_halt_without_cancel(self, *, ts_ns: int, reason: str) -> bool`
+  - Method L1276: `_sync_reservation(self, order: LiveOrder) -> None`
+  - Method L1289: `_mark_ambiguous(self, market_id: str) -> None`
+  - Method L1293: `_clear_market_ambiguity_if_resolved(self, market_id: str) -> None`
+  - Method L1301: `_write_order(self, event_type: str, ts_ns: int, order: LiveOrder, **extra: object) -> None`
+  - Method L1323: `_batch_wal(self) -> Iterator[None]`
+  - Method L1335: `_write(self, event_type: str, ts_ns: int, payload: Mapping[str, object]) -> None`
 
 ### `btc_short_horizon/live/shadow_scheduler.py`
 - Imports: `__future__, btc_short_horizon, dataclasses, datetime, math, pathlib`
@@ -973,27 +1095,69 @@ flowchart TD
 
 ### `btc_short_horizon/live/state.py`
 - Imports: `__future__, dataclasses, enum, math`
-- Function L70: `_require_nonempty(name: str, value: str) -> None`
-- Function L75: `_require_nonnegative(name: str, value: float) -> None`
-- Class L8: `LiveOrderStatus(StrEnum)`
-- Class L20: `LiveTradeStatus(StrEnum)`
-- Class L81: `LiveOrder`
-  - Method L91: `__post_init__(self) -> None`
-  - Method L108: `remaining_size(self) -> float`
-  - Method L111: `transition(self, status: LiveOrderStatus, *, venue_order_id: str | None = None) -> LiveOrder`
-  - Method L120: `record_match(self, matched_size: float) -> LiveOrder`
-- Class L129: `LiveTrade`
-  - Method L137: `__post_init__(self) -> None`
-  - Method L146: `is_terminal(self) -> bool`
-  - Method L149: `transition(self, status: LiveTradeStatus, *, transaction_hash: str | None = None) -> LiveTrade`
+- Function L107: `_require_nonempty(name: str, value: str) -> None`
+- Function L112: `_require_nonnegative(name: str, value: float) -> None`
+- Class L10: `LiveOrderStatus(StrEnum)`
+- Class L23: `LiveOrderFillStatus(StrEnum)`
+- Class L29: `LiveTradeStatus(StrEnum)`
+- Class L120: `LiveOrder`
+  - Method L132: `__post_init__(self) -> None`
+  - Method L166: `matched_size(self) -> float`
+  - Method L170: `remaining_size(self) -> float`
+  - Method L174: `fill_status(self) -> LiveOrderFillStatus`
+  - Method L182: `is_terminal(self) -> bool`
+  - Method L189: `transition(self, status: LiveOrderStatus, *, venue_order_id: str | None = None) -> LiveOrder`
+  - Method L202: `expect_venue_order_id(self, venue_order_id: str) -> LiveOrder`
+  - Method L216: `record_order_cumulative_match(self, matched_size: float) -> LiveOrder`
+  - Method L219: `record_trade_cumulative_match(self, matched_size: float) -> LiveOrder`
+  - Method L222: `_record_cumulative(self, field_name: str, matched_size: float) -> LiveOrder`
+- Class L239: `LiveTrade`
+  - Method L249: `__post_init__(self) -> None`
+  - Method L278: `is_terminal(self) -> bool`
+  - Method L281: `transition(self, status: LiveTradeStatus, *, transaction_hash: str | None = None, last_update_ns: int | None = None) -> LiveTrade`
+
+### `btc_short_horizon/live/user_channel.py`
+- Imports: `__future__, asyncio, btc_short_horizon, collections, dataclasses, inspect, json, math, re, time, typing, urllib, websockets`
+- Function L354: `_condition_ids(values: Sequence[str]) -> frozenset[str]`
+- Function L363: `async _wait_for_stop(stop_event: asyncio.Event, timeout: float) -> bool`
+- Function L371: `async _maybe_await(value: object) -> object`
+- Function L377: `async _notify(callback: HealthCallback | None) -> None`
+- Class L26: `UserChannelConfig`
+  - Method L35: `__post_init__(self) -> None`
+- Class L70: `UserChannelHealth`
+  - Method L79: `ready(self) -> bool`
+- Class L90: `AuthenticatedUserChannel`
+  - Method L93: `__init__(self, credentials: LiveCredentials, *, initial_markets: Sequence[str] = (), config: UserChannelConfig = UserChannelConfig()) -> None`
+  - Method L110: `__repr__(self) -> str`
+  - Method L117: `health(self) -> UserChannelHealth`
+  - Method L120: `async replace_markets(self, markets: Sequence[str]) -> None`
+  - Method L130: `acknowledge_reconciliation(self, generation: int) -> None`
+  - Method L139: `async collect_forever(self, *, stop_event: asyncio.Event, on_event: UserEventCallback, on_health: HealthCallback | None = None) -> None`
+  - Method L166: `async _connect_once(self, *, stop_event: asyncio.Event, on_event: UserEventCallback, on_health: HealthCallback | None) -> None`
+  - Method L196: `async _run_connection(self, *, socket, stop_event: asyncio.Event, on_event: UserEventCallback, on_health: HealthCallback | None = None) -> None`
+  - Method L256: `async _handle_frame(self, raw: object, *, on_event: UserEventCallback, on_health: HealthCallback | None) -> None`
+  - Method L281: `async _ping_loop(self, socket, *, stop_event: asyncio.Event) -> None`
+  - Method L293: `async _send_pending_market_update(self, socket) -> bool`
+  - Method L320: `_subscription_payload(self) -> dict[str, object]`
+  - Method L329: `_mark_connected(self) -> None`
+  - Method L338: `_mark_pong(self) -> None`
+  - Method L344: `_mark_disconnected(self, *, error_type: str | None = None) -> None`
 
 ### `btc_short_horizon/live/wal.py`
-- Imports: `__future__, collections, dataclasses, enum, json, pathlib, typing`
-- Function L55: `_json_payload(payload: object) -> object`
-- Class L11: `JsonlWriteAheadLog`
-  - Method L14: `__init__(self, path: Path) -> None`
-  - Method L17: `append(self, *, event_type: str, ts_ns: int, payload: object) -> None`
-  - Method L37: `read(self) -> tuple[dict[str, Any], ...]`
+- Imports: `__future__, collections, contextlib, dataclasses, enum, hashlib, json, os, pathlib, threading, time, typing`
+- Function L128: `_validate_record(value: object, *, expected_sequence: int | None = None, expected_prev_hash: str | None = None) -> dict[str, Any]`
+- Function L181: `_last_record_state(path: Path) -> tuple[int, str]`
+- Function L210: `_json_payload(payload: object) -> object`
+- Function L233: `_canonical_json(value: object) -> bytes`
+- Function L243: `_strict_json_loads(value: bytes) -> object`
+- Function L250: `_is_sha256(value: object) -> bool`
+- Function L259: `_exclusive_file_lock(path: Path, *, timeout_seconds: float = 5.0) -> Iterator[None]`
+- Function L297: `_fsync_directory(path: Path) -> None`
+- Class L42: `JsonlWriteAheadLog`
+  - Method L45: `__init__(self, path: Path) -> None`
+  - Method L48: `append(self, *, event_type: str, ts_ns: int, payload: object) -> None`
+  - Method L51: `append_many(self, records: Sequence[tuple[str, int, object]]) -> None`
+  - Method L101: `read(self) -> tuple[dict[str, Any], ...]`
 
 ### `btc_short_horizon/models/__init__.py`
 - Imports: `artifacts, direction, opening_mispricing`

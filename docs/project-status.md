@@ -57,6 +57,19 @@ and reporting plumbing without importing archived BTC strategy logic.
   and coverage manifests replace operator-entered provenance hashes; PMXT
   coverage now binds canonical per-token replay-record SHA-256 values which the
   loader recomputes before engine start.
+- Live execution hardening: the CLOB V2 gateway is pinned to the exact official
+  SDK release and official origin, accepts only explicit credentials, validates
+  signer/funder/signature type, and prepares post-only GTC orders without a
+  REST read-before-write. It computes the venue order hash locally, persists
+  the expected identity before POST, requires the response ID to match, and
+  handles mixed batch results per order. The hash-chained, locked, `fsync` WAL
+  rejects secret-bearing payloads and supports crash recovery from open orders
+  or `GET /order/{hash}` terminal evidence. Unknown submissions, reconciliation
+  failures, User WebSocket gaps/subscription changes, heartbeat failures, and
+  failed terminal trades close the trading gate and trigger cancel-all instead
+  of retrying. User order/trade updates are independently idempotent, and only
+  confirmed fills advance canary counts. This establishes the live safety
+  primitives; it does not yet constitute a production runner or VPS approval.
 - Historical three-minute fair-probability proxy: the reproducible exact
   `stride=1` run used all 7,295 resolved markets and 262,620 causal five-second snapshots.
   Paired daily-block candidate selection retained `logistic-c0.1` because
@@ -154,6 +167,13 @@ the input/output contract and operational commands.
 
 ## Known Issues
 
+- The live safety components are not yet wired into one long-running production
+  supervisor. Durable daily-PnL coverage, periodic account/geo/rule and User
+  channel reconciliation, dead-man heartbeat scheduling, WAL checkpoint and
+  operator recovery, real dashboard projection, secret injection, service
+  management, backup, retention, and restore drills remain required before VPS
+  deployment. Startup reconciliation uses conservative REST timestamp
+  boundaries until the durable ledger records exact covered trade IDs.
 - A single fresh 36-decision Shadow window proves runtime compatibility, not
   statistical stability. Promotion still requires accumulated forward windows,
   target holdout counts, synchronized executable L2/TradeTick evidence, and the

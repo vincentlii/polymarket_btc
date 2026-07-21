@@ -191,3 +191,44 @@ sports 和其他合格类别当前分别使用 20%、15% 和 25% 分成。正式
 禁用 rebate，因为日级 payout、最低累计金额与其他 maker 的钱包级状态无法由
 逐笔历史回放精确恢复。参考 [Fees](https://docs.polymarket.com/trading/fees) 与
 [Maker Rebates](https://docs.polymarket.com/market-makers/maker-rebates)。
+
+## 2026-07-21 Live 执行安全契约
+
+当前实现将“尽量少做热路径工作”约束为一组可恢复、可对账的不变量，而不是以
+牺牲订单身份或持久化证据来换取较小的本地耗时：
+
+1. 只接受精确锁定的 `py-clob-client-v2==1.0.2`、官方
+   `https://clob.polymarket.com` origin、显式提供的 L2 credentials 与已验证的
+   signer/funder/signature type。程序不会在运行中派生或创建 credentials，也不会
+   将 secret、passphrase、private key 或完整认证 payload 写入日志/WAL。
+2. `prepare` 阶段完成 V2 order build/sign，并用官方 builder 本地计算 EIP-712
+   order hash。该 hash 就是 venue order ID；在任何 POST 前先与完整订单意图一起
+   写入 hash-chained WAL 并 `fsync`。
+3. 同一 placement cycle 的多层订单只发一次 `POST /orders`。响应按每张订单独立
+   解析；成功项的 `orderID` 必须等于本地预计算 hash，重复 ID、字段缺失、错误
+   tick/size/market/token 或 mixed-result 语义不一致都会 fail closed。Batch 仍不是
+   原子提交。[Post multiple orders](https://docs.polymarket.com/api-reference/trade/post-multiple-orders)
+4. POST 返回后把每张结果作为第二个 WAL transaction 持久化。正常热路径因此有
+   两次必要的耐久化边界：网络前保存可恢复身份，网络后保存 venue 结果。成功
+   heartbeat 不逐次落 WAL，避免无界写放大；失败与状态变化仍必须持久化。
+5. POST 不自动重试。若连接中断或响应丢失，预计算 hash 允许启动恢复直接查询
+   open orders 与 `GET /order/{orderID}`；可证明的 LIVE、MATCHED、CANCELED、
+   INVALID 等终态会重建本地状态。既不在 open orders，也无法取得终态证明的订单
+   保持 unknown，并立即关闭交易闸门、执行 cancel-all，禁止猜测后重提。
+   [Get single order by ID](https://docs.polymarket.com/api-reference/trade/get-single-order-by-id)
+6. User channel 固定使用
+   `wss://ws-subscriptions-clob.polymarket.com/ws/user`。初次连接可省略 `markets`
+   以订阅账户事件；动态过滤使用 condition IDs。任何 reconnect 或订阅替换都立即
+   标记 gap，在新的 REST reconciliation 完成前不能重新开放下单。Order/trade
+   更新分别按累计数量与 `(trade_id, client_order_id)` 幂等，只有 CONFIRMED fill
+   计入 canary 晋级计数。[User Channel](https://docs.polymarket.com/api-reference/wss/user)
+7. REST order amount 使用官方 6-decimal fixed-math；User WebSocket 的 price/size
+   使用 decimal 字符串。两者在各自边界解析，禁止用同一个隐式缩放规则混读。
+8. 撤单请求、撤单响应、cancel-before/after-fill race 与 heartbeat failure 都是
+   独立状态边界。任何未知提交、User channel gap、terminal trade failure、规则
+   变化或对账失败都会进入只撤单/停机状态，而不是继续接收新 placement cycle。
+
+这个实现缩短了正常请求链，但不宣称已经得到真实 VPS P99。订单 build/sign、两次
+WAL `fsync`、socket/HTTP、venue ack、User WebSocket 与 cancel ack 仍需在 Shadow
+及 minimum-size Canary 中分别测量。若磁盘同步成为 P99 瓶颈，应先选择可靠低延迟
+磁盘并做 WAL checkpoint/rotation；不得删除网络前持久化边界。
