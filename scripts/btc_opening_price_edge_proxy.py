@@ -288,18 +288,20 @@ def _load_or_fetch_prices(
             (asdict(point) for point in fetched),
             columns=sorted(_REQUIRED_PRICE_COLUMNS),
         )
-        cached = new_rows if cached.empty else pd.concat((cached, new_rows), ignore_index=True)
-        _validate_price_rows(cached)
-        cached = cached.drop_duplicates(
-            subset=["token_id", "ts_seconds", "price"],
-        ).sort_values(["token_id", "ts_seconds", "price"])
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = cache_path.with_name(f".{cache_path.name}.{uuid4().hex}.tmp")
-        try:
-            cached.to_parquet(temporary, index=False)
-            temporary.replace(cache_path)
-        finally:
-            temporary.unlink(missing_ok=True)
+        if not new_rows.empty:
+            _validate_price_rows(new_rows)
+            cached = new_rows if cached.empty else pd.concat((cached, new_rows), ignore_index=True)
+            _validate_price_rows(cached)
+            cached = cached.drop_duplicates(
+                subset=["token_id", "ts_seconds", "price"],
+            ).sort_values(["token_id", "ts_seconds", "price"])
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = cache_path.with_name(f".{cache_path.name}.{uuid4().hex}.tmp")
+            try:
+                cached.to_parquet(temporary, index=False)
+                temporary.replace(cache_path)
+            finally:
+                temporary.unlink(missing_ok=True)
         complete_tokens = set(cached["token_id"].astype(str).unique().tolist())
     write_atomic_json(
         coverage_path,

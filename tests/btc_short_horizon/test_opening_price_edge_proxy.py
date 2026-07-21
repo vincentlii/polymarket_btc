@@ -12,6 +12,7 @@ from btc_short_horizon.data import BTC_15M_MARKET_FAMILY, MarketOutcome, MarketW
 from scripts.btc_opening_price_edge_proxy import (
     _build_candidates,
     _entry_metrics,
+    _load_or_fetch_prices,
     _price_cache_coverage,
     _select_positive_confidence_threshold,
     _select_one_entry_per_market,
@@ -226,6 +227,48 @@ def test_price_cache_rejects_string_encoded_numeric_evidence() -> None:
 
     with pytest.raises(ValueError, match="numeric dtype"):
         _validate_price_rows(frame)
+
+
+def test_price_cache_preserves_numeric_schema_when_fetch_returns_no_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    t0 = datetime(2026, 4, 13, tzinfo=UTC)
+    market = MarketWindow(
+        family=BTC_15M_MARKET_FAMILY,
+        slug=BTC_15M_MARKET_FAMILY.slug_for(t0),
+        condition_id="condition",
+        up_token_id="up-token",
+        down_token_id="down-token",
+        t0=t0,
+        t1=t0 + timedelta(minutes=15),
+        rule_epoch="rule-v1",
+        rule_hash="a" * 64,
+        resolution=MarketOutcome.UP,
+        label_available_ts=t0 + timedelta(minutes=16),
+    )
+    cache_path = tmp_path / "prices.parquet"
+    pd.DataFrame(
+        [{"token_id": "up-token", "ts_seconds": int(t0.timestamp()), "price": 0.5}]
+    ).to_parquet(cache_path, index=False)
+
+    async def fetch_no_rows(**_: object) -> tuple[object, ...]:
+        return ()
+
+    monkeypatch.setattr(
+        "scripts.btc_opening_price_edge_proxy._fetch_market_price_batches",
+        fetch_no_rows,
+    )
+
+    prices = _load_or_fetch_prices(
+        cache_path=cache_path,
+        markets=(market,),
+        max_concurrency=1,
+        maximum_prediction_offset_seconds=180,
+    )
+
+    assert prices["ts_seconds"].dtype == np.dtype("int64")
+    assert prices["price"].dtype == np.dtype("float64")
 
 
 def test_entry_metrics_report_contiguous_day_blocks_and_adjusted_selection_bound() -> None:
