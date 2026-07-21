@@ -279,6 +279,7 @@ Detailed guides have been filed away in the [docs index](https://evan-kolberg.gi
   - [Docs Validation](https://evan-kolberg.github.io/prediction-market-backtesting/testing/#docs-validation)
 - [Project Status](https://evan-kolberg.github.io/prediction-market-backtesting/project-status/)
   - [BTC 15-Minute Short-Horizon Project](https://evan-kolberg.github.io/prediction-market-backtesting/project-status/#btc-15-minute-short-horizon-project)
+  - [Pre-VPS Final Audit (2026-07-22)](https://evan-kolberg.github.io/prediction-market-backtesting/project-status/#pre-vps-final-audit-2026-07-22)
   - [Roadmap](https://evan-kolberg.github.io/prediction-market-backtesting/project-status/#roadmap)
   - [Known Issues](https://evan-kolberg.github.io/prediction-market-backtesting/project-status/#known-issues)
   - [Recently Fixed](https://evan-kolberg.github.io/prediction-market-backtesting/project-status/#recently-fixed)

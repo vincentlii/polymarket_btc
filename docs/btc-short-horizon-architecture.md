@@ -702,7 +702,7 @@ verified.
 
 ## Current Evidence Boundary
 
-The historical version 1 three-minute directional artifact covers all 7,295
+The clean protocol version 2 three-minute directional artifact covers all 7,295
 resolved markets from 2026-04-28 through 2026-07-13 and 262,620 five-second snapshots.
 Paired daily-block candidate selection retained `logistic-c0.1`; LightGBM did
 not show a jointly positive held-out improvement in log loss and Brier. The
@@ -712,18 +712,22 @@ still No-Go: fewer than 2,500 holdout markets are available, the 76-day source
 cannot satisfy the full 90/21/14/28-day protocol, and the period lacks a causal
 Polymarket implied-probability baseline. Gamma coverage is also one market
 short of the requested 7,296. This is useful direction evidence, not a
-profitability approval. It predates protocol version 2, independent-market
-isotonic counting, grouped LightGBM early stopping, strict artifact lineage,
-and family-wise threshold-selection controls. Its numerical results therefore
-remain historical context and must be regenerated before any promotion decision.
+profitability approval. The artifact was regenerated from a clean
+`87e14c28b84632e5fdeb3bf349f6685a94b8b1eb` revision with independent-market
+isotonic counting, grouped LightGBM early stopping and strict artifact lineage.
+It is eligible for research Shadow only; its failed direction gate prohibits
+Canary, Live promotion, or claims of proven market-relative edge.
 
-The corresponding historical sparse price proxy applies frozen per-regime
-thresholds and caps observed price age at 15 seconds. The retained holdout has 1,098 entries at
-2.56c/share (95% CI 0.38c to 4.75c). With an additional 1c cost it has 935
-entries at 1.67c/share, but the 95% CI crosses zero (-0.59c to 4.17c). These
-one-minute observations cannot establish executable prices, passive fills,
-queue position, fees, or latency-adjusted maker P&L. It also predates the
-version 2 persistence-reset and non-tradeable-price rules, so it must be rerun.
+The corresponding clean sparse-price rerun applies frozen per-regime thresholds,
+a 1c entry-price buffer and a maximum observed price age of 15 seconds. The
+retained holdout has 945 entries at 2.53c/share (95% CI 0.70c to 4.39c). After
+adding another 1c and reapplying the frozen entry rules, 782 entries remain at
+2.65c/share (95% CI 0.07c to 5.23c). The 3--30 second regime is positive in this
+proxy; the 35--90 second regime is negative and the 95--180 second interval
+crosses zero. The artifact has clean provenance at
+`475434466dad54941a958434fbe54f9bae07d382`. These one-minute observations are
+not executable BBO, passive fills, queue position, fees, or latency-adjusted
+maker P&L, so the formal maker gate remains No-Go.
 
 The historical v6 look-ahead collector completed a full opening on
 `btc-updown-15m-1784214900`. The bounded dual-token Shadow reconstructed all 36

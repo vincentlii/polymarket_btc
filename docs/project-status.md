@@ -94,7 +94,7 @@ and reporting plumbing without importing archived BTC strategy logic.
   partial/secret-like files, hash changes and conflicting targets fail closed.
   Critical runtime evidence has an explicit retain-local policy; only the much
   larger raw sessions use verified-receipt local reclamation.
-- Historical three-minute fair-probability proxy: the reproducible exact
+- Current three-minute fair-probability proxy: the reproducible protocol v2 exact
   `stride=1` run used all 7,295 resolved markets and 262,620 causal five-second snapshots.
   Paired daily-block candidate selection retained `logistic-c0.1` because
   neither LightGBM candidate improved both log loss and Brier with positive
@@ -105,18 +105,20 @@ and reporting plumbing without importing archived BTC strategy logic.
   run the full 90/21/14/28-day protocol, and no causally available Polymarket
   implied-probability baseline exists for this period. Gamma coverage is also
   one market short of the requested 7,296. Confidence-band sample and
-  calibration checks passed under its historical protocol. Artifacts are in
-  `output/btc_short_horizon/research/opening-proxy-1s-postopen180-gated-20260428-20260713-v5/`.
-  This artifact is protocol version 1 and must be retrained under version 2
-  before Shadow or promotion.
-- Historical sparse Polymarket price-history proxy: frozen development thresholds produced
-  1,098 holdout entries at 2.56c/share (95% CI 0.38c to 4.75c) with price age
-  capped at 15 seconds. Adding another 1c entry cost leaves 935 entries at
-  1.67c/share, but its 95% CI crosses zero (-0.59c to 4.17c). One-minute price
-  history is not BBO, queue, fill, fee, rebate, or latency evidence, so this
-  result cannot authorize maker deployment. It predates the corrected signal
-  persistence, non-tradeable-price, and family-wise threshold rules and must be
-  rerun before it can prioritize a current Shadow candidate.
+  calibration checks passed. The clean artifact was generated at revision
+  `87e14c28b84632e5fdeb3bf349f6685a94b8b1eb` under
+  `output/btc_short_horizon/research/opening-proxy-protocol-v2-clean-20260428-20260713/`.
+  It is acceptable for research Shadow only; the failed direction gate blocks
+  Canary and Live promotion.
+- Current sparse Polymarket price-history proxy: frozen development thresholds,
+  a 1c entry-price buffer and a 15-second maximum price age produced 945 holdout
+  entries at 2.53c/share (95% CI 0.70c to 4.39c). Adding another 1c cost and
+  reapplying the frozen rules leaves 782 entries at 2.65c/share (95% CI 0.07c
+  to 5.23c). The 3--30 second regime is positive; 35--90 seconds is negative and
+  95--180 seconds crosses zero. This clean rerun includes corrected persistence,
+  non-tradeable-price, family-wise selection and cache-schema rules. One-minute
+  price history is still not BBO, queue, fill, fee, rebate, or latency evidence,
+  so it cannot authorize maker deployment.
 - Legacy pre-open/revalidation strategy, historical script, runner, generic
   feature state, and their tests were removed. The only BTC 15m strategy path
   is Opening Mispricing with 36 decisions at `t0+5/10/.../180s`, two
@@ -168,6 +170,32 @@ and reporting plumbing without importing archived BTC strategy logic.
 
 See [BTC Short-Horizon Architecture](btc-short-horizon-architecture.md) for
 the input/output contract and operational commands.
+
+## Pre-VPS Final Audit (2026-07-22)
+
+- Local implementation is complete for the first deployment scope: current
+  forward collection, post-window causal Shadow, read-only dashboard, target
+  preflight, runtime control, immutable evidence, backup and isolated restore.
+- Model evidence is internally reproducible and protocol v2 clean, but the
+  formal direction gate remains No-Go: 1,345 holdout markets are below 2,500,
+  the full 90/21/14/28 walk-forward protocol cannot fit the available history,
+  the causal Polymarket implied-probability baseline is missing, and Gamma is
+  one market short.
+- Price evidence can prioritize 3--30 second Shadow research, but the maker gate
+  remains No-Go until fresh synchronized L2/TradeTick replay passes pessimistic
+  queue, P99 insert/cancel latency, same-timestamp ordering, fee and capacity
+  stress. No production decision runner connects model output to live placement.
+- Existing local raw roots contain historical v2--v8 epochs and an open legacy
+  session. They remain immutable research provenance and must not be copied to
+  the first VPS or repaired in place. The VPS starts from empty data/output
+  roots and collects only current v9 evidence.
+- Target-only evidence cannot be manufactured locally: actual-IP geoblock and
+  legal eligibility, NTP and endpoint latency, Linux Docker build, fresh v9
+  collection, object-store full verification/restore and long-running recovery
+  must all pass on the purchased host.
+- The approved first VPS scope is therefore collector, optional post-window
+  Shadow and loopback dashboard only. Paper, Canary and real orders remain
+  disabled until their independent promotion gates pass.
 
 ## Roadmap
 

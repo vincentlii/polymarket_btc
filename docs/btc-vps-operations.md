@@ -89,6 +89,15 @@ secret files，并通过 mutually exclusive `POLY_*_FILE` 变量注入。文件�
 absolute、regular、non-symlink、UTF-8；不得进入 Git、镜像 build context、
 日志、WAL 或状态报告。
 
+第一次部署必须使用全新的空 `deploy/runtime/data` 和
+`deploy/runtime/output`，不得复制当前本地 `data/btc_short_horizon`。本地目录
+混有历史 v2--v8 epoch 与未关闭的旧 session；它们只保留作不可变研究 provenance，
+不能修补或迁移成 v9 证据。若启用可选 Shadow，只复制已验证的 protocol v2
+模型目录
+`output/btc_short_horizon/research/opening-proxy-protocol-v2-clean-20260428-20260713/model/`
+到 `deploy/runtime/data/btc_short_horizon/models/<model-id>/`，不要复制同级的
+`dataset.parquet`、旧 raw 或旧 Shadow 输出。VPS 必须重新采集 fresh v9 数据。
+
 首次部署只需要 Docker Engine 与 Compose。将 `.env.example` 复制为部署目录中的 `.env`，填入经过当期 Gamma/市场规则核实的 `BTC_RULE_EPOCH`。不要从旧市场或旧文档盲目复制该值。
 
 ```bash
@@ -103,7 +112,7 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml ps
 docker compose --env-file deploy/.env -f deploy/compose.yaml logs -f forward_collector
 ```
 
-容器镜像不包含 `data/` 或 `output/`。它们被挂载到宿主机：模型、原始数据和运行状态都在 `deploy/runtime/` 下，替换 VPS 时只需迁移这个目录与发布代码。
+容器镜像不包含 `data/` 或 `output/`。它们被挂载到宿主机：模型、原始数据和运行状态都在 `deploy/runtime/` 下。后续替换 VPS 时只能迁移通过当前 audit 与远端全量校验的 runtime snapshot；首次部署不迁移历史本地 raw。
 
 当且仅当本地已经验证过模型 artefact 后，可在 `.env` 设置
 `BTC_MODEL_DIRECTORY` 并启用可选 Shadow profile。它会在市场窗口和数据
