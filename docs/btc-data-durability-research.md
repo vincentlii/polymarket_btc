@@ -145,7 +145,7 @@ restore 会下载并验证全部对象，通过目标文件系统内的临时文
 
 - verification receipt 是本机完整性记录，不是数字签名。取得 VPS 写权限的攻击者可能同时篡改本地 snapshot 与 receipt；远端 versioning/Object Lock、最小权限和外部保存 snapshot ID 才是独立信任锚。
 - 内容寻址防止无声覆盖，不防止攻击者删除全部对象。remote 凭据不应有删除历史版本的权限。
-- 当前工具只归档 complete sessions 的 immutable part/manifest，不删除模型、报告、WAL、dashboard snapshot 或 PMXT vendor mirror；这些对象需要各自的保留策略。
+- 原始数据工具只归档 complete sessions 的 immutable part/manifest；模型、WAL、ledger 与报告由独立 runtime snapshot 保护。dashboard/status 等可重建 projection 不作为恢复权威。PMXT vendor mirror 仍按供应商缓存策略独立管理。
 - 文件系统 lock 不适用于多主机共享写入。未来如需 active/passive collector，必须先设计显式 leader election 与 fencing token，不能复用当前单机锁假装分布式安全。
 
 ## 验收标准
@@ -157,3 +157,61 @@ restore 会下载并验证全部对象，通过目标文件系统内的临时文
 3. 从与目标 raw root 不同磁盘的 temporary root 恢复成功。
 4. 生产 bucket 已启用 versioning；Object Lock 是否启用、retention 和 lifecycle 已形成书面配置。
 5. snapshot ID/receipt 已保存到 VPS 之外，并完成一次人工恢复演练。
+
+## Runtime Evidence Backup And Restore
+
+`scripts/btc_runtime_archive.py` 只保护 raw-session 工具未覆盖的四类关键证据：
+`model`、`wal`、`ledger`、`report`。每个 source root 都是显式参数；root 不得
+重叠、不得是 symlink，也不得包含 symlink、partial file、`.env`、常见
+private-key 文件或 text artifact 中的凭据字段。快照绑定 release Git revision、rule epoch、相对路径、大小
+与 SHA-256，并复用相同的 immutable local/rclone object transport。上传完成不
+代表成功；工具会重新下载 manifest 和每个 object，逐字节验证后才写 receipt。
+
+创建 runtime backup 前必须先安全停止相关服务；Live 阶段还必须先进入 halted
+状态、完成 REST/User-channel reconciliation，并在无未终态订单、trade 和
+reserved notional 时执行 WAL checkpoint/rotation。文件在 hash 期间发生变化会
+直接失败。恢复只允许写入隔离目录：写入前会预检全部目标，任何不同文件或
+任意父目录 symlink 都会使整个安装开始前失败；同 hash 文件才允许复用。
+
+```bash
+uv run python scripts/btc_runtime_archive.py \
+  --repository-root deploy/runtime/output/btc_short_horizon/recovery \
+  backup \
+  --release-revision "$(git rev-parse HEAD)" \
+  --rule-epoch "$BTC_RULE_EPOCH" \
+  --source model="$MODEL_ROOT" \
+  --source wal="$WAL_ROOT" \
+  --source ledger="$LEDGER_ROOT" \
+  --source report="$REPORT_ROOT" \
+  --transport rclone \
+  --remote btc-archive:polymarket-btc/runtime \
+  --temporary-root deploy/runtime/tmp
+```
+
+每周恢复到新的隔离目录，并要求最近七天内存在恢复 receipt：
+
+```bash
+uv run python scripts/btc_runtime_archive.py \
+  --repository-root deploy/runtime/output/btc_short_horizon/recovery \
+  restore \
+  --snapshot-id <sha256> \
+  --destination-root deploy/runtime/restore-drill/<sha256> \
+  --transport rclone \
+  --remote btc-archive:polymarket-btc/runtime \
+  --temporary-root deploy/runtime/tmp
+
+uv run python scripts/btc_runtime_archive.py \
+  --repository-root deploy/runtime/output/btc_short_horizon/recovery \
+  audit \
+  --snapshot-id <sha256> \
+  --max-receipt-age-hours 48 \
+  --require-restore-drill \
+  --max-restore-age-hours 168
+```
+
+Retention 采用按风险分层的保守默认值：raw data 是主要容量来源，继续使用已
+验证 receipt 后的 `btc_data_archive.py archive`；model、WAL、ledger 与恢复
+receipt 本地不自动删除；report 在实际容量数据不足前也不自动删除。远端使用
+versioning，并建议 Object Lock；生命周期只能转冷存储，不能删除仍处于治理、
+对账、争议或模型复现实验窗口内的版本。这样不会为了 60G 本地磁盘而破坏订单
+恢复链或资金账本。清理策略只有在观察到真实日增量后，才能作为独立变更加入。

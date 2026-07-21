@@ -164,6 +164,36 @@ uv run python scripts/btc_data_archive.py \
 
 完整命令、崩溃语义、bucket 权限与恢复验收见 [BTC 前瞻数据持久性与灾难恢复](btc-data-durability-research.md)。
 
+### Runtime Evidence Backup
+
+Raw session backup 完成后，再保护 model、WAL、exact ledger 和 report。执行前
+必须先通过 runtime control 安全停止 collector，并确认 Compose 中相关服务均已
+退出；未来 Live 服务还必须先 halt、完成 reconciliation 与 WAL checkpoint/
+rotation。四个 root 必须是实际配置路径，不能把整个 `deploy/runtime` 当成一个
+root，也不能包含 `deploy/secrets`：
+
+```bash
+uv run python scripts/btc_runtime_archive.py \
+  --repository-root deploy/runtime/output/btc_short_horizon/recovery \
+  backup \
+  --release-revision "$(git rev-parse HEAD)" \
+  --rule-epoch "$BTC_RULE_EPOCH" \
+  --source model="$MODEL_ROOT" \
+  --source wal="$WAL_ROOT" \
+  --source ledger="$LEDGER_ROOT" \
+  --source report="$REPORT_ROOT" \
+  --transport rclone \
+  --remote btc-archive:polymarket-btc/runtime \
+  --temporary-root deploy/runtime/tmp
+```
+
+至少每周把同一 snapshot 恢复到新的隔离目录，再运行带
+`--require-restore-drill --max-restore-age-hours 168` 的 `audit`。恢复成功不
+会自动替换生产目录；先核对 release revision、rule epoch、WAL 全链、ledger
+pointer、模型 manifest 与报告 hash，再由人工原子切换。model、WAL、ledger 和
+receipt 默认全部保留在本地；60G 空间首先通过已验证的 raw-session archive
+释放，不能删除 WAL segment 或历史 ledger 来腾空间。
+
 ## Migration
 
 迁移前先写入 stop request，确认采集器已退出，运行 `audit --require-closed`，并完成最新 snapshot 的远端全量校验。复制以下内容到新 VPS：

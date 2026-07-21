@@ -1,8 +1,8 @@
 # Codebase UML Inventory
 
 This file is generated from Python AST metadata and excludes `tests/` plus git-ignored private strategy/research directories.
-Generated: 2026-07-21T15:37:31+00:00
-Modules: 208 | Classes: 400 | Functions/methods: 2878
+Generated: 2026-07-21T16:03:55+00:00
+Modules: 210 | Classes: 407 | Functions/methods: 2937
 
 ## Backtesting Data Flow
 
@@ -1176,6 +1176,66 @@ flowchart TD
   - Method L158: `request_stop(self, *, reason: str, requested_at: datetime) -> StopRequest`
   - Method L163: `stop_request(self) -> StopRequest | None`
   - Method L169: `clear_stop(self) -> bool`
+
+### `btc_short_horizon/live/runtime_archive.py`
+- Imports: `__future__, btc_short_horizon, collections, dataclasses, datetime, hashlib, json, os, pathlib, re, shutil, typing, uuid`
+- Function L302: `create_runtime_snapshot(*, sources: Mapping[str, Path], repository: RuntimeBackupRepository, release_revision: str, rule_epoch: str, created_at: datetime | None = None) -> tuple[RuntimeBackupSnapshot, Path]`
+- Function L360: `upload_runtime_snapshot(*, snapshot: RuntimeBackupSnapshot, snapshot_path: Path, sources: Mapping[str, Path], transport: ObjectTransport) -> None`
+- Function L381: `verify_runtime_snapshot(*, snapshot_id: str, repository: RuntimeBackupRepository, transport: ObjectTransport, temporary_root: Path, verified_at: datetime | None = None) -> tuple[RuntimeBackupSnapshot, RuntimeBackupReceipt, Path]`
+- Function L410: `restore_runtime_snapshot(*, snapshot_id: str, destination_root: Path, repository: RuntimeBackupRepository, transport: ObjectTransport, temporary_root: Path, restored_at: datetime | None = None) -> tuple[RuntimeBackupSnapshot, RuntimeRestoreReceipt, Path]`
+- Function L454: `audit_runtime_recovery(*, repository: RuntimeBackupRepository, snapshot_id: str, required_categories: Sequence[str], now: datetime, maximum_receipt_age: timedelta, require_restore_drill: bool = False, maximum_restore_age: timedelta | None = None) -> RuntimeRecoveryAudit`
+- Function L545: `read_runtime_snapshot(path: Path) -> RuntimeBackupSnapshot`
+- Function L572: `_download_verified_snapshot(*, snapshot_id: str, transport: ObjectTransport, temporary_root: Path) -> tuple[RuntimeBackupSnapshot, Path]`
+- Function L605: `_normalize_sources(sources: Mapping[str, Path], *, repository: RuntimeBackupRepository | None = None) -> dict[str, Path]`
+- Function L639: `_source_files(root: Path) -> tuple[Path, ...]`
+- Function L654: `_reject_secret_path(relative_path: str) -> None`
+- Function L663: `_reject_secret_content(path: Path) -> None`
+- Function L678: `_verify_local_file(path: Path, expected: RuntimeBackupFile) -> None`
+- Function L685: `_install_verified_file(*, source: Path, target: Path, expected: RuntimeBackupFile) -> None`
+- Function L710: `_validate_restore_target(*, target: Path, destination: Path, expected: RuntimeBackupFile) -> None`
+- Function L735: `_snapshot_payload(snapshot: RuntimeBackupSnapshot) -> dict[str, object]`
+- Function L745: `_file_from_json(value: object) -> RuntimeBackupFile`
+- Function L758: `_receipt_from_json(value: object) -> RuntimeBackupReceipt`
+- Function L772: `_restore_receipt_from_json(value: object) -> RuntimeRestoreReceipt`
+- Function L784: `_write_immutable_json(path: Path, payload: Mapping[str, object]) -> None`
+- Function L795: `_read_json(path: Path, name: str) -> object`
+- Function L802: `_mapping(value: object, name: str) -> Mapping[str, Any]`
+- Function L808: `_safe_relative(value: object, name: str) -> Path`
+- Function L817: `_identifier(value: object, name: str) -> str`
+- Function L823: `_revision(value: object) -> str`
+- Function L829: `_digest(value: object, name: str) -> str`
+- Function L835: `_required_text(value: object, name: str) -> str`
+- Function L841: `_integer(value: object, name: str) -> int`
+- Function L847: `_nonnegative_integer(value: object, name: str) -> int`
+- Function L853: `_utc_datetime(value: datetime, name: str) -> datetime`
+- Function L859: `_utc_text(value: datetime, name: str) -> str`
+- Function L863: `_parse_utc(value: object, name: str) -> datetime`
+- Function L875: `_fsync_file(path: Path) -> None`
+- Function L880: `_fsync_directory(path: Path) -> None`
+- Class L54: `RuntimeArchiveIntegrityError(ValueError)`
+- Class L59: `RuntimeBackupFile`
+  - Method L66: `__post_init__(self) -> None`
+  - Method L79: `to_json(self) -> dict[str, object]`
+- Class L90: `RuntimeBackupSnapshot`
+  - Method L98: `__post_init__(self) -> None`
+  - Method L114: `categories(self) -> tuple[str, ...]`
+  - Method L117: `to_json(self) -> dict[str, object]`
+- Class L122: `RuntimeBackupReceipt`
+  - Method L131: `__post_init__(self) -> None`
+  - Method L141: `to_json(self) -> dict[str, object]`
+- Class L154: `RuntimeRestoreReceipt`
+  - Method L161: `__post_init__(self) -> None`
+  - Method L169: `to_json(self) -> dict[str, object]`
+- Class L180: `RuntimeRecoveryAudit`
+- Class L189: `RuntimeBackupRepository`
+  - Method L192: `__init__(self, root: Path) -> None`
+  - Method L200: `write_snapshot(self, snapshot: RuntimeBackupSnapshot) -> Path`
+  - Method L205: `read_snapshot(self, snapshot_id: str) -> RuntimeBackupSnapshot`
+  - Method L208: `snapshot_path(self, snapshot_id: str) -> Path`
+  - Method L211: `write_receipt(self, receipt: RuntimeBackupReceipt) -> Path`
+  - Method L233: `read_receipt(self, snapshot_id: str) -> RuntimeBackupReceipt`
+  - Method L255: `write_restore_receipt(self, receipt: RuntimeRestoreReceipt) -> Path`
+  - Method L277: `read_restore_receipt(self, snapshot_id: str) -> RuntimeRestoreReceipt`
 
 ### `btc_short_horizon/live/service.py`
 - Imports: `__future__, btc_short_horizon, collections, contextlib, dataclasses, enum, hashlib, json, math, re, threading`
@@ -3554,6 +3614,18 @@ flowchart TD
 - Function L195: `_parse_utc_datetime(value: str) -> datetime`
 - Function L205: `main(argv: Sequence[str] | None = None) -> int`
 
+### `scripts/btc_runtime_archive.py`
+- Imports: `__future__, argparse, btc_short_horizon, collections, dataclasses, datetime, json, pathlib`
+- Function L35: `parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace`
+- Function L80: `run(args: argparse.Namespace) -> dict[str, object]`
+- Function L163: `main(argv: Sequence[str] | None = None) -> int`
+- Function L169: `_add_snapshot_arguments(parser: argparse.ArgumentParser) -> None`
+- Function L181: `_add_transport_arguments(parser: argparse.ArgumentParser) -> None`
+- Function L187: `_add_temporary_root(parser: argparse.ArgumentParser) -> None`
+- Function L191: `_sources(values: Sequence[str]) -> dict[str, Path]`
+- Function L203: `_transport(args: argparse.Namespace) -> ObjectTransport`
+- Function L212: `_snapshot_result(command: str, snapshot, *, snapshot_path: Path | None = None) -> dict[str, object]`
+
 ### `scripts/btc_runtime_control.py`
 - Imports: `__future__, argparse, btc_short_horizon, collections, datetime, pathlib, scripts`
 - Function L21: `parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace`
@@ -3574,7 +3646,7 @@ flowchart TD
 - Function L29: `parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace`
 - Function L49: `main(argv: Sequence[str] | None = None) -> int`
 - Function L92: `_git_revision() -> str`
-- Function L107: `_host_ntp_synchronized() -> bool`
+- Function L117: `_host_ntp_synchronized() -> bool`
 
 ### `scripts/generate_codebase_uml.py`
 - Imports: `__future__, ast, dataclasses, datetime, pathlib`

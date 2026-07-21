@@ -86,6 +86,14 @@ and reporting plumbing without importing archived BTC strategy logic.
   mutually exclusive `POLY_*_FILE` injection and are excluded from Git and the
   image context. The dashboard health endpoint fails when the real ledger
   projection is missing, future-dated or stale.
+- Runtime durability: `btc_runtime_archive.py` creates release/rule-bound
+  content-addressed snapshots for model, WAL, exact ledger and report roots,
+  uploads through the existing immutable local/rclone transport, full-download
+  verifies every object, restores only into an isolated no-overwrite tree and
+  records a freshness-audited restore drill. Source overlaps, symlinks,
+  partial/secret-like files, hash changes and conflicting targets fail closed.
+  Critical runtime evidence has an explicit retain-local policy; only the much
+  larger raw sessions use verified-receipt local reclamation.
 - Historical three-minute fair-probability proxy: the reproducible exact
   `stride=1` run used all 7,295 resolved markets and 262,620 causal five-second snapshots.
   Paired daily-block candidate selection retained `logistic-c0.1` because
@@ -183,11 +191,11 @@ the input/output contract and operational commands.
 
 ## Known Issues
 
-- Runtime/model/WAL/ledger backup, retention and destructive restore drills are
-  not yet one release-gated workflow. They remain required before the VPS can
-  be treated as replaceable. The existing raw-data v9 archive protects forward
-  source sessions only; it does not by itself protect models, account ledgers,
-  WAL checkpoints, status or reports.
+- Runtime and raw-data backup tools are implemented, but a real target bucket
+  still needs versioning/Object Lock policy, least-privilege credentials and an
+  off-VPS copy of snapshot IDs. One successful target-host full backup and
+  isolated restore drill remains deployment evidence; local deterministic tests
+  cannot prove the user's future cloud account or storage policy.
 - The operations supervisor is intentionally not exposed as a real-order
   Compose service. There is no production decision runner connecting the
   opening model to live placement, and the direction/maker evidence gates are

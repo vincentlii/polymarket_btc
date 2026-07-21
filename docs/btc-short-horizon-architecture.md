@@ -678,9 +678,14 @@ immutable content-addressed report. Any failed check exits non-zero. It does
 not authorize trading: the first VPS release remains collector, optional
 post-window Shadow and read-only dashboard only.
 
-Runtime/model/WAL/ledger backup, retention and restore-drill automation remains
-the next pre-VPS durability phase. A real decision runner and Canary promotion
-remain blocked by the documented model and execution-evidence gates.
+Runtime durability is split deliberately. Raw sessions retain the v9 inventory
+snapshot/archive flow. Models, WAL, exact ledgers and reports use a separate
+release/rule-bound content-addressed snapshot with immutable upload, full remote
+download verification, isolated no-overwrite restore and freshness-gated weekly
+restore receipts. Critical runtime evidence is never automatically deleted;
+raw sessions remain the only local capacity-reclamation target after verified
+remote coverage. A real decision runner and Canary promotion remain blocked by
+the documented model and execution-evidence gates.
 
 ## Windows Native Build
 
