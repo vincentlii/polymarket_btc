@@ -48,7 +48,7 @@ def test_forward_collector_cli_builds_btc_only_collector_from_explicit_token_ids
     assert collector.flush_size == 25
     assert collector.flush_interval_seconds == 60.0
     assert collector.shutdown_flush_timeout_seconds == 30.0
-    assert collector.ingest_version == "btc-short-horizon-v9"
+    assert collector.ingest_version == "btc-short-horizon-v10"
     assert collector.polymarket_source_timestamp_regression_tolerance_seconds == 1.0
     assert collector.max_pending_events == 100_000
     assert collector.max_pending_bytes == 67_108_864
@@ -124,14 +124,14 @@ def test_follow_current_rotates_from_exact_gamma_catalog_and_persists_metadata(t
     gamma = _FakeGammaClient(catalog)
     started = asyncio.Event()
     outer_stop = asyncio.Event()
-    factory_calls: list[tuple[Path, tuple[str, ...], WindowCollectorSettings]] = []
+    factory_calls: list[tuple[Path, tuple[tuple[str, ...], ...], WindowCollectorSettings]] = []
 
     def collector_factory(
         raw_data_root: Path,
-        token_ids: tuple[str, ...],
+        token_groups: tuple[tuple[str, ...], ...],
         settings: WindowCollectorSettings,
     ) -> _FakeWindowCollector:
-        factory_calls.append((raw_data_root, token_ids, settings))
+        factory_calls.append((raw_data_root, token_groups, settings))
         return _FakeWindowCollector(started)
 
     async def run() -> None:
@@ -182,7 +182,10 @@ def test_follow_current_rotates_from_exact_gamma_catalog_and_persists_metadata(t
     assert factory_calls == [
         (
             tmp_path / "raw",
-            ("up-token", "down-token", "next-up-token", "next-down-token"),
+            (
+                ("up-token", "down-token"),
+                ("next-up-token", "next-down-token"),
+            ),
             WindowCollectorSettings(
                 flush_size=25,
                 flush_interval_seconds=60.0,

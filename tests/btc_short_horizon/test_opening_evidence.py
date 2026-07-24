@@ -640,7 +640,7 @@ def test_forward_reader_detects_deleted_part_and_manifest_from_session_inventory
 ) -> None:
     inventory = SessionInventoryRepository(tmp_path).start_session(
         session_id="test-session",
-        ingest_version="btc-short-horizon-v9",
+        ingest_version="btc-short-horizon-v10",
     )
     writer = PartitionedRawEventWriter(
         tmp_path,
@@ -657,7 +657,7 @@ def test_forward_reader_detects_deleted_part_and_manifest_from_session_inventory
                 at=T0,
                 bid="0.60",
                 ask="0.61",
-                ingest_version="btc-short-horizon-v9",
+                ingest_version="btc-short-horizon-v10",
             ),
         )
     )[0]
@@ -671,7 +671,7 @@ def test_forward_reader_detects_deleted_part_and_manifest_from_session_inventory
             token_id=UP_TOKEN,
             start_time=T0,
             end_time=T0,
-            ingest_version="btc-short-horizon-v9",
+            ingest_version="btc-short-horizon-v10",
             expected_source_timestamp_regression_tolerance_seconds=1.0,
         )
 
@@ -719,7 +719,7 @@ def test_opening_market_audit_writes_observations_and_coverage(tmp_path: Path) -
     event_time = T0 + timedelta(seconds=2)
     inventory = SessionInventoryRepository(tmp_path).start_session(
         session_id="test-session",
-        ingest_version="btc-short-horizon-v9",
+        ingest_version="btc-short-horizon-v10",
     )
     writer = PartitionedRawEventWriter(
         tmp_path,
@@ -736,14 +736,14 @@ def test_opening_market_audit_writes_observations_and_coverage(tmp_path: Path) -
                 at=event_time,
                 bid="0.60",
                 ask="0.61",
-                ingest_version="btc-short-horizon-v9",
+                ingest_version="btc-short-horizon-v10",
             ),
             _raw_book_event(
                 token_id=DOWN_TOKEN,
                 at=event_time,
                 bid="0.39",
                 ask="0.40",
-                ingest_version="btc-short-horizon-v9",
+                ingest_version="btc-short-horizon-v10",
             ),
         )
     )

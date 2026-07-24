@@ -35,7 +35,7 @@ def test_baseline_config_is_path_relative_and_has_explicit_queue_scenarios() -> 
     assert config.collection.max_pending_events == 100_000
     assert config.collection.max_pending_bytes == 67_108_864
     assert config.collection.opening_handoff_delay_seconds == 180.0
-    assert config.collection.ingest_version == "btc-short-horizon-v9"
+    assert config.collection.ingest_version == "btc-short-horizon-v10"
     formal = tuple(scenario for scenario in config.scenarios if scenario.formal_grid_component)
     assert len(formal) == 4
     assert all(scenario.execution.queue_position for scenario in formal)

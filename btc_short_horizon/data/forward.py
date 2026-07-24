@@ -142,6 +142,7 @@ class BtcForwardCollector:
         *,
         raw_data_root: Path,
         polymarket_token_ids: Sequence[str],
+        polymarket_token_groups: Sequence[Sequence[str]] | None = None,
         flush_size: int = 10_000,
         flush_interval_seconds: float = 60.0,
         shutdown_flush_timeout_seconds: float = 30.0,
@@ -166,6 +167,10 @@ class BtcForwardCollector:
             raise ValueError("polymarket_token_ids must not be empty")
         if len(set(token_ids)) != len(token_ids):
             raise ValueError("polymarket_token_ids must be unique")
+        token_groups = _normalize_polymarket_token_groups(
+            token_ids=token_ids,
+            token_groups=polymarket_token_groups,
+        )
         if isinstance(flush_size, bool) or not isinstance(flush_size, int) or flush_size < 1:
             raise ValueError("flush_size must be >= 1")
         if not isfinite(flush_interval_seconds) or flush_interval_seconds <= 0.0:
@@ -241,6 +246,7 @@ class BtcForwardCollector:
         ):
             raise ValueError("okx_swap_contract_value must be finite and > 0 when provided")
         self.token_ids = token_ids
+        self.polymarket_token_groups = token_groups
         self.flush_size = flush_size
         self.flush_interval_seconds = flush_interval_seconds
         self.shutdown_flush_timeout_seconds = shutdown_flush_timeout_seconds
@@ -270,6 +276,10 @@ class BtcForwardCollector:
             attributes={
                 "epoch_id_offset": str(self.epoch_id_offset),
                 "polymarket_token_ids": json.dumps(self.token_ids, separators=(",", ":")),
+                "polymarket_token_groups": json.dumps(
+                    self.polymarket_token_groups,
+                    separators=(",", ":"),
+                ),
             },
         )
         self._writer = PartitionedRawEventWriter(
@@ -480,10 +490,24 @@ class BtcForwardCollector:
     ) -> CollectorIngressResult:
         """Normalize each configured token without persisting ignored channel messages."""
 
+        return self._handle_polymarket_tokens(
+            payload,
+            collector_receive_ts=collector_receive_ts,
+            token_ids=self.token_ids,
+        )
+
+    def _handle_polymarket_tokens(
+        self,
+        payload: Mapping[str, object],
+        *,
+        collector_receive_ts: datetime,
+        token_ids: tuple[str, ...],
+    ) -> CollectorIngressResult:
+        """Apply one payload only to tokens sharing its physical CLOB connection."""
+
         with self._lock:
             candidates = {
-                token_id: normalizer.fork()
-                for token_id, normalizer in self._polymarket_normalizers.items()
+                token_id: self._polymarket_normalizers[token_id].fork() for token_id in token_ids
             }
             outcome = CollectorIngressResult()
             processed: list[tuple[str, PolymarketL2Result]] = []
@@ -520,11 +544,11 @@ class BtcForwardCollector:
                             ).last_available_ts,
                         ),
                     )
-                    for token_id in self._polymarket_normalizers
+                    for token_id in token_ids
                 )
                 self._ensure_capacity_locked(tuple(event for _, _, event in planned_gaps))
-                for normalizer in self._polymarket_normalizers.values():
-                    normalizer.reset()
+                for token_id in token_ids:
+                    self._polymarket_normalizers[token_id].reset()
                 for _token_id, validator, gap_event in planned_gaps:
                     self._commit_gap_event_locked(
                         event=gap_event,
@@ -578,7 +602,7 @@ class BtcForwardCollector:
                         )
                     )
             self._ensure_capacity_locked(tuple(reservation))
-            self._polymarket_normalizers = candidates
+            self._polymarket_normalizers.update(candidates)
             for token_id, result in processed:
                 assert result.timing is not None
                 planned_gap = planned_start_gaps.get(token_id)
@@ -1756,17 +1780,23 @@ class BtcForwardCollector:
                             task.cancel()
                     await asyncio.gather(failure_task, stop_task, return_exceptions=True)
 
-            async def on_polymarket(payload: Mapping[str, object], received: datetime) -> bool:
-                async with ingress_lock:
-                    result = await admit_with_backpressure(
-                        lambda: self.handle_polymarket(
-                            payload,
-                            collector_receive_ts=received,
+            def on_polymarket(token_group: tuple[str, ...]):
+                async def receive(payload: Mapping[str, object], received: datetime) -> bool:
+                    async with ingress_lock:
+                        result = await admit_with_backpressure(
+                            lambda: self._handle_polymarket_tokens(
+                                payload,
+                                collector_receive_ts=received,
+                                token_ids=token_group,
+                            )
                         )
-                    )
-                if result.resubscribe_required:
-                    raise _FeedResubscribeRequired("Polymarket book requires a fresh subscription")
-                return result.accepted_events > 0
+                    if result.resubscribe_required:
+                        raise _FeedResubscribeRequired(
+                            "Polymarket book requires a fresh subscription"
+                        )
+                    return result.accepted_events > 0
+
+                return receive
 
             async def on_rtds(payload: Mapping[str, object], received: datetime) -> bool:
                 async with ingress_lock:
@@ -1821,26 +1851,31 @@ class BtcForwardCollector:
                     raise _FeedResubscribeRequired("OKX book requires a fresh subscription")
                 return result.accepted_events > 0
 
-            async def on_polymarket_error(exc: Exception) -> None:
-                async with ingress_lock:
+            def on_polymarket_error(token_group: tuple[str, ...]):
+                async def report(exc: Exception) -> None:
+                    if isinstance(exc, _FeedResubscribeRequired):
+                        return
+                    async with ingress_lock:
 
-                    def record_error() -> None:
-                        self.mark_gaps(
-                            tuple(
-                                (
-                                    "polymarket_clob",
-                                    token_id,
-                                    _MARKET_STREAM,
-                                    type(exc).__name__,
-                                    None,
+                        def record_error() -> None:
+                            self.mark_gaps(
+                                tuple(
+                                    (
+                                        "polymarket_clob",
+                                        token_id,
+                                        _MARKET_STREAM,
+                                        type(exc).__name__,
+                                        None,
+                                    )
+                                    for token_id in token_group
                                 )
-                                for token_id in self.token_ids
                             )
-                        )
-                        for token_id in self.token_ids:
-                            self.invalidate_polymarket_token(token_id)
+                            for token_id in token_group:
+                                self.invalidate_polymarket_token(token_id)
 
-                    await admit_with_backpressure(record_error)
+                        await admit_with_backpressure(record_error)
+
+                return report
 
             async def on_rtds_error(exc: Exception) -> None:
                 async with ingress_lock:
@@ -1927,13 +1962,6 @@ class BtcForwardCollector:
 
             collectors = [
                 JsonWebSocketCollector(
-                    polymarket_market_subscription(self.token_ids)
-                ).collect_forever(
-                    stop_event=stop_event,
-                    on_payload=on_polymarket,
-                    on_error=on_polymarket_error,
-                ),
-                JsonWebSocketCollector(
                     polymarket_rtds_chainlink_btc_subscription()
                 ).collect_forever(
                     stop_event=stop_event,
@@ -1942,6 +1970,14 @@ class BtcForwardCollector:
                 ),
                 supervise_depth_refreshes(),
             ]
+            collectors.extend(
+                JsonWebSocketCollector(polymarket_market_subscription(token_group)).collect_forever(
+                    stop_event=stop_event,
+                    on_payload=on_polymarket(token_group),
+                    on_error=on_polymarket_error(token_group),
+                )
+                for token_group in self.polymarket_token_groups
+            )
             if spot_stream_names:
                 spot_collector = JsonWebSocketCollector(
                     binance_combined_stream_subscription(spot_stream_names)
@@ -2639,6 +2675,26 @@ def _pending_event_candidate(
         collector_session_id=collector_session_id,
         epoch_id=0,
     )
+
+
+def _normalize_polymarket_token_groups(
+    *,
+    token_ids: tuple[str, ...],
+    token_groups: Sequence[Sequence[str]] | None,
+) -> tuple[tuple[str, ...], ...]:
+    if token_groups is None:
+        return (token_ids,)
+    groups = tuple(
+        tuple(token_id.strip() for token_id in group if token_id.strip()) for group in token_groups
+    )
+    if not groups or any(not group for group in groups):
+        raise ValueError("polymarket_token_groups must contain non-empty groups")
+    flattened = tuple(token_id for group in groups for token_id in group)
+    if len(set(flattened)) != len(flattened):
+        raise ValueError("polymarket_token_groups must not repeat token IDs")
+    if set(flattened) != set(token_ids):
+        raise ValueError("polymarket_token_groups must be an exact partition of token IDs")
+    return groups
 
 
 def _rejected(reason: str) -> CollectorIngressResult:

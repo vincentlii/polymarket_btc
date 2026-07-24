@@ -106,7 +106,11 @@ timestamp. The current v9 boundary adds a transactional per-session inventory,
 single-writer storage lease, interrupted-session recovery, and verified
 content-addressed backup/restore. A part is not complete evidence until its
 inventory state is committed, and a session cannot close while any part is only
-prepared.
+prepared. Version v10 keeps those durability guarantees and isolates each
+current/look-ahead market pair on its own physical CLOB connection. A malformed
+payload, source-time regression, disconnect, or forced resubscription therefore
+invalidates only the two tokens carried by that connection; it cannot reset the
+next market's pre-open/opening book state.
 
 `paths.raw_data_root` is the root of the project's immutable collector store;
 it contains `raw/<source>/<instrument-directory>/...` parts and manifests. The
@@ -212,12 +216,13 @@ ingest boundary.
 ## Forward Collection
 
 The collector is deliberately BTC-only. Follow mode discovers both the current
-and next 15m Gamma slugs into separate validated catalogs, then subscribes one
-market-channel connection to both Up/Down pairs. It never guesses or reuses a
-token ID from a prior window. The old connection remains active through the
-first 180 seconds of the next market before rotation; this removes Gamma
-discovery and WebSocket setup from the complete `t0+3s` to `t0+180s` decision
-path.
+and next 15m Gamma slugs into separate validated catalogs, then pre-subscribes
+each market's Up/Down pair on a separate market-channel connection. It never
+guesses or reuses a token ID from a prior window. Both connections remain
+active through the first 180 seconds of the next market before rotation; this
+removes Gamma discovery and WebSocket setup from the complete `t0+3s` to
+`t0+180s` decision path while preventing a closing market's terminal messages
+from invalidating the next market.
 The first catalog written for a slug/rule hash is immutable so its pre-open
 `collected_at` evidence is preserved; identical rediscovery reuses it and
 conflicting metadata fails closed.
@@ -737,9 +742,9 @@ all 36 decisions; 32 were quality-eligible and four failed closed because
 Binance Spot trade or BBO evidence was older than one second. There were no gap
 flags. This validates causal runtime compatibility while preserving the data
 freshness boundary; one window does not establish statistical stability.
-Because v9 includes all v8 collector-session, epoch, buffer, gap, manifest, and
-raw-schema contracts plus transactional session inventory, this v6 run remains
-provenance only; fresh v9 forward
+Because v10 includes all v9 collector-session, epoch, buffer, gap, manifest,
+raw-schema, and transactional session-inventory contracts plus per-market CLOB
+failure isolation, this v6 run remains provenance only; fresh v10 forward
 evidence is required for any new promotion decision.
 
 These results still cannot establish passive fills, queue position, or

@@ -41,6 +41,121 @@ def test_default_forward_collection_is_lightweight_for_bounded_vps_storage() -> 
     assert DEFAULT_OKX_SUBSCRIPTIONS == ()
 
 
+def test_forward_collector_requires_disjoint_clob_connection_groups(tmp_path) -> None:
+    with pytest.raises(ValueError, match="exact partition"):
+        BtcForwardCollector(
+            raw_data_root=tmp_path,
+            polymarket_token_ids=("current-up", "current-down", "next-up", "next-down"),
+            polymarket_token_groups=(
+                ("current-up", "current-down"),
+                ("next-up",),
+            ),
+        )
+
+    with pytest.raises(ValueError, match="must not repeat"):
+        BtcForwardCollector(
+            raw_data_root=tmp_path,
+            polymarket_token_ids=("current-up", "current-down", "next-up", "next-down"),
+            polymarket_token_groups=(
+                ("current-up", "current-down"),
+                ("next-up", "next-down", "current-up"),
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_forward_collector_isolates_clob_failure_to_its_market_connection(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    groups = (
+        ("current-up", "current-down"),
+        ("next-up", "next-down"),
+    )
+    collector = BtcForwardCollector(
+        raw_data_root=tmp_path,
+        polymarket_token_ids=tuple(token for group in groups for token in group),
+        polymarket_token_groups=groups,
+    )
+    stop_event = asyncio.Event()
+    next_ready = asyncio.Event()
+    current_failed = asyncio.Event()
+
+    async def fake_socket_loop(  # type: ignore[no-untyped-def]
+        websocket_collector,
+        *,
+        stop_event: asyncio.Event,
+        on_payload,
+        on_error=None,
+        on_connected=None,
+    ) -> None:
+        del on_connected
+        subscription = websocket_collector.subscription
+        if "ws-subscriptions-clob" not in subscription.endpoint:
+            await stop_event.wait()
+            return
+        token_ids = tuple(subscription.subscribe_payload["assets_ids"])
+        for token_id in token_ids:
+            assert await on_payload(
+                {
+                    "event_type": "book",
+                    "asset_id": token_id,
+                    "timestamp": int(SOURCE_TIME.timestamp() * 1_000),
+                    "bids": [{"price": "0.48", "size": "11"}],
+                    "asks": [{"price": "0.52", "size": "9"}],
+                    "hash": f"book-{token_id}",
+                },
+                SOURCE_TIME,
+            )
+        if token_ids == groups[1]:
+            next_ready.set()
+            await current_failed.wait()
+            stop_event.set()
+            return
+        await next_ready.wait()
+        try:
+            await on_payload(
+                {
+                    "event_type": "price_change",
+                    "timestamp": int(
+                        (SOURCE_TIME + timedelta(milliseconds=100)).timestamp() * 1_000
+                    ),
+                    "price_changes": [
+                        {
+                            "asset_id": "current-up",
+                            "price": "0.49",
+                            "size": "5",
+                            "side": "HOLD",
+                        }
+                    ],
+                },
+                SOURCE_TIME + timedelta(milliseconds=110),
+            )
+        except Exception as exc:
+            assert on_error is not None
+            await on_error(exc)
+        current_failed.set()
+        await stop_event.wait()
+
+    monkeypatch.setattr(
+        "btc_short_horizon.data.forward.JsonWebSocketCollector.collect_forever",
+        fake_socket_loop,
+    )
+    await asyncio.wait_for(
+        collector.collect_forever(
+            stop_event=stop_event,
+            binance_streams=(),
+        ),
+        timeout=2.0,
+    )
+
+    stats = collector.quality_stats
+    assert stats[("polymarket_clob", "current-up", "market")].gap_events >= 1
+    assert stats[("polymarket_clob", "current-down", "market")].gap_events >= 1
+    assert stats[("polymarket_clob", "next-up", "market")].gap_events == 0
+    assert stats[("polymarket_clob", "next-down", "market")].gap_events == 0
+
+
 def test_forward_collector_enforces_source_specific_depth_snapshot_limits(
     tmp_path,
 ) -> None:  # type: ignore[no-untyped-def]

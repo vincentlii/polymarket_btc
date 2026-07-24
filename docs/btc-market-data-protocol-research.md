@@ -187,6 +187,10 @@ whose default is `true` in the
 
 - On every new connection, reconnect, or token resubscription, invalidate that
   token's prior book immediately and request/retain `initial_dump=true`.
+- Keep the current and look-ahead market pairs on separate physical CLOB
+  connections. A connection-level fault invalidates only the Up/Down pair on
+  that connection. The look-ahead connection is established before its market
+  opens and remains unchanged through the full opening decision interval.
 - Do not apply `price_change` for a token until a fresh full `book` for that
   token has been accepted. A `book` received later is authoritative and
   replaces all levels.

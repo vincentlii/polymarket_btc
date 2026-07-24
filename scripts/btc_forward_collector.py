@@ -299,7 +299,7 @@ async def collect_current_market_windows(
     stop_event: asyncio.Event,
     gamma_client: GammaMarketClient | None = None,
     collector_factory: Callable[
-        [Path, tuple[str, ...], WindowCollectorSettings],
+        [Path, tuple[tuple[str, ...], ...], WindowCollectorSettings],
         BtcForwardCollector,
     ]
     | None = None,
@@ -348,22 +348,21 @@ async def collect_current_market_windows(
             family=family,
             market=market,
         )
-        token_ids = (market.up_token_id, market.down_token_id)
+        token_groups = ((market.up_token_id, market.down_token_id),)
         if lookahead is not None:
             _write_single_market_catalog(
                 directory=catalog_directory,
                 family=family,
                 market=lookahead,
             )
-            token_ids = (
-                *token_ids,
-                lookahead.up_token_id,
-                lookahead.down_token_id,
+            token_groups = (
+                *token_groups,
+                (lookahead.up_token_id, lookahead.down_token_id),
             )
         collector_stop = asyncio.Event()
         collector = factory(
             raw_data_root,
-            token_ids,
+            token_groups,
             WindowCollectorSettings(
                 flush_size=flush_size,
                 flush_interval_seconds=flush_interval_seconds,
@@ -483,12 +482,14 @@ def _collection_settings(
 
 def _build_window_collector(
     raw_data_root: Path,
-    token_ids: tuple[str, ...],
+    token_groups: tuple[tuple[str, ...], ...],
     settings: WindowCollectorSettings,
 ) -> BtcForwardCollector:
+    token_ids = tuple(token_id for group in token_groups for token_id in group)
     return BtcForwardCollector(
         raw_data_root=raw_data_root,
         polymarket_token_ids=token_ids,
+        polymarket_token_groups=token_groups,
         flush_size=settings.flush_size,
         flush_interval_seconds=settings.flush_interval_seconds,
         shutdown_flush_timeout_seconds=settings.shutdown_flush_timeout_seconds,
