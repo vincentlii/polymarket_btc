@@ -133,7 +133,7 @@ class PolymarketL2Normalizer:
         timing = self._timing(payload, receive_ts=receive_ts)
         source_time_regressed = self._has_material_source_timestamp_regression(timing.source_ts)
         top = self._book_top(timing, bids=bids, asks=asks)
-        if top is None:
+        if bids and asks and top is None:
             self.reset()
             return PolymarketL2Result(
                 status=PolymarketL2Status.INVALID,
@@ -207,7 +207,7 @@ class PolymarketL2Normalizer:
         if matched == 0:
             return self._ignored(payload, receive_ts, "other_token")
         top = self._book_top(timing, bids=bids, asks=asks)
-        if top is None:
+        if bids and asks and top is None:
             self.reset()
             return PolymarketL2Result(
                 status=PolymarketL2Status.INVALID,

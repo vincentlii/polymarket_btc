@@ -190,9 +190,15 @@ whose default is `true` in the
 - Do not apply `price_change` for a token until a fresh full `book` for that
   token has been accepted. A `book` received later is authoritative and
   replaces all levels.
-- A structurally valid but empty/crossed snapshot or delta must create
-  explicit unavailable/gap evidence at its local receive time. It must not be
-  silently dropped while offline research continues using the old book.
+- A structurally valid zero- or one-sided snapshot/delta is authoritative:
+  persist it, clear the absent levels, expose no two-sided BBO, and do not
+  reconnect the shared multi-token socket. Resolved BTC tokens have been
+  observed producing one-sided terminal snapshots during the current/next
+  market handoff; treating those snapshots as connection corruption creates
+  false gaps in the still-active token.
+- A crossed snapshot/delta remains invalid and must create explicit
+  unavailable/gap evidence at its local receive time. It must not be silently
+  dropped while offline research continues using the old book.
 - Validate all changes in one received `price_change` message before committing
   any configured token state. This is a project fail-closed inference from the
   official multi-asset message shape, not a documented venue transaction
