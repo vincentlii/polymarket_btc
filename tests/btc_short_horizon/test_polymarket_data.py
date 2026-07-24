@@ -177,7 +177,11 @@ def test_polymarket_material_source_regression_fails_closed_with_monotonic_recei
 def test_polymarket_delta_before_snapshot_requires_resnapshot_and_crossed_book_is_invalid() -> None:
     normalizer = PolymarketL2Normalizer(token_id=TOKEN)
     waiting = normalizer.apply(
-        {"event_type": "price_change", "timestamp": "1776038400000", "price_changes": []},
+        {
+            "event_type": "price_change",
+            "timestamp": "1776038400000",
+            "price_changes": [{"asset_id": TOKEN, "price": "0.50", "size": "1", "side": "BUY"}],
+        },
         collector_receive_ts=RECEIVE,
     )
     assert waiting.status is PolymarketL2Status.AWAITING_SNAPSHOT
@@ -193,6 +197,25 @@ def test_polymarket_delta_before_snapshot_requires_resnapshot_and_crossed_book_i
         collector_receive_ts=RECEIVE,
     )
     assert invalid.status is PolymarketL2Status.INVALID
+
+
+def test_polymarket_other_token_delta_does_not_require_a_snapshot() -> None:
+    normalizer = PolymarketL2Normalizer(token_id=TOKEN)
+
+    ignored = normalizer.apply(
+        {
+            "event_type": "price_change",
+            "timestamp": "1776038400000",
+            "price_changes": [
+                {"asset_id": "other-token", "price": "0.50", "size": "1", "side": "BUY"}
+            ],
+        },
+        collector_receive_ts=RECEIVE,
+    )
+
+    assert ignored.status is PolymarketL2Status.IGNORED
+    assert ignored.reason == "other_token"
+    assert not ignored.requires_resubscribe
 
 
 def test_polymarket_one_sided_snapshot_is_valid_terminal_book_state() -> None:

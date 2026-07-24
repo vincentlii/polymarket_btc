@@ -162,6 +162,17 @@ class PolymarketL2Normalizer:
     def _apply_price_change(
         self, payload: Mapping[str, object], *, receive_ts: datetime
     ) -> PolymarketL2Result:
+        changes = payload.get("price_changes")
+        if not isinstance(changes, Sequence) or isinstance(changes, str | bytes):
+            raise ValueError("price_change payload requires price_changes sequence")
+        matched_changes: list[Mapping[str, object]] = []
+        for change in changes:
+            if not isinstance(change, Mapping):
+                raise ValueError("each price change must be an object")
+            if _text(change.get("asset_id"), "asset_id") == self.token_id:
+                matched_changes.append(change)
+        if not matched_changes:
+            return self._ignored(payload, receive_ts, "other_token")
         timing = self._timing(payload, receive_ts=receive_ts)
         if self._has_material_source_timestamp_regression(timing.source_ts):
             self.reset()
@@ -182,18 +193,9 @@ class PolymarketL2Normalizer:
                 starts_new_epoch=True,
                 requires_resubscribe=True,
             )
-        changes = payload.get("price_changes")
-        if not isinstance(changes, Sequence) or isinstance(changes, str | bytes):
-            raise ValueError("price_change payload requires price_changes sequence")
         bids = self._bids.copy()
         asks = self._asks.copy()
-        matched = 0
-        for change in changes:
-            if not isinstance(change, Mapping):
-                raise ValueError("each price change must be an object")
-            if _text(change.get("asset_id"), "asset_id") != self.token_id:
-                continue
-            matched += 1
+        for change in matched_changes:
             side = _text(change.get("side"), "side").upper()
             if side not in {"BUY", "SELL"}:
                 raise ValueError("price change side must be BUY or SELL")
@@ -204,8 +206,6 @@ class PolymarketL2Normalizer:
                 levels.pop(price, None)
             else:
                 levels[price] = size
-        if matched == 0:
-            return self._ignored(payload, receive_ts, "other_token")
         top = self._book_top(timing, bids=bids, asks=asks)
         if bids and asks and top is None:
             self.reset()
