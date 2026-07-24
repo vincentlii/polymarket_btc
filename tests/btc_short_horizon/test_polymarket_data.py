@@ -266,6 +266,47 @@ def test_polymarket_price_change_may_leave_a_valid_one_sided_book() -> None:
     assert not terminal.requires_resubscribe
 
 
+def test_polymarket_price_change_reconciles_levels_to_reported_bbo() -> None:
+    normalizer = PolymarketL2Normalizer(token_id=TOKEN)
+    normalizer.apply(
+        {
+            "event_type": "book",
+            "asset_id": TOKEN,
+            "bids": [{"price": "0.49", "size": "10"}],
+            "asks": [
+                {"price": "0.51", "size": "20"},
+                {"price": "0.52", "size": "30"},
+            ],
+            "timestamp": "1776038400000",
+        },
+        collector_receive_ts=RECEIVE,
+    )
+
+    changed = normalizer.apply(
+        {
+            "event_type": "price_change",
+            "timestamp": "1776038400100",
+            "price_changes": [
+                {
+                    "asset_id": TOKEN,
+                    "price": "0.51",
+                    "size": "5",
+                    "side": "BUY",
+                    "best_bid": "0.51",
+                    "best_ask": "0.52",
+                }
+            ],
+        },
+        collector_receive_ts=RECEIVE,
+    )
+
+    assert changed.status is PolymarketL2Status.APPLIED
+    assert changed.book_top is not None
+    assert changed.book_top.bid == pytest.approx(0.51)
+    assert changed.book_top.ask == pytest.approx(0.52)
+    assert not changed.requires_resubscribe
+
+
 def test_polymarket_malformed_snapshot_discards_prior_book_and_tick() -> None:
     normalizer = PolymarketL2Normalizer(token_id=TOKEN)
     normalizer.apply(

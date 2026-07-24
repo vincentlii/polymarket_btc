@@ -203,6 +203,12 @@ whose default is `true` in the
   any configured token state. This is a project fail-closed inference from the
   official multi-asset message shape, not a documented venue transaction
   guarantee.
+- Treat the last matching change's venue-reported `best_bid` and `best_ask` as
+  authoritative BBO bounds for that payload and remove locally retained levels
+  that contradict them. Live BTC evidence shows that a trade can advance the
+  reported BBO before the following full `book` arrives; rejecting that
+  transient local cross would create a false connection gap. The raw
+  `price_change` and subsequent full `book` remain the replay evidence.
 - Store the venue `timestamp` as source metadata and store a separate local
   monotonic/wall-clock receive timestamp. Use local receipt as the causal
   availability boundary. Persist a collector-session admission sequence as the

@@ -206,8 +206,25 @@ class PolymarketL2Normalizer:
                 levels.pop(price, None)
             else:
                 levels[price] = size
+        reported = matched_changes[-1]
+        reported_bid = (
+            None
+            if reported.get("best_bid") is None
+            else _probability(reported.get("best_bid"), "best_bid")
+        )
+        reported_ask = (
+            None
+            if reported.get("best_ask") is None
+            else _probability(reported.get("best_ask"), "best_ask")
+        )
+        if reported_bid is not None:
+            bids = {price: size for price, size in bids.items() if price <= reported_bid}
+        if reported_ask is not None:
+            asks = {price: size for price, size in asks.items() if price >= reported_ask}
         top = self._book_top(timing, bids=bids, asks=asks)
-        if bids and asks and top is None:
+        if (
+            reported_bid is not None and reported_ask is not None and reported_bid >= reported_ask
+        ) or (bids and asks and top is None):
             self.reset()
             return PolymarketL2Result(
                 status=PolymarketL2Status.INVALID,
