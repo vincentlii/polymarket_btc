@@ -62,6 +62,7 @@ def _raw_book_event(
     ingest_version: str = "btc-short-horizon-v2",
     source_at: datetime | None = None,
     admission_sequence: int = 0,
+    collector_session_id: str = "test-session",
 ) -> RawCollectorEvent:
     source_time = source_at or at
     timestamp_millis = int(source_time.timestamp() * 1_000)
@@ -84,7 +85,7 @@ def _raw_book_event(
             "bids": [{"price": bid, "size": "10"}],
             "asks": [{"price": ask, "size": "11"}],
         },
-        collector_session_id="test-session",
+        collector_session_id=collector_session_id,
         epoch_id=epoch_id,
         admission_sequence=admission_sequence,
     )
@@ -608,6 +609,52 @@ def test_forward_reader_rejects_mixed_ingest_versions_without_selection(
             start_time=T0,
             end_time=T0 + timedelta(seconds=1),
         )
+
+
+def test_forward_reader_selects_v10_with_inventory_managed_v9_in_same_hour(
+    tmp_path: Path,
+) -> None:
+    for session_id, ingest_version, bid in (
+        ("session-v9", "btc-short-horizon-v9", "0.40"),
+        ("session-v10", "btc-short-horizon-v10", "0.60"),
+    ):
+        inventory = SessionInventoryRepository(tmp_path).start_session(
+            session_id=session_id,
+            ingest_version=ingest_version,
+        )
+        PartitionedRawEventWriter(
+            tmp_path,
+            manifest_attributes={
+                "polymarket_source_timestamp_regression_tolerance_seconds": "1",
+                SESSION_INVENTORY_MANIFEST_ATTRIBUTE: SESSION_INVENTORY_SCHEMA_VERSION,
+            },
+            inventory=inventory,
+        ).write(
+            (
+                _raw_book_event(
+                    token_id=UP_TOKEN,
+                    at=T0,
+                    bid=bid,
+                    ask="0.61",
+                    ingest_version=ingest_version,
+                    collector_session_id=session_id,
+                ),
+            )
+        )
+        inventory.complete()
+
+    loaded = load_forward_polymarket_book_events(
+        raw_data_root=tmp_path,
+        token_id=UP_TOKEN,
+        start_time=T0,
+        end_time=T0,
+        ingest_version="btc-short-horizon-v10",
+    )
+
+    assert loaded.raw_part_count == 1
+    assert len(loaded.events) == 1
+    assert loaded.events[0].book is not None
+    assert loaded.events[0].book.bid == 0.60
 
 
 def test_forward_reader_requires_v8_polymarket_tolerance_manifest_attribute(

@@ -1,7 +1,7 @@
 # Codebase UML Inventory
 
 This file is generated from Python AST metadata and excludes `tests/` plus git-ignored private strategy/research directories.
-Generated: 2026-07-24T18:27:29+00:00
+Generated: 2026-07-24T18:40:53+00:00
 Modules: 210 | Classes: 407 | Functions/methods: 2939
 
 ## Backtesting Data Flow
@@ -1543,29 +1543,29 @@ flowchart TD
 ### `btc_short_horizon/research/opening_evidence.py`
 - Imports: `__future__, btc_short_horizon, collections, dataclasses, datetime, hashlib, json, math, nautilus_trader, pathlib, pyarrow`
 - Function L187: `load_forward_raw_events(*, raw_data_root: Path, source: str, instrument: str, start_time: datetime, end_time: datetime, ingest_version: str | None = None, expected_polymarket_source_timestamp_regression_tolerance_seconds: float | None = None) -> ForwardRawEventLoad`
-- Function L338: `load_forward_polymarket_book_events(*, raw_data_root: Path, token_id: str, start_time: datetime, end_time: datetime, ingest_version: str | None = None, expected_source_timestamp_regression_tolerance_seconds: float | None = None) -> ForwardBookEventLoad`
-- Function L488: `build_opening_market_observations(*, market: MarketWindow, up_events: Sequence[TokenBookStateEvent], down_events: Sequence[TokenBookStateEvent], decision_ts_ns: Sequence[int], initial_data_gap: bool = False) -> tuple[OpeningMarketObservation, ...]`
-- Function L569: `pmxt_order_book_state_events(*, token_id: str, records: Sequence[OrderBookDeltas], gap_hours: Sequence[object] = ()) -> PmxtBookEventLoad`
-- Function L631: `_raw_manifest_parts(*, raw_data_root: Path, source: str, instrument: str, start_time: datetime, end_time: datetime, ingest_version: str | None) -> Iterator[tuple[Path, DataPartitionManifest]]`
-- Function L708: `_read_raw_manifest(path: Path) -> DataPartitionManifest`
-- Function L720: `_validate_raw_manifest(manifest: DataPartitionManifest, *, manifest_path: Path, raw_data_root: Path, expected_source: str, expected_instrument: str) -> Path`
-- Function L794: `_validate_raw_part_statistics(path: Path, *, manifest: DataPartitionManifest) -> None`
-- Function L830: `_raw_rows(path: Path, *, manifest: DataPartitionManifest) -> Iterator[tuple[int, dict[str, object]]]`
-- Function L863: `_sha256_path(path: Path) -> str`
-- Function L874: `_validate_raw_identity(row: Mapping[str, object], *, expected_source: str, expected_instrument: str, path: Path, row_index: int) -> None`
-- Function L890: `_payload_mapping(row: Mapping[str, object], *, path: Path, row_index: int) -> Mapping[str, object]`
-- Function L903: `_validate_token_events(events: Sequence[TokenBookStateEvent], *, expected_token_id: str) -> None`
-- Function L910: `_state_event_sort_key(event: TokenBookStateEvent) -> tuple[int, int, str, int, int, int, str, int]`
-- Function L925: `_raw_payload_sort_key(row: ForwardRawEvent) -> tuple[int, int, str, int, int, int, str, str, int]`
-- Function L941: `_window_ns(*, start_time: datetime, end_time: datetime) -> tuple[int, int]`
-- Function L949: `_hours_between(*, start_time: datetime, end_time: datetime) -> Iterator[datetime]`
-- Function L957: `_required_text(row: Mapping[str, object], name: str, path: Path, row_index: int) -> str`
-- Function L964: `_required_int(row: Mapping[str, object], name: str, path: Path, row_index: int) -> int`
-- Function L971: `_optional_int(row: Mapping[str, object], name: str, path: Path, row_index: int) -> int | None`
-- Function L986: `_as_utc(value: datetime, name: str) -> datetime`
-- Function L992: `_datetime_to_ns(value: datetime) -> int`
-- Function L996: `_datetime_from_ns(value: int) -> datetime`
-- Function L1000: `_as_float(value: object | None) -> float | None`
+- Function L337: `load_forward_polymarket_book_events(*, raw_data_root: Path, token_id: str, start_time: datetime, end_time: datetime, ingest_version: str | None = None, expected_source_timestamp_regression_tolerance_seconds: float | None = None) -> ForwardBookEventLoad`
+- Function L487: `build_opening_market_observations(*, market: MarketWindow, up_events: Sequence[TokenBookStateEvent], down_events: Sequence[TokenBookStateEvent], decision_ts_ns: Sequence[int], initial_data_gap: bool = False) -> tuple[OpeningMarketObservation, ...]`
+- Function L568: `pmxt_order_book_state_events(*, token_id: str, records: Sequence[OrderBookDeltas], gap_hours: Sequence[object] = ()) -> PmxtBookEventLoad`
+- Function L630: `_raw_manifest_parts(*, raw_data_root: Path, source: str, instrument: str, start_time: datetime, end_time: datetime) -> Iterator[tuple[Path, DataPartitionManifest]]`
+- Function L706: `_read_raw_manifest(path: Path) -> DataPartitionManifest`
+- Function L718: `_validate_raw_manifest(manifest: DataPartitionManifest, *, manifest_path: Path, raw_data_root: Path, expected_source: str, expected_instrument: str) -> Path`
+- Function L792: `_validate_raw_part_statistics(path: Path, *, manifest: DataPartitionManifest) -> None`
+- Function L828: `_raw_rows(path: Path, *, manifest: DataPartitionManifest) -> Iterator[tuple[int, dict[str, object]]]`
+- Function L861: `_sha256_path(path: Path) -> str`
+- Function L872: `_validate_raw_identity(row: Mapping[str, object], *, expected_source: str, expected_instrument: str, path: Path, row_index: int) -> None`
+- Function L888: `_payload_mapping(row: Mapping[str, object], *, path: Path, row_index: int) -> Mapping[str, object]`
+- Function L901: `_validate_token_events(events: Sequence[TokenBookStateEvent], *, expected_token_id: str) -> None`
+- Function L908: `_state_event_sort_key(event: TokenBookStateEvent) -> tuple[int, int, str, int, int, int, str, int]`
+- Function L923: `_raw_payload_sort_key(row: ForwardRawEvent) -> tuple[int, int, str, int, int, int, str, str, int]`
+- Function L939: `_window_ns(*, start_time: datetime, end_time: datetime) -> tuple[int, int]`
+- Function L947: `_hours_between(*, start_time: datetime, end_time: datetime) -> Iterator[datetime]`
+- Function L955: `_required_text(row: Mapping[str, object], name: str, path: Path, row_index: int) -> str`
+- Function L962: `_required_int(row: Mapping[str, object], name: str, path: Path, row_index: int) -> int`
+- Function L969: `_optional_int(row: Mapping[str, object], name: str, path: Path, row_index: int) -> int | None`
+- Function L984: `_as_utc(value: datetime, name: str) -> datetime`
+- Function L990: `_datetime_to_ns(value: datetime) -> int`
+- Function L994: `_datetime_from_ns(value: int) -> datetime`
+- Function L998: `_as_float(value: object | None) -> float | None`
 - Class L56: `RawPayloadError(ValueError)`
 - Class L61: `TokenBookStateEvent`
   - Method L75: `__post_init__(self) -> None`

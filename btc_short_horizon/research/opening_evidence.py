@@ -220,7 +220,6 @@ def load_forward_raw_events(
         instrument=instrument,
         start_time=start_time,
         end_time=end_time,
-        ingest_version=expected_ingest_version,
     ):
         if (
             expected_ingest_version is not None
@@ -635,7 +634,6 @@ def _raw_manifest_parts(
     instrument: str,
     start_time: datetime,
     end_time: datetime,
-    ingest_version: str | None,
 ) -> Iterator[tuple[Path, DataPartitionManifest]]:
     """Yield verified manifest/part pairs and reject unreferenced parts.
 
@@ -655,7 +653,7 @@ def _raw_manifest_parts(
                 instrument=instrument,
                 start_available_ts_ns=start_ns,
                 end_available_ts_ns=end_ns,
-                ingest_version=ingest_version,
+                ingest_version=None,
             )
         }
     except SessionInventoryError as exc:
