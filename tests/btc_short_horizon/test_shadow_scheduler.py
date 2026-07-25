@@ -4,6 +4,7 @@ import argparse
 import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 from btc_short_horizon.data import (
     BTC_15M_MARKET_FAMILY,
@@ -12,7 +13,8 @@ from btc_short_horizon.data import (
     write_market_catalog,
 )
 from btc_short_horizon.live.shadow_scheduler import scan_shadow_windows
-from btc_short_horizon.live.runtime import RuntimeStatusStore
+from btc_short_horizon.live.runtime import RuntimeControl, RuntimeStatusStore
+import scripts.btc_opening_shadow_scheduler as shadow_scheduler_script
 from scripts.btc_opening_shadow_scheduler import run_async
 
 
@@ -135,3 +137,67 @@ def test_shadow_scheduler_marks_invalid_model_failed(tmp_path) -> None:
     assert status is not None
     assert status.state == "failed"
     assert not status.healthy
+
+
+def test_shadow_scheduler_publishes_current_running_status_before_first_scan(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    observed = []
+    monkeypatch.setenv("BTC_CODE_REVISION", "current-revision")
+    monkeypatch.setattr(
+        shadow_scheduler_script.ModelArtifactStore,
+        "load",
+        staticmethod(
+            lambda **_kwargs: (
+                object(),
+                SimpleNamespace(
+                    config={},
+                    model_id="test-model",
+                    model_sha256="a" * 64,
+                ),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        shadow_scheduler_script,
+        "validate_opening_proxy_protocol",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def inspect_first_scan(**_kwargs):
+        observed.append(RuntimeStatusStore(runtime_root).read("opening_shadow"))
+        RuntimeControl(runtime_root).request_stop(
+            reason="test complete",
+            requested_at=datetime.now(UTC),
+        )
+        return SimpleNamespace(ready=(), incomplete_outputs=(), catalog_errors=())
+
+    monkeypatch.setattr(
+        shadow_scheduler_script,
+        "scan_shadow_windows",
+        inspect_first_scan,
+    )
+    args = argparse.Namespace(
+        config=Path("configs/btc_short_horizon/baseline.toml"),
+        model_directory=tmp_path / "model",
+        runtime_root=runtime_root,
+        catalog_directory=tmp_path / "catalogs",
+        output_root=tmp_path / "shadow",
+        raw_data_root=tmp_path / "raw",
+        poll_seconds=0.01,
+        lookback_hours=2.0,
+        book_lookback_seconds=300,
+        availability_delay_seconds=1.0,
+    )
+
+    asyncio.run(run_async(args))
+
+    assert len(observed) == 1
+    status = observed[0]
+    assert status is not None
+    assert status.state == "running"
+    assert status.healthy
+    assert status.details["phase"] == "initialized"
+    assert status.details["identity"]["code_revision"] == "current-revision"

@@ -129,6 +129,21 @@ async def run_async(args: argparse.Namespace) -> None:
         "raw_data": filesystem_usage(raw_data_root),
         "shadow_output": filesystem_usage(output_root),
     }
+    _write_status(
+        store=store,
+        started_at=started_at,
+        state="running",
+        healthy=True,
+        details={
+            **runtime_context,
+            "model_id": metadata.model_id,
+            "model_sha256": metadata.model_sha256,
+            "completed_windows": 0,
+            "last_shadow": None,
+            "phase": "initialized",
+            "study_type": "post_window_causal_shadow",
+        },
+    )
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     registered_signals: list[signal.Signals] = []
@@ -173,6 +188,24 @@ async def run_async(args: argparse.Namespace) -> None:
             )
             healthy = not scan.incomplete_outputs and not scan.catalog_errors
             for window in scan.ready:
+                _write_status(
+                    store=store,
+                    started_at=started_at,
+                    state="running",
+                    healthy=healthy,
+                    details={
+                        **runtime_context,
+                        "model_id": metadata.model_id,
+                        "model_sha256": metadata.model_sha256,
+                        "completed_windows": completed,
+                        "ready_windows": len(scan.ready),
+                        "last_shadow": last_shadow,
+                        "last_error": last_error,
+                        "phase": "processing",
+                        "active_market": window.market.slug,
+                        "study_type": "post_window_causal_shadow",
+                    },
+                )
                 shadow_args = argparse.Namespace(
                     config=args.config,
                     market_catalog=window.catalog_path,
@@ -224,6 +257,8 @@ async def run_async(args: argparse.Namespace) -> None:
                     "catalog_errors": list(scan.catalog_errors),
                     "last_shadow": last_shadow,
                     "last_error": last_error,
+                    "phase": "idle",
+                    "active_market": None,
                     "study_type": "post_window_causal_shadow",
                 },
             )

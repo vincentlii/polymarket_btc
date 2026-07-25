@@ -589,6 +589,11 @@ Health producers own their thresholds and publish `ok`, `warning`, `error`, or
 required failed feed or order-reconciliation path therefore makes the overall
 status fail closed.
 
+The Shadow scheduler publishes its current release identity before the first
+catalog scan and refreshes status before each bounded market reconstruction.
+A genuinely stuck reconstruction therefore becomes stale, while a normal
+startup cannot inherit a stopped or failed status from the previous release.
+
 The recommended governance cadence is operational review every day, a frozen
 challenger candidate every 14 days, and a manual promotion review every 28
 days or when the pre-registered evidence target is reached. A fee, tick, rule,
