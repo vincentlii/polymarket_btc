@@ -24,6 +24,7 @@ from btc_short_horizon.data.session_inventory import (
 )
 from btc_short_horizon.data.storage import ImmutableParquetStore
 from btc_short_horizon.features.events import BtcBookTop
+import btc_short_horizon.research.opening_evidence as opening_evidence
 from btc_short_horizon.research.opening_evidence import (
     RawPayloadError,
     TokenBookStateEvent,
@@ -412,6 +413,52 @@ def test_pmxt_l2_adapter_reuses_nautilus_book_state_for_market_observation() -> 
     assert up.events[0].book.bid == pytest.approx(0.60)
     assert observations[0].p_market_mid_up == pytest.approx(0.605)
     assert observations[0].has_data_gap
+
+
+def test_pmxt_l2_adapter_uses_public_fixed_point_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FixedPoint:
+        def __init__(self, value: float) -> None:
+            self.value = value
+
+        def as_double(self) -> float:
+            return self.value
+
+        def __float__(self) -> float:
+            return self.value / 10_000_000
+
+    class PlatformVariantOrderBook:
+        def __init__(self, instrument_id, *, book_type) -> None:
+            self.instrument_id = instrument_id
+
+        def apply_deltas(self, _record) -> None:
+            return None
+
+        def best_bid_price(self) -> FixedPoint:
+            return FixedPoint(0.60)
+
+        def best_ask_price(self) -> FixedPoint:
+            return FixedPoint(0.61)
+
+        def best_bid_size(self) -> FixedPoint:
+            return FixedPoint(10.0)
+
+        def best_ask_size(self) -> FixedPoint:
+            return FixedPoint(11.0)
+
+    monkeypatch.setattr(opening_evidence, "OrderBook", PlatformVariantOrderBook)
+
+    loaded = pmxt_order_book_state_events(
+        token_id=UP_TOKEN,
+        records=(_pmxt_book_record(token_id=UP_TOKEN, bid=0.60, ask=0.61, at=T0),),
+    )
+
+    assert loaded.events[0].book is not None
+    assert loaded.events[0].book.bid == pytest.approx(0.60)
+    assert loaded.events[0].book.ask == pytest.approx(0.61)
+    assert loaded.events[0].book.bid_size == pytest.approx(10.0)
+    assert loaded.events[0].book.ask_size == pytest.approx(11.0)
 
 
 def test_forward_reader_rejects_invalid_payload_json_instead_of_repairing_it(

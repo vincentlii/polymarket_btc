@@ -1009,8 +1009,9 @@ def _datetime_from_ns(value: int) -> datetime:
 def _as_float(value: object | None) -> float | None:
     if value is None:
         return None
+    as_double = getattr(value, "as_double", None)
     try:
-        result = float(value)
+        result = float(as_double()) if callable(as_double) else float(value)
     except (TypeError, ValueError):
         return None
     return result if isfinite(result) else None
