@@ -638,12 +638,23 @@ def _raw_manifest_parts(
     """Yield verified manifest/part pairs and reject unreferenced parts.
 
     This proves integrity for every manifest or part still present in the
-    selected directories. Proving deletion of both files requires the planned
-    session inventory boundary.
+    selected hourly directories. The inventory query uses those same complete
+    physical partitions; the caller applies the narrower logical event window.
     """
 
     root = raw_data_root.resolve()
-    start_ns, end_ns = _window_ns(start_time=start_time, end_time=end_time)
+    start_hour = _as_utc(start_time, "start_time").replace(
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    end_hour = _as_utc(end_time, "end_time").replace(
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    directory_start_ns = _datetime_to_ns(start_hour)
+    directory_end_ns = _datetime_to_ns(end_hour + timedelta(hours=1)) - 1
     repository = SessionInventoryRepository(root)
     try:
         inventoried = {
@@ -651,8 +662,8 @@ def _raw_manifest_parts(
             for item in repository.expected_parts(
                 source=source,
                 instrument=instrument,
-                start_available_ts_ns=start_ns,
-                end_available_ts_ns=end_ns,
+                start_available_ts_ns=directory_start_ns,
+                end_available_ts_ns=directory_end_ns,
                 ingest_version=None,
             )
         }

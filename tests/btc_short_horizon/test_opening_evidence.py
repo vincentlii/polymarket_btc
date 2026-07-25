@@ -657,6 +657,57 @@ def test_forward_reader_selects_v10_with_inventory_managed_v9_in_same_hour(
     assert loaded.events[0].book.bid == 0.60
 
 
+def test_forward_reader_audits_inventoried_same_hour_part_outside_requested_window(
+    tmp_path: Path,
+) -> None:
+    for session_id, ingest_version, at, bid in (
+        ("session-v10", "btc-short-horizon-v10", T0, "0.60"),
+        (
+            "session-v9-later",
+            "btc-short-horizon-v9",
+            T0 + timedelta(minutes=5),
+            "0.40",
+        ),
+    ):
+        inventory = SessionInventoryRepository(tmp_path).start_session(
+            session_id=session_id,
+            ingest_version=ingest_version,
+        )
+        PartitionedRawEventWriter(
+            tmp_path,
+            manifest_attributes={
+                "polymarket_source_timestamp_regression_tolerance_seconds": "1",
+                SESSION_INVENTORY_MANIFEST_ATTRIBUTE: SESSION_INVENTORY_SCHEMA_VERSION,
+            },
+            inventory=inventory,
+        ).write(
+            (
+                _raw_book_event(
+                    token_id=UP_TOKEN,
+                    at=at,
+                    bid=bid,
+                    ask="0.61",
+                    ingest_version=ingest_version,
+                    collector_session_id=session_id,
+                ),
+            )
+        )
+        inventory.complete()
+
+    loaded = load_forward_polymarket_book_events(
+        raw_data_root=tmp_path,
+        token_id=UP_TOKEN,
+        start_time=T0,
+        end_time=T0 + timedelta(minutes=3),
+        ingest_version="btc-short-horizon-v10",
+    )
+
+    assert loaded.raw_part_count == 1
+    assert len(loaded.events) == 1
+    assert loaded.events[0].book is not None
+    assert loaded.events[0].book.bid == 0.60
+
+
 def test_forward_reader_requires_v8_polymarket_tolerance_manifest_attribute(
     tmp_path: Path,
 ) -> None:

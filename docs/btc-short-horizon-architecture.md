@@ -188,6 +188,12 @@ files, records failed/interrupted collection explicitly, and makes remote-only
 evidence request a verified restore instead of looking like an empty window.
 See [BTC 前瞻数据持久性与灾难恢复](btc-data-durability-research.md).
 
+Inventory coverage and filesystem verification use the same complete hourly
+partition range; only after that audit does the reader select the requested
+logical event window and ingest version. A valid later part in the same hour
+therefore cannot be mistaken for an un-inventoried file, while corruption
+anywhere in the selected physical partition still fails closed.
+
 The collector expands batch envelopes, ignores documented `PONG` replies and empty
 subscription control frames, sends heartbeats independently of message
 activity, and only persists messages that pass a source normalizer. Reconnects
