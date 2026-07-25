@@ -31,6 +31,7 @@ from btc_short_horizon.data.forward import (  # noqa: E402
     DEFAULT_BINANCE_FUTURES_PUBLIC_STREAMS,
     DEFAULT_BINANCE_STREAMS,
     BtcForwardCollector,
+    PolymarketSubscriptionWindow,
 )
 from btc_short_horizon.data.gamma import GammaMarketClient  # noqa: E402
 from btc_short_horizon.data.market_catalog import MarketCatalog  # noqa: E402
@@ -52,6 +53,7 @@ class WindowCollectorSettings:
     binance_depth_snapshot_retry_initial_seconds: float
     binance_depth_snapshot_retry_max_seconds: float
     polymarket_source_timestamp_regression_tolerance_seconds: float
+    polymarket_subscription_windows: tuple[PolymarketSubscriptionWindow, ...]
     ingest_version: str
     epoch_id_offset: int
 
@@ -104,11 +106,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Override the configured Gamma retry interval while a new market is unavailable.",
     )
     parser.add_argument(
+        "--polymarket-capture-lead-seconds",
+        type=float,
+        help="Connect each Polymarket token pair this long before its BTC opening.",
+    )
+    parser.add_argument(
         "--opening-handoff-delay-seconds",
         type=float,
         help=(
-            "Keep the current+lookahead subscription alive this long after rotation; "
-            "defaults to the configured shadow-safe handoff delay."
+            "Collect each Polymarket pair until this long after its own opening; "
+            "defaults to the configured complete research interval."
         ),
     )
     parser.add_argument(
@@ -229,6 +236,11 @@ async def _collect_with_storage_lease(
             if args.opening_handoff_delay_seconds is not None
             else config.collection.opening_handoff_delay_seconds
         )
+        polymarket_capture_lead_seconds = (
+            args.polymarket_capture_lead_seconds
+            if args.polymarket_capture_lead_seconds is not None
+            else config.collection.polymarket_capture_lead_seconds
+        )
         await collect_current_market_windows(
             family=_follow_family(config, args.family),
             rule_epoch=args.rule_epoch,
@@ -260,6 +272,7 @@ async def _collect_with_storage_lease(
             binance_futures_market_streams=futures_market_streams,
             binance_futures_public_streams=futures_public_streams,
             rotation_poll_seconds=rotation_poll_seconds,
+            polymarket_capture_lead_seconds=polymarket_capture_lead_seconds,
             opening_handoff_delay_seconds=opening_handoff_delay_seconds,
             stop_event=asyncio.Event(),
         )
@@ -295,6 +308,7 @@ async def collect_current_market_windows(
     binance_futures_market_streams: Sequence[str],
     binance_futures_public_streams: Sequence[str],
     rotation_poll_seconds: float,
+    polymarket_capture_lead_seconds: float,
     opening_handoff_delay_seconds: float,
     stop_event: asyncio.Event,
     gamma_client: GammaMarketClient | None = None,
@@ -307,12 +321,14 @@ async def collect_current_market_windows(
     | None = None,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> None:
-    """Collect current+next BTC tokens and rotate only after the next opening window."""
+    """Keep BTC feeds continuous while bounding each current/next CLOB connection."""
 
     if not rule_epoch:
         raise ValueError("rule_epoch is required")
     if not isfinite(rotation_poll_seconds) or rotation_poll_seconds <= 0.0:
         raise ValueError("rotation_poll_seconds must be finite and > 0")
+    if not isfinite(polymarket_capture_lead_seconds) or polymarket_capture_lead_seconds <= 0.0:
+        raise ValueError("polymarket_capture_lead_seconds must be finite and > 0")
     if not isfinite(opening_handoff_delay_seconds) or opening_handoff_delay_seconds <= 0.0:
         raise ValueError("opening_handoff_delay_seconds must be finite and > 0")
     client = gamma_client or GammaMarketClient()
@@ -359,6 +375,15 @@ async def collect_current_market_windows(
                 *token_groups,
                 (lookahead.up_token_id, lookahead.down_token_id),
             )
+        markets = (market,) if lookahead is None else (market, lookahead)
+        subscription_windows = tuple(
+            PolymarketSubscriptionWindow(
+                token_ids=(item.up_token_id, item.down_token_id),
+                start=item.t0 - timedelta(seconds=polymarket_capture_lead_seconds),
+                end=item.t0 + timedelta(seconds=opening_handoff_delay_seconds),
+            )
+            for item in markets
+        )
         collector_stop = asyncio.Event()
         collector = factory(
             raw_data_root,
@@ -378,6 +403,7 @@ async def collect_current_market_windows(
                 polymarket_source_timestamp_regression_tolerance_seconds=(
                     polymarket_source_timestamp_regression_tolerance_seconds
                 ),
+                polymarket_subscription_windows=subscription_windows,
                 ingest_version=ingest_version,
                 epoch_id_offset=int(market.t0.timestamp()),
             ),
@@ -395,10 +421,10 @@ async def collect_current_market_windows(
         )
         handoff_delay = opening_handoff_delay_seconds if lookahead is not None else 0.0
         print(
-            f"Collecting {market.slug}"
+            f"Running continuous BTC feeds for {market.slug}"
             f"{' + ' + lookahead.slug if lookahead is not None else ''} "
             f"until {(market.t1 + timedelta(seconds=handoff_delay)).isoformat()} "
-            f"using {catalog_path}."
+            f"with bounded CLOB capture using {catalog_path}."
         )
         try:
             await _wait_for_market_rotation(
@@ -490,6 +516,7 @@ def _build_window_collector(
         raw_data_root=raw_data_root,
         polymarket_token_ids=token_ids,
         polymarket_token_groups=token_groups,
+        polymarket_subscription_windows=settings.polymarket_subscription_windows,
         flush_size=settings.flush_size,
         flush_interval_seconds=settings.flush_interval_seconds,
         shutdown_flush_timeout_seconds=settings.shutdown_flush_timeout_seconds,

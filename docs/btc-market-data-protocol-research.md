@@ -189,8 +189,16 @@ whose default is `true` in the
   token's prior book immediately and request/retain `initial_dump=true`.
 - Keep the current and look-ahead market pairs on separate physical CLOB
   connections. A connection-level fault invalidates only the Up/Down pair on
-  that connection. The look-ahead connection is established before its market
-  opens and remains unchanged through the full opening decision interval.
+  that connection. Under ingest v11 each pair connects only from
+  `t0 - polymarket_capture_lead_seconds` through
+  `t0 + opening_handoff_delay_seconds`; the baseline is `[-90s, +180s)`.
+  Binance and Chainlink subscriptions remain continuous outside this interval.
+  Planned CLOB inactivity is excluded from required-feed health rather than
+  reported as a disconnect.
+- A bounded CLOB interval must begin with a new physical subscription and the
+  official `initial_dump=true` snapshot. Do not implement storage reduction by
+  dropping pre-window deltas from an already-running socket: offline replay
+  would then lack an authoritative starting snapshot.
 - Do not apply `price_change` for a token until a fresh full `book` for that
   token has been accepted. A `book` received later is authoritative and
   replaces all levels.

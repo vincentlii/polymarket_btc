@@ -23,9 +23,12 @@ and reporting plumbing without importing archived BTC strategy logic.
   orders.
 - Data boundary: 15m is the only trading family; 5m is collection-only.
 - Forward collection: `btc_forward_collector.py --follow-current` now discovers
-  current and next exact Gamma slugs, persists separate rule-hash catalogs, and
-  pre-subscribes both token pairs before the next opening window. It retains the
-  old pair through `t0+180s` so the entire research window has one connection.
+  current and next exact Gamma slugs and persists separate rule-hash catalogs.
+  In ingest v11, each isolated token pair connects only during `t0-90s` through
+  `t0+180s`; every interval requests a fresh official full-book snapshot.
+  Binance and Chainlink remain continuous, and planned CLOB sleep is excluded
+  from required-feed health. This targets the measured dominant disk source
+  without weakening the strategy's complete 3-180s opening evidence window.
 - Evidence boundary: no profitability or deployability claim exists until real
   data passes the documented holdout and the complete queue-enabled P99
   trade-volume/timestamp-order robustness grid.

@@ -86,6 +86,31 @@ type _QualityStreamKey = tuple[str, str, str]
 
 
 @dataclass(frozen=True, slots=True)
+class PolymarketSubscriptionWindow:
+    """Wall-clock interval during which one isolated CLOB token group is connected."""
+
+    token_ids: tuple[str, ...]
+    start: datetime
+    end: datetime
+
+    def __post_init__(self) -> None:
+        token_ids = tuple(token_id.strip() for token_id in self.token_ids if token_id.strip())
+        if not token_ids or len(set(token_ids)) != len(token_ids):
+            raise ValueError("subscription window token_ids must be non-empty and unique")
+        if self.start.tzinfo is None or self.start.utcoffset() is None:
+            raise ValueError("subscription window start must be timezone-aware")
+        if self.end.tzinfo is None or self.end.utcoffset() is None:
+            raise ValueError("subscription window end must be timezone-aware")
+        start = self.start.astimezone(UTC)
+        end = self.end.astimezone(UTC)
+        if end <= start:
+            raise ValueError("subscription window end must be after start")
+        object.__setattr__(self, "token_ids", token_ids)
+        object.__setattr__(self, "start", start)
+        object.__setattr__(self, "end", end)
+
+
+@dataclass(frozen=True, slots=True)
 class CollectorIngressResult:
     accepted_events: int = 0
     rejected_events: int = 0
@@ -143,6 +168,7 @@ class BtcForwardCollector:
         raw_data_root: Path,
         polymarket_token_ids: Sequence[str],
         polymarket_token_groups: Sequence[Sequence[str]] | None = None,
+        polymarket_subscription_windows: Sequence[PolymarketSubscriptionWindow] | None = None,
         flush_size: int = 10_000,
         flush_interval_seconds: float = 60.0,
         shutdown_flush_timeout_seconds: float = 30.0,
@@ -170,6 +196,10 @@ class BtcForwardCollector:
         token_groups = _normalize_polymarket_token_groups(
             token_ids=token_ids,
             token_groups=polymarket_token_groups,
+        )
+        subscription_windows = _normalize_polymarket_subscription_windows(
+            token_groups=token_groups,
+            subscription_windows=polymarket_subscription_windows,
         )
         if isinstance(flush_size, bool) or not isinstance(flush_size, int) or flush_size < 1:
             raise ValueError("flush_size must be >= 1")
@@ -247,6 +277,7 @@ class BtcForwardCollector:
             raise ValueError("okx_swap_contract_value must be finite and > 0 when provided")
         self.token_ids = token_ids
         self.polymarket_token_groups = token_groups
+        self.polymarket_subscription_windows = subscription_windows
         self.flush_size = flush_size
         self.flush_interval_seconds = flush_interval_seconds
         self.shutdown_flush_timeout_seconds = shutdown_flush_timeout_seconds
@@ -278,6 +309,17 @@ class BtcForwardCollector:
                 "polymarket_token_ids": json.dumps(self.token_ids, separators=(",", ":")),
                 "polymarket_token_groups": json.dumps(
                     self.polymarket_token_groups,
+                    separators=(",", ":"),
+                ),
+                "polymarket_subscription_windows": json.dumps(
+                    [
+                        {
+                            "token_ids": item.token_ids,
+                            "start": item.start.isoformat(),
+                            "end": item.end.isoformat(),
+                        }
+                        for item in self.polymarket_subscription_windows
+                    ],
                     separators=(",", ":"),
                 ),
             },
@@ -401,7 +443,7 @@ class BtcForwardCollector:
 
     def configure_required_polymarket_tokens(self, token_ids: Sequence[str]) -> None:
         required = {token_id.strip() for token_id in token_ids if token_id.strip()}
-        if not required or not required.issubset(self._polymarket_normalizers):
+        if not required.issubset(self._polymarket_normalizers):
             raise ValueError("required Polymarket tokens must belong to this collector")
         with self._lock:
             self._required_feed_keys = {
@@ -1970,14 +2012,28 @@ class BtcForwardCollector:
                 ),
                 supervise_depth_refreshes(),
             ]
-            collectors.extend(
-                JsonWebSocketCollector(polymarket_market_subscription(token_group)).collect_forever(
-                    stop_event=stop_event,
-                    on_payload=on_polymarket(token_group),
-                    on_error=on_polymarket_error(token_group),
+            if self.polymarket_subscription_windows:
+                collectors.extend(
+                    _collect_polymarket_during_window(
+                        token_group=item.token_ids,
+                        window=item,
+                        stop_event=stop_event,
+                        on_payload=on_polymarket(item.token_ids),
+                        on_error=on_polymarket_error(item.token_ids),
+                    )
+                    for item in self.polymarket_subscription_windows
                 )
-                for token_group in self.polymarket_token_groups
-            )
+            else:
+                collectors.extend(
+                    JsonWebSocketCollector(
+                        polymarket_market_subscription(token_group)
+                    ).collect_forever(
+                        stop_event=stop_event,
+                        on_payload=on_polymarket(token_group),
+                        on_error=on_polymarket_error(token_group),
+                    )
+                    for token_group in self.polymarket_token_groups
+                )
             if spot_stream_names:
                 spot_collector = JsonWebSocketCollector(
                     binance_combined_stream_subscription(spot_stream_names)
@@ -2695,6 +2751,80 @@ def _normalize_polymarket_token_groups(
     if set(flattened) != set(token_ids):
         raise ValueError("polymarket_token_groups must be an exact partition of token IDs")
     return groups
+
+
+def _normalize_polymarket_subscription_windows(
+    *,
+    token_groups: tuple[tuple[str, ...], ...],
+    subscription_windows: Sequence[PolymarketSubscriptionWindow] | None,
+) -> tuple[PolymarketSubscriptionWindow, ...]:
+    if subscription_windows is None:
+        return ()
+    normalized = tuple(subscription_windows)
+    if tuple(item.token_ids for item in normalized) != token_groups:
+        raise ValueError("subscription windows must exactly match Polymarket token groups")
+    return normalized
+
+
+async def _wait_until_or_stop(*, deadline: datetime, stop_event: asyncio.Event) -> bool:
+    """Return true when stopped, or false once the UTC deadline is reached."""
+
+    seconds = max(0.0, (deadline - datetime.now(UTC)).total_seconds())
+    if seconds == 0.0:
+        return stop_event.is_set()
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=seconds)
+    except TimeoutError:
+        return False
+    return True
+
+
+async def _collect_polymarket_during_window(
+    *,
+    token_group: tuple[str, ...],
+    window: PolymarketSubscriptionWindow,
+    stop_event: asyncio.Event,
+    on_payload: Callable[[Mapping[str, object], datetime], Awaitable[bool]],
+    on_error: Callable[[Exception], Awaitable[None]],
+) -> None:
+    """Connect for one official CLOB snapshot window while the parent feeds stay alive."""
+
+    if datetime.now(UTC) >= window.end:
+        await stop_event.wait()
+        return
+    if await _wait_until_or_stop(deadline=window.start, stop_event=stop_event):
+        return
+    if datetime.now(UTC) >= window.end:
+        await stop_event.wait()
+        return
+
+    subscription_stop = asyncio.Event()
+    worker = asyncio.create_task(
+        JsonWebSocketCollector(polymarket_market_subscription(token_group)).collect_forever(
+            stop_event=subscription_stop,
+            on_payload=on_payload,
+            on_error=on_error,
+        ),
+        name=f"polymarket-window-{'-'.join(token_group)}",
+    )
+    deadline = asyncio.create_task(
+        _wait_until_or_stop(deadline=window.end, stop_event=stop_event),
+        name=f"polymarket-window-deadline-{'-'.join(token_group)}",
+    )
+    try:
+        done, _ = await asyncio.wait({worker, deadline}, return_when=asyncio.FIRST_COMPLETED)
+        if worker in done and not subscription_stop.is_set() and not stop_event.is_set():
+            await worker
+            raise RuntimeError("scheduled Polymarket collector exited unexpectedly")
+        subscription_stop.set()
+        await worker
+        if not stop_event.is_set():
+            await stop_event.wait()
+    finally:
+        subscription_stop.set()
+        if not deadline.done():
+            deadline.cancel()
+        await asyncio.gather(worker, deadline, return_exceptions=True)
 
 
 def _rejected(reason: str) -> CollectorIngressResult:

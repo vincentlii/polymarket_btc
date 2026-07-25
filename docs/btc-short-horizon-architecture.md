@@ -72,10 +72,17 @@ enforce a hard bound across queued and in-flight raw events, and
 `flush_interval_seconds` bounds the time to the next append-only Parquet write.
 `rotation_poll_seconds` controls only how quickly a newly opened Gamma market
 is retried.
-`opening_handoff_delay_seconds` keeps the old connection alive through the
-configured opening interval after the next market starts. CLI overrides are
-available for a deliberately bounded operator run; do not lower these defaults
-without measuring resulting file counts.
+`polymarket_capture_lead_seconds` opens each isolated Up/Down CLOB connection
+before `t0`; the baseline uses 90 seconds so the venue can deliver an official
+full `book` before the first decision. Polymarket CLOB collection ends at
+`t0 + opening_handoff_delay_seconds` for each market. Binance and Chainlink
+remain continuously connected between these bounded CLOB windows, preserving
+the model lookback while removing the dominant raw-storage source.
+`opening_handoff_delay_seconds` defines the end of each market's CLOB capture
+relative to its own `t0`; the shared collector generation remains alive until
+the look-ahead market finishes that interval. CLI overrides are available for
+a deliberately bounded operator run; do not lower these defaults without
+measuring resulting evidence coverage.
 
 `collection.ingest_version` is a mandatory reader/writer boundary for collector
 semantics. A behavior change that can alter causal reconstruction must use a
@@ -110,7 +117,12 @@ prepared. Version v10 keeps those durability guarantees and isolates each
 current/look-ahead market pair on its own physical CLOB connection. A malformed
 payload, source-time regression, disconnect, or forced resubscription therefore
 invalidates only the two tokens carried by that connection; it cannot reset the
-next market's pre-open/opening book state.
+next market's pre-open/opening book state. Version v11 preserves that isolation
+but bounds each pair's physical connection to the configured pre-open/opening
+capture interval. Every bounded connection still starts from the venue's
+official initial full-book dump; window-external deltas are neither required
+nor silently treated as collected evidence. A collector restart after a capture
+window begins produces an explicitly partial session, not fabricated history.
 
 `paths.raw_data_root` is the root of the project's immutable collector store;
 it contains `raw/<source>/<instrument-directory>/...` parts and manifests. The

@@ -19,6 +19,7 @@ from btc_short_horizon.data.forward import (
     DEFAULT_OKX_SUBSCRIPTIONS,
     BtcForwardCollector,
     CollectorBufferCapacityError,
+    PolymarketSubscriptionWindow,
 )
 from btc_short_horizon.data.session_inventory import (
     SESSION_STATUS_COMPLETE,
@@ -51,6 +52,90 @@ def test_forward_collector_requires_disjoint_clob_connection_groups(tmp_path) ->
                 ("next-up",),
             ),
         )
+
+
+def test_forward_collector_requires_subscription_windows_to_match_token_groups(tmp_path) -> None:
+    start = SOURCE_TIME
+    end = start + timedelta(minutes=1)
+
+    with pytest.raises(ValueError, match="exactly match"):
+        BtcForwardCollector(
+            raw_data_root=tmp_path,
+            polymarket_token_ids=("up-token", "down-token"),
+            polymarket_token_groups=(("up-token", "down-token"),),
+            polymarket_subscription_windows=(
+                PolymarketSubscriptionWindow(
+                    token_ids=("up-token",),
+                    start=start,
+                    end=end,
+                ),
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_forward_collector_limits_clob_connection_without_stopping_btc_feeds(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(UTC)
+    clob_started = asyncio.Event()
+    clob_stopped = asyncio.Event()
+    rtds_started = asyncio.Event()
+    rtds_stopped = asyncio.Event()
+
+    async def fake_socket_loop(  # type: ignore[no-untyped-def]
+        websocket_collector,
+        *,
+        stop_event: asyncio.Event,
+        on_payload,
+        on_error=None,
+        on_connected=None,
+    ) -> None:
+        del on_payload, on_error, on_connected
+        endpoint = websocket_collector.subscription.endpoint
+        if "ws-subscriptions-clob" in endpoint:
+            clob_started.set()
+            await stop_event.wait()
+            clob_stopped.set()
+            return
+        if "ws-live-data" in endpoint:
+            rtds_started.set()
+            await stop_event.wait()
+            rtds_stopped.set()
+            return
+        await stop_event.wait()
+
+    monkeypatch.setattr(
+        "btc_short_horizon.data.forward.JsonWebSocketCollector.collect_forever",
+        fake_socket_loop,
+    )
+    collector = BtcForwardCollector(
+        raw_data_root=tmp_path,
+        polymarket_token_ids=("up-token", "down-token"),
+        polymarket_token_groups=(("up-token", "down-token"),),
+        polymarket_subscription_windows=(
+            PolymarketSubscriptionWindow(
+                token_ids=("up-token", "down-token"),
+                start=now + timedelta(seconds=2),
+                end=now + timedelta(seconds=3),
+            ),
+        ),
+    )
+    stop_event = asyncio.Event()
+    task = asyncio.create_task(collector.collect_forever(stop_event=stop_event))
+
+    await asyncio.wait_for(rtds_started.wait(), timeout=1.0)
+    await asyncio.sleep(0.03)
+    assert not clob_started.is_set()
+    await asyncio.wait_for(clob_started.wait(), timeout=3.0)
+    await asyncio.wait_for(clob_stopped.wait(), timeout=3.0)
+    assert not task.done()
+    assert not rtds_stopped.is_set()
+
+    stop_event.set()
+    await asyncio.wait_for(task, timeout=1.0)
+    assert rtds_stopped.is_set()
 
     with pytest.raises(ValueError, match="must not repeat"):
         BtcForwardCollector(
@@ -272,6 +357,12 @@ def test_forward_collector_rotates_required_clob_tokens_without_old_market_stale
     }
 
     assert clob_feeds == {"next-up", "next-down"}
+
+    collector.configure_required_polymarket_tokens(())
+    assert all(
+        item["source"] != "polymarket_clob"
+        for item in collector.feed_health(now=SOURCE_TIME, stale_after_seconds=30.0).feeds
+    )
 
 
 def test_forward_collector_persists_unique_clob_and_binance_events_by_epoch(tmp_path) -> None:  # type: ignore[no-untyped-def]

@@ -14,6 +14,7 @@ from btc_short_horizon.data import (
     read_market_catalog,
     write_market_catalog,
 )
+from btc_short_horizon.data.forward import PolymarketSubscriptionWindow
 from scripts.btc_forward_collector import (
     WindowCollectorSettings,
     _write_single_market_catalog,
@@ -48,7 +49,7 @@ def test_forward_collector_cli_builds_btc_only_collector_from_explicit_token_ids
     assert collector.flush_size == 25
     assert collector.flush_interval_seconds == 60.0
     assert collector.shutdown_flush_timeout_seconds == 30.0
-    assert collector.ingest_version == "btc-short-horizon-v10"
+    assert collector.ingest_version == "btc-short-horizon-v11"
     assert collector.polymarket_source_timestamp_regression_tolerance_seconds == 1.0
     assert collector.max_pending_events == 100_000
     assert collector.max_pending_bytes == 67_108_864
@@ -160,6 +161,7 @@ def test_follow_current_rotates_from_exact_gamma_catalog_and_persists_metadata(t
             binance_futures_market_streams=(),
             binance_futures_public_streams=("btcusdt@bookTicker",),
             rotation_poll_seconds=1.0,
+            polymarket_capture_lead_seconds=90.0,
             opening_handoff_delay_seconds=60.0,
             stop_event=outer_stop,
             gamma_client=gamma,
@@ -197,6 +199,18 @@ def test_follow_current_rotates_from_exact_gamma_catalog_and_persists_metadata(t
                 binance_depth_snapshot_retry_initial_seconds=0.25,
                 binance_depth_snapshot_retry_max_seconds=10.0,
                 polymarket_source_timestamp_regression_tolerance_seconds=1.0,
+                polymarket_subscription_windows=(
+                    PolymarketSubscriptionWindow(
+                        token_ids=("up-token", "down-token"),
+                        start=t0 - timedelta(seconds=90),
+                        end=t0 + timedelta(seconds=60),
+                    ),
+                    PolymarketSubscriptionWindow(
+                        token_ids=("next-up-token", "next-down-token"),
+                        start=market.t1 - timedelta(seconds=90),
+                        end=market.t1 + timedelta(seconds=60),
+                    ),
+                ),
                 ingest_version="test-v2",
                 epoch_id_offset=int(t0.timestamp()),
             ),

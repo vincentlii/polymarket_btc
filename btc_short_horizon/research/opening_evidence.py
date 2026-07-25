@@ -35,6 +35,7 @@ _POLYMARKET_SOURCE_REGRESSION_REQUIRED_INGEST_VERSIONS = {
     "btc-short-horizon-v8",
     "btc-short-horizon-v9",
     "btc-short-horizon-v10",
+    "btc-short-horizon-v11",
 }
 _RAW_COLUMNS = (
     "source_ts_ns",

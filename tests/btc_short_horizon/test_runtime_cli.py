@@ -8,6 +8,7 @@ import pytest
 
 from btc_short_horizon.live.runtime import RuntimeControl, RuntimeStatus, RuntimeStatusStore
 from scripts.btc_forward_runtime import (
+    _captured_market,
     _effective_market,
     parse_args as parse_forward_runtime_args,
 )
@@ -43,6 +44,32 @@ def test_forward_runtime_reports_lookahead_as_active_after_handoff() -> None:
     window = SimpleNamespace(market=current, lookahead=lookahead)
 
     assert _effective_market(window, now=handoff).slug == "lookahead"
+
+
+def test_forward_runtime_only_requires_clob_during_capture_window() -> None:
+    t0 = datetime(2026, 7, 16, 15, 0, tzinfo=UTC)
+    current = SimpleNamespace(slug="current", t0=t0)
+    lookahead = SimpleNamespace(slug="lookahead", t0=t0.replace(minute=15))
+    window = SimpleNamespace(market=current, lookahead=lookahead)
+
+    assert (
+        _captured_market(
+            window,
+            now=t0.replace(minute=14),
+            lead_seconds=90.0,
+            handoff_seconds=180.0,
+        ).slug
+        == "lookahead"
+    )
+    assert (
+        _captured_market(
+            window,
+            now=t0.replace(minute=8),
+            lead_seconds=90.0,
+            handoff_seconds=180.0,
+        )
+        is None
+    )
 
 
 def test_dashboard_cli_defaults_to_loopback_only() -> None:

@@ -6,7 +6,7 @@ import argparse
 import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from math import isfinite
 from pathlib import Path
 import signal
@@ -56,6 +56,43 @@ def _effective_market(window: _ActiveWindow, *, now: datetime) -> MarketWindow:
     return window.market
 
 
+def _captured_market(
+    window: _ActiveWindow,
+    *,
+    now: datetime,
+    lead_seconds: float,
+    handoff_seconds: float,
+) -> MarketWindow | None:
+    for market in (window.market, window.lookahead):
+        if market is None:
+            continue
+        if (
+            market.t0 - timedelta(seconds=lead_seconds)
+            <= now
+            < market.t0 + timedelta(seconds=handoff_seconds)
+        ):
+            return market
+    return None
+
+
+def _refresh_required_clob_feeds(
+    window: _ActiveWindow,
+    *,
+    now: datetime,
+    lead_seconds: float,
+    handoff_seconds: float,
+) -> MarketWindow | None:
+    market = _captured_market(
+        window,
+        now=now,
+        lead_seconds=lead_seconds,
+        handoff_seconds=handoff_seconds,
+    )
+    tokens = () if market is None else (market.up_token_id, market.down_token_id)
+    window.collector.configure_required_polymarket_tokens(tokens)
+    return market
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -70,6 +107,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--feed-stale-after-seconds", type=float, default=30.0)
     parser.add_argument("--feed-startup-grace-seconds", type=float, default=60.0)
     parser.add_argument("--rotation-poll-seconds", type=float)
+    parser.add_argument("--polymarket-capture-lead-seconds", type=float)
     parser.add_argument("--opening-handoff-delay-seconds", type=float)
     parser.add_argument("--flush-size", type=int)
     parser.add_argument("--flush-interval-seconds", type=float)
@@ -102,6 +140,16 @@ async def run_async(args: argparse.Namespace) -> None:
     binance_futures_public_streams = tuple(
         args.binance_futures_public_stream or DEFAULT_BINANCE_FUTURES_PUBLIC_STREAMS
     )
+    polymarket_capture_lead_seconds = (
+        args.polymarket_capture_lead_seconds
+        if args.polymarket_capture_lead_seconds is not None
+        else project.collection.polymarket_capture_lead_seconds
+    )
+    opening_handoff_delay_seconds = (
+        args.opening_handoff_delay_seconds
+        if args.opening_handoff_delay_seconds is not None
+        else project.collection.opening_handoff_delay_seconds
+    )
     identity = build_runtime_identity(
         config_path=args.config,
         ingest_version=project.collection.ingest_version,
@@ -130,13 +178,24 @@ async def run_async(args: argparse.Namespace) -> None:
             binance_futures_public_streams=binance_futures_public_streams,
         )
         active = _ActiveWindow(market=market, lookahead=lookahead, collector=collector)
+        _refresh_required_clob_feeds(
+            active,
+            now=datetime.now(UTC),
+            lead_seconds=polymarket_capture_lead_seconds,
+            handoff_seconds=opening_handoff_delay_seconds,
+        )
 
     def feed_health() -> tuple[bool, str]:
         if (datetime.now(UTC) - started_at).total_seconds() <= args.feed_startup_grace_seconds:
             return True, "feed_startup_grace"
         if active is None:
             return False, "market_discovery_silent"
-        _refresh_required_clob_feeds(active)
+        _refresh_required_clob_feeds(
+            active,
+            now=datetime.now(UTC),
+            lead_seconds=polymarket_capture_lead_seconds,
+            handoff_seconds=opening_handoff_delay_seconds,
+        )
         health = active.collector.feed_health(
             now=datetime.now(UTC),
             stale_after_seconds=args.feed_stale_after_seconds,
@@ -158,18 +217,26 @@ async def run_async(args: argparse.Namespace) -> None:
         if active is None:
             details["feeds"] = []
             return details
-        _refresh_required_clob_feeds(active)
+        status_now = datetime.now(UTC)
+        captured_market = _refresh_required_clob_feeds(
+            active,
+            now=status_now,
+            lead_seconds=polymarket_capture_lead_seconds,
+            handoff_seconds=opening_handoff_delay_seconds,
+        )
         health = active.collector.feed_health(
             now=datetime.now(UTC),
             stale_after_seconds=args.feed_stale_after_seconds,
         )
         quality = tuple(active.collector.quality_stats.values())
         buffer = active.collector.buffer_stats
-        effective_market = _effective_market(active, now=datetime.now(UTC))
+        effective_market = _effective_market(active, now=status_now)
         details.update(
             {
                 "active_market": effective_market.slug,
                 "lookahead_market": (None if active.lookahead is None else active.lookahead.slug),
+                "clob_capture_active": captured_market is not None,
+                "clob_capture_market": (None if captured_market is None else captured_market.slug),
                 "collector_session_id": active.collector.collector_session_id,
                 "pending_events": buffer.pending_events,
                 "pending_bytes": buffer.pending_bytes,
@@ -242,19 +309,10 @@ async def run_async(args: argparse.Namespace) -> None:
                 if args.rotation_poll_seconds is not None
                 else project.collection.rotation_poll_seconds
             ),
-            opening_handoff_delay_seconds=(
-                args.opening_handoff_delay_seconds
-                if args.opening_handoff_delay_seconds is not None
-                else project.collection.opening_handoff_delay_seconds
-            ),
+            polymarket_capture_lead_seconds=polymarket_capture_lead_seconds,
+            opening_handoff_delay_seconds=opening_handoff_delay_seconds,
             stop_event=stop_event,
             on_market_active=on_market_active,
-        )
-
-    def _refresh_required_clob_feeds(window: _ActiveWindow) -> None:
-        market = _effective_market(window, now=datetime.now(UTC))
-        window.collector.configure_required_polymarket_tokens(
-            (market.up_token_id, market.down_token_id)
         )
 
     lease = CollectorStorageLease(

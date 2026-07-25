@@ -43,6 +43,7 @@ class ForwardCollectionConfig:
     max_pending_events: int
     max_pending_bytes: int
     rotation_poll_seconds: float
+    polymarket_capture_lead_seconds: float
     opening_handoff_delay_seconds: float
     binance_spot_depth_snapshot_limit: int
     binance_futures_depth_snapshot_limit: int
@@ -248,6 +249,7 @@ def _forward_collection(section: Mapping[str, object]) -> ForwardCollectionConfi
         max_pending_events=_positive_int(section, "max_pending_events"),
         max_pending_bytes=_positive_int(section, "max_pending_bytes"),
         rotation_poll_seconds=_positive_float(section, "rotation_poll_seconds"),
+        polymarket_capture_lead_seconds=_positive_float(section, "polymarket_capture_lead_seconds"),
         opening_handoff_delay_seconds=_positive_float(section, "opening_handoff_delay_seconds"),
         binance_spot_depth_snapshot_limit=_positive_int(
             section,
