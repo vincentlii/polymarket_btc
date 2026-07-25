@@ -123,6 +123,10 @@ capture interval. Every bounded connection still starts from the venue's
 official initial full-book dump; window-external deltas are neither required
 nor silently treated as collected evidence. A collector restart after a capture
 window begins produces an explicitly partial session, not fabricated history.
+Post-window Shadow records an immutable `skip.json` for an eligible window that
+has no causal observations in the selected ingest epoch. That terminal data-
+quality outcome advances the scheduler without pretending a prediction ran;
+all other processing exceptions remain unhealthy and retryable.
 
 `paths.raw_data_root` is the root of the project's immutable collector store;
 it contains `raw/<source>/<instrument-directory>/...` parts and manifests. The

@@ -29,6 +29,9 @@ and reporting plumbing without importing archived BTC strategy logic.
   Binance and Chainlink remain continuous, and planned CLOB sleep is excluded
   from required-feed health. This targets the measured dominant disk source
   without weakening the strategy's complete 3-180s opening evidence window.
+  Shadow now records a terminal, explicit skip for pre-epoch windows with no
+  causal observations instead of retrying them forever. Its container health
+  freshness threshold covers the configured 60-second scheduler cadence.
 - Evidence boundary: no profitability or deployability claim exists until real
   data passes the documented holdout and the complete queue-enabled P99
   trade-volume/timestamp-order robustness grid.

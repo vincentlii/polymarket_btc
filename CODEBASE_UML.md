@@ -1,8 +1,8 @@
 # Codebase UML Inventory
 
 This file is generated from Python AST metadata and excludes `tests/` plus git-ignored private strategy/research directories.
-Generated: 2026-07-25T17:56:11+00:00
-Modules: 210 | Classes: 408 | Functions/methods: 2945
+Generated: 2026-07-25T18:23:24+00:00
+Modules: 210 | Classes: 409 | Functions/methods: 2945
 
 ## Backtesting Data Flow
 
@@ -1319,7 +1319,7 @@ flowchart TD
 ### `btc_short_horizon/live/shadow_scheduler.py`
 - Imports: `__future__, btc_short_horizon, dataclasses, datetime, math, pathlib`
 - Function L27: `scan_shadow_windows(*, catalog_directory: Path, output_root: Path, family: BtcMarketFamily, model_sha256: str, now: datetime, handoff_delay_seconds: float, flush_interval_seconds: float, lookback: timedelta) -> ShadowWindowScan`
-- Function L93: `_as_utc(value: datetime) -> datetime`
+- Function L95: `_as_utc(value: datetime) -> datetime`
 - Class L14: `ShadowWindow`
 - Class L21: `ShadowWindowScan`
 
@@ -3596,22 +3596,23 @@ flowchart TD
 
 ### `scripts/btc_opening_proxy_shadow.py`
 - Imports: `__future__, argparse, asyncio, btc_short_horizon, collections, dataclasses, datetime, json, pathlib, pyarrow`
-- Function L61: `parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace`
-- Function L83: `build_shadow_predictions(*, model: FittedDirectionModel, metadata: ModelArtifactMetadata, market: MarketWindow, klines: BinanceKlineHistory, observations: Sequence[OpeningMarketObservation], availability_delay: timedelta = timedelta(seconds=1)) -> tuple[tuple[OpeningMispricingPrediction, ...], tuple[BtcOpeningMispricingSignal, ...]]`
-- Function L113: `shadow_bootstrap_window(*, market_start: datetime, last_decision_time: datetime, max_lookback_seconds: int, availability_delay: timedelta) -> tuple[datetime, datetime]`
-- Function L132: `async run_async(args: argparse.Namespace) -> dict[str, object]`
-- Function L304: `_load_summary(load: ForwardBookEventLoad) -> dict[str, int]`
-- Function L314: `_shadow_regime_coverage(*, market: MarketWindow, decisions: Sequence[int], observations: Sequence[OpeningMarketObservation], predictions: Sequence[OpeningMispricingPrediction], stale_after_seconds: float) -> dict[str, dict[str, int]]`
-- Function L360: `_datetime(value: str) -> datetime`
-- Function L370: `_ns(value: datetime) -> int`
-- Function L374: `main(argv: Sequence[str] | None = None) -> int`
+- Function L67: `parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace`
+- Function L89: `build_shadow_predictions(*, model: FittedDirectionModel, metadata: ModelArtifactMetadata, market: MarketWindow, klines: BinanceKlineHistory, observations: Sequence[OpeningMarketObservation], availability_delay: timedelta = timedelta(seconds=1)) -> tuple[tuple[OpeningMispricingPrediction, ...], tuple[BtcOpeningMispricingSignal, ...]]`
+- Function L119: `shadow_bootstrap_window(*, market_start: datetime, last_decision_time: datetime, max_lookback_seconds: int, availability_delay: timedelta) -> tuple[datetime, datetime]`
+- Function L138: `async run_async(args: argparse.Namespace) -> dict[str, object]`
+- Function L312: `_load_summary(load: ForwardBookEventLoad) -> dict[str, int]`
+- Function L322: `_shadow_regime_coverage(*, market: MarketWindow, decisions: Sequence[int], observations: Sequence[OpeningMarketObservation], predictions: Sequence[OpeningMispricingPrediction], stale_after_seconds: float) -> dict[str, dict[str, int]]`
+- Function L368: `_datetime(value: str) -> datetime`
+- Function L378: `_ns(value: datetime) -> int`
+- Function L382: `main(argv: Sequence[str] | None = None) -> int`
+- Class L58: `ShadowEvidenceUnavailableError(ValueError)`
 
 ### `scripts/btc_opening_shadow_scheduler.py`
 - Imports: `__future__, argparse, asyncio, btc_short_horizon, collections, datetime, math, pathlib, scripts, signal`
-- Function L39: `parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace`
-- Function L58: `async run_async(args: argparse.Namespace) -> None`
-- Function L320: `_write_status(*, store: RuntimeStatusStore, started_at: datetime, state: str, healthy: bool, details: dict[str, object]) -> None`
-- Function L341: `main(argv: Sequence[str] | None = None) -> int`
+- Function L43: `parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace`
+- Function L62: `async run_async(args: argparse.Namespace) -> None`
+- Function L363: `_write_status(*, store: RuntimeStatusStore, started_at: datetime, state: str, healthy: bool, details: dict[str, object]) -> None`
+- Function L384: `main(argv: Sequence[str] | None = None) -> int`
 
 ### `scripts/btc_pmxt_coverage_audit.py`
 - Imports: `__future__, argparse, asyncio, btc_short_horizon, collections, datetime, json, pandas, pathlib, prediction_market_extensions`

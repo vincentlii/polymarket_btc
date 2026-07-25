@@ -18,6 +18,7 @@ else:
 ensure_repo_root(__file__)
 
 from btc_short_horizon.config import load_btc_project_config  # noqa: E402
+from btc_short_horizon.data.storage import write_atomic_json  # noqa: E402
 from btc_short_horizon.live.runtime import (  # noqa: E402
     RuntimeControl,
     RuntimeStatus,
@@ -32,7 +33,10 @@ from btc_short_horizon.research.opening_proxy import (  # noqa: E402
     opening_proxy_protocol,
     validate_opening_proxy_protocol,
 )
-from scripts.btc_opening_proxy_shadow import run_async as run_shadow_pass  # noqa: E402
+from scripts.btc_opening_proxy_shadow import (  # noqa: E402
+    ShadowEvidenceUnavailableError,
+    run_async as run_shadow_pass,
+)
 from scripts._runtime_helpers import resolve_runtime_root  # noqa: E402
 
 
@@ -139,7 +143,9 @@ async def run_async(args: argparse.Namespace) -> None:
             "model_id": metadata.model_id,
             "model_sha256": metadata.model_sha256,
             "completed_windows": 0,
+            "skipped_windows": 0,
             "last_shadow": None,
+            "last_skip": None,
             "phase": "initialized",
             "study_type": "post_window_causal_shadow",
         },
@@ -155,7 +161,9 @@ async def run_async(args: argparse.Namespace) -> None:
         else:
             registered_signals.append(item)
     completed = 0
+    skipped = 0
     last_shadow: dict[str, object] | None = None
+    last_skip: dict[str, object] | None = None
     last_error: str | None = None
     try:
         while not stop_event.is_set():
@@ -171,7 +179,9 @@ async def run_async(args: argparse.Namespace) -> None:
                         "model_id": metadata.model_id,
                         "model_sha256": metadata.model_sha256,
                         "completed_windows": completed,
+                        "skipped_windows": skipped,
                         "last_shadow": last_shadow,
+                        "last_skip": last_skip,
                         "stop_reason": stop_request.reason,
                     },
                 )
@@ -198,8 +208,10 @@ async def run_async(args: argparse.Namespace) -> None:
                         "model_id": metadata.model_id,
                         "model_sha256": metadata.model_sha256,
                         "completed_windows": completed,
+                        "skipped_windows": skipped,
                         "ready_windows": len(scan.ready),
                         "last_shadow": last_shadow,
+                        "last_skip": last_skip,
                         "last_error": last_error,
                         "phase": "processing",
                         "active_market": window.market.slug,
@@ -227,6 +239,30 @@ async def run_async(args: argparse.Namespace) -> None:
                 )
                 try:
                     result = await run_shadow_pass(shadow_args)
+                except ShadowEvidenceUnavailableError as exc:
+                    skip = {
+                        "market_slug": window.market.slug,
+                        "output_directory": str(window.output_directory),
+                        "reason": "no_causal_observations",
+                        "error": str(exc),
+                    }
+                    write_atomic_json(
+                        window.output_directory / "skip.json",
+                        {
+                            "schema_version": "btc-shadow-skip-v1",
+                            "study_type": "post_window_causal_shadow",
+                            "market_slug": window.market.slug,
+                            "model_sha256": metadata.model_sha256,
+                            "ingest_version": project.collection.ingest_version,
+                            "reason": "no_causal_observations",
+                            "error": str(exc),
+                            "recorded_at": datetime.now(UTC).isoformat(),
+                        },
+                    )
+                    skipped += 1
+                    last_skip = skip
+                    last_error = None
+                    continue
                 except Exception as exc:
                     healthy = False
                     last_error = f"{window.market.slug}: {type(exc).__name__}: {exc}"
@@ -252,10 +288,12 @@ async def run_async(args: argparse.Namespace) -> None:
                     "model_id": metadata.model_id,
                     "model_sha256": metadata.model_sha256,
                     "completed_windows": completed,
+                    "skipped_windows": skipped,
                     "ready_windows": len(scan.ready),
                     "incomplete_outputs": [str(path) for path in scan.incomplete_outputs],
                     "catalog_errors": list(scan.catalog_errors),
                     "last_shadow": last_shadow,
+                    "last_skip": last_skip,
                     "last_error": last_error,
                     "phase": "idle",
                     "active_market": None,
@@ -276,7 +314,9 @@ async def run_async(args: argparse.Namespace) -> None:
                 "model_id": metadata.model_id,
                 "model_sha256": metadata.model_sha256,
                 "completed_windows": completed,
+                "skipped_windows": skipped,
                 "last_shadow": last_shadow,
+                "last_skip": last_skip,
                 "stop_reason": "signal",
             },
         )
@@ -291,7 +331,9 @@ async def run_async(args: argparse.Namespace) -> None:
                 "model_id": metadata.model_id,
                 "model_sha256": metadata.model_sha256,
                 "completed_windows": completed,
+                "skipped_windows": skipped,
                 "last_shadow": last_shadow,
+                "last_skip": last_skip,
                 "stop_reason": "task_cancelled",
             },
         )
@@ -307,7 +349,9 @@ async def run_async(args: argparse.Namespace) -> None:
                 "model_id": metadata.model_id,
                 "model_sha256": metadata.model_sha256,
                 "completed_windows": completed,
+                "skipped_windows": skipped,
                 "last_shadow": last_shadow,
+                "last_skip": last_skip,
                 "error": f"{type(exc).__name__}: {exc}",
             },
         )

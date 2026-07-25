@@ -161,6 +161,8 @@ services:
         - /app/output/btc_short_horizon/runtime
         - --service
         - opening_shadow
+        - --max-age-seconds
+        - "90"
       interval: 30s
       timeout: 5s
       retries: 3

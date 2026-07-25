@@ -37,6 +37,9 @@ def test_vps_compose_pins_identity_and_bounds_container_logs() -> None:
     assert dashboard["depends_on"]["forward_collector"]["condition"] == "service_healthy"
     assert "/healthz" in dashboard["healthcheck"]["test"][-1]
 
+    shadow_healthcheck = compose["services"]["opening_shadow"]["healthcheck"]["test"]
+    assert shadow_healthcheck[-2:] == ["--max-age-seconds", "90"]
+
 
 def test_docker_context_keeps_btc_data_source_package() -> None:
     patterns = Path(".dockerignore").read_text(encoding="utf-8").splitlines()

@@ -58,6 +58,10 @@ from btc_short_horizon.research.opening_runtime import (  # noqa: E402
 )
 
 
+class ShadowEvidenceUnavailableError(ValueError):
+    """Raised when a closed window has no causal CLOB evidence in the selected epoch."""
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -204,7 +208,9 @@ async def run_async(args: argparse.Namespace) -> dict[str, object]:
         decision_ts_ns=decisions,
     )
     if not observations:
-        raise ValueError("forward CLOB data produced no causal shadow observations")
+        raise ShadowEvidenceUnavailableError(
+            "forward CLOB data produced no causal shadow observations"
+        )
 
     availability_delay = timedelta(seconds=args.availability_delay_seconds)
     required_start, required_end = shadow_bootstrap_window(

@@ -166,6 +166,7 @@ Polymarket User channel 官方分别定义 placement/update/cancellation 与 tra
 展示可验证事实，不合成不透明分数：
 
 - 24h expected / observed / eligible market windows；
+- 因 ingest epoch 切换或缺少因果观察而跳过的 Shadow window 数量与明确原因；
 - 36 个 opening decision 的完整覆盖率；
 - stale、gap、duplicate、out-of-order、invalid payload 数；
 - 每个 required source 的最新 `available_ts`；
