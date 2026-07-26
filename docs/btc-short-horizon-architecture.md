@@ -630,9 +630,13 @@ Its matching is deliberately pessimistic and explicitly heuristic: P99
 insert/cancel latency, the full visible same-side L2 queue ahead, and only 50%
 of seller-initiated public trade volume can consume that queue and fill a
 passive BUY. A price touch alone never fills. Public `/clob-markets/{condition}`
-metadata pins token IDs, tick, minimum size, neg-risk and zero maker fee before
-the market is activated. The Paper gateway cannot send network requests and no
-credential is loaded.
+metadata pins token IDs, tick, minimum size and neg-risk before the market is
+activated. Its `fd` object must explicitly declare `to=true`; under the current
+CLOB V2 contract that means only takers pay, so the Paper maker fee is fixed at
+zero. Do not treat the separate `mbf` field as a maker-charge gate: live crypto
+markets can report `mbf=1000` while `fd.to=true`, and the official fee contract
+still states that makers are never charged. The Paper gateway cannot send
+network requests and no credential is loaded.
 
 `paper/ledger.json` is a separate atomic simulated ledger. It persists planned
 notional, partial/cancel-race fills, settlement and virtual cash/equity. The

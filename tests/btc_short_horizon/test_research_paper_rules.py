@@ -38,10 +38,9 @@ async def test_public_paper_rules_use_one_clob_snapshot_and_require_taker_only_f
                 "t": [{"t": "1", "o": "Up"}, {"t": "2", "o": "Down"}],
                 "mos": 5,
                 "mts": 0.01,
-                "mbf": 0,
-                "tbf": 30,
-                "nr": False,
-                "fd": {"r": 0.03, "e": 2, "to": True},
+                "mbf": 1000,
+                "nr": None,
+                "fd": {"r": 0.07, "e": 1, "to": True},
             },
         )
 
@@ -55,7 +54,7 @@ async def test_public_paper_rules_use_one_clob_snapshot_and_require_taker_only_f
 
 
 @pytest.mark.asyncio
-async def test_public_paper_rules_fail_closed_if_makers_can_be_charged() -> None:
+async def test_public_paper_rules_fail_closed_if_fee_schedule_is_not_taker_only() -> None:
     async def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
@@ -70,7 +69,7 @@ async def test_public_paper_rules_fail_closed_if_makers_can_be_charged() -> None
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        with pytest.raises(ValueError, match="maker fee"):
+        with pytest.raises(ValueError, match="taker-only"):
             await PublicPaperRulesClient().fetch(_market(), client=client)
 
 

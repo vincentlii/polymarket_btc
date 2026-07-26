@@ -78,12 +78,15 @@ class PublicPaperRulesClient:
         fee_details = payload.get("fd")
         if not isinstance(fee_details, Mapping):
             raise ValueError("CLOB market rules require fee details")
-        maker_fee = _nonnegative_integer(payload.get("mbf"), "maker base fee")
-        if maker_fee != 0 or fee_details.get("to") is not True:
-            raise ValueError("Research Paper requires the verified zero maker fee schedule")
+        _nonnegative_number(fee_details.get("r"), "fee rate")
+        _nonnegative_integer(fee_details.get("e"), "fee exponent")
+        if fee_details.get("to") is not True:
+            raise ValueError("Research Paper requires a verified taker-only fee schedule")
         tick_size = _decimal_text(payload.get("mts"), "minimum tick size")
         minimum_order_size = _positive_number(payload.get("mos"), "minimum order size")
         neg_risk = payload.get("nr", False)
+        if neg_risk is None:
+            neg_risk = False
         if not isinstance(neg_risk, bool):
             raise ValueError("CLOB neg risk must be bool")
         observed_at_ns = int(datetime.now(UTC).timestamp() * 1_000_000_000)
@@ -94,7 +97,7 @@ class PublicPaperRulesClient:
                 tick_size=tick_size,
                 minimum_order_size=minimum_order_size,
                 neg_risk=neg_risk,
-                maker_fee_rate_bps=maker_fee,
+                maker_fee_rate_bps=0,
                 observed_at_ns=observed_at_ns,
             )
             for token_id in expected
@@ -416,6 +419,16 @@ def _positive_number(value: object, name: str) -> float:
         raise ValueError(f"{name} must be numeric") from exc
     if not isfinite(result) or result <= 0.0:
         raise ValueError(f"{name} must be finite and > 0")
+    return result
+
+
+def _nonnegative_number(value: object, name: str) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be numeric") from exc
+    if not isfinite(result) or result < 0.0 or isinstance(value, bool):
+        raise ValueError(f"{name} must be finite and non-negative")
     return result
 
 

@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import numpy as np
+
 from btc_short_horizon.data import BTC_15M_MARKET_FAMILY, MarketOutcome, MarketWindow
 from btc_short_horizon.data.collector import RawCollectorEvent
 from btc_short_horizon.data.contracts import TimedMarketEvent
 from btc_short_horizon.live.paper_execution import PaperExecutionConfig, PaperMarketRules
 from btc_short_horizon.live.research_paper import PaperLedgerStore, ResearchPaperEngine
 from btc_short_horizon.models import OpeningMispricingPrediction
+from btc_short_horizon.research.binance_history import BinanceKlineHistory
 from btc_short_horizon.strategy import LayerStructure, MakerStrategyConfig
 
 
@@ -65,6 +68,41 @@ def _book(token: str, *, bid: str, ask: str, second: int) -> RawCollectorEvent:
             "hash": f"book-{token}-{second}",
             "bids": [{"price": bid, "size": "100"}],
             "asks": [{"price": ask, "size": "100"}],
+        },
+        collector_session_id="paper-test",
+        epoch_id=1,
+    )
+
+
+def _closed_binance_kline(*, second: int, close: str = "64754.55000000") -> RawCollectorEvent:
+    available = T0 + timedelta(seconds=second, milliseconds=50)
+    open_ms = int((T0 + timedelta(seconds=second)).timestamp() * 1_000)
+    return RawCollectorEvent(
+        timing=TimedMarketEvent(
+            source_ts=available,
+            collector_receive_ts=available,
+            available_ts=available,
+            sequence_or_hash=f"kline:{open_ms}",
+            source="binance_spot",
+            instrument="BTCUSDT",
+            schema_version="binance-kline-1s-v1",
+            ingest_version="test-v1",
+        ),
+        event_type="kline_1s",
+        payload={
+            "stream": "btcusdt@kline_1s",
+            "data": {
+                "e": "kline",
+                "s": "BTCUSDT",
+                "k": {
+                    "t": open_ms,
+                    "c": close,
+                    "v": "0.00443000",
+                    "q": "286.86262030",
+                    "V": "0.00081000",
+                    "x": True,
+                },
+            },
         },
         collector_session_id="paper-test",
         epoch_id=1,
@@ -143,6 +181,23 @@ def test_research_paper_requires_two_live_cadence_signals_and_one_cycle(tmp_path
     assert third == "continue"
     assert len(engine.records) == 1
     assert engine.records[0].status == "working"
+
+
+def test_research_paper_accepts_binance_decimal_strings_from_admitted_wire_event(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.kline_history = BinanceKlineHistory(
+        open_ts_ns=np.array([T0_NS - 1_000_000_000], dtype=np.int64),
+        close=np.array([64750.0]),
+        volume=np.array([0.0]),
+        quote_volume=np.array([0.0]),
+        taker_buy_volume=np.array([0.0]),
+        interval_seconds=1,
+    )
+
+    engine.on_event(_closed_binance_kline(second=0))
+
+    assert engine.kline_history.close.tolist() == [64750.0, 64754.55]
+    assert engine.kline_history.volume[-1] == 0.00443
 
 
 def test_research_paper_reevaluates_working_order_and_cancels_probability_drop(tmp_path) -> None:

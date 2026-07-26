@@ -682,10 +682,10 @@ class ResearchPaperEngine:
             return
         values = (
             _integer(kline.get("t"), "kline open time") * 1_000_000,
-            _number(kline.get("c"), "kline close"),
-            _number(kline.get("v"), "kline volume"),
-            _number(kline.get("q"), "kline quote volume"),
-            _number(kline.get("V"), "kline taker buy volume"),
+            _wire_number(kline.get("c"), "kline close"),
+            _wire_number(kline.get("v"), "kline volume"),
+            _wire_number(kline.get("q"), "kline quote volume"),
+            _wire_number(kline.get("V"), "kline taker buy volume"),
         )
         if self.kline_history is None:
             return
@@ -740,6 +740,18 @@ def _number(value: object, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, int | float) or not isfinite(value):
         raise ValueError(f"{name} must be a finite number")
     return float(value)
+
+
+def _wire_number(value: object, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        raise ValueError(f"{name} must be a finite number")
+    try:
+        result = float(value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a finite number") from exc
+    if not isfinite(result):
+        raise ValueError(f"{name} must be a finite number")
+    return result
 
 
 def _optional_number(value: object, name: str) -> float | None:

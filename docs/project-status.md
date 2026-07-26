@@ -281,6 +281,13 @@ the input/output contract and operational commands.
 
 ## Recently Fixed
 
+- [x] The first Research Paper VPS start exposed two real-wire mismatches that
+  idealized fixtures had missed. Collector-admitted Binance kline decimal
+  fields are now parsed from their documented string representation, and CLOB
+  V2 fee admission now follows `fd.to=true` plus validated rate/exponent rather
+  than rejecting a nonzero `mbf`; `nr=null` is normalized to the documented
+  false/default state. Captured payload-shaped regression tests keep all three
+  boundaries fail-closed without weakening maker-fee assumptions.
 - [x] BTC forward storage v9 now records every immutable part in a transactional
   session inventory, reconciles durable prepared pairs after interruption,
   excludes concurrent writers with one storage lease, detects adjacent
