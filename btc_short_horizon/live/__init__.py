@@ -71,6 +71,24 @@ from btc_short_horizon.live.operations import (
     LiveOperationsController,
     run_live_operations_runtime,
 )
+from btc_short_horizon.live.paper_execution import (
+    PaperExecutionConfig,
+    PaperExecutionSimulator,
+    PaperMarketRules,
+    PaperOrderLayerState,
+    PaperPlacement,
+)
+from btc_short_horizon.live.paper_runtime import (
+    ModelPaperPredictor,
+    PublicPaperRulesClient,
+    ResearchPaperRuntime,
+)
+from btc_short_horizon.live.research_paper import (
+    PaperLedgerSnapshot,
+    PaperLedgerStore,
+    PaperTradeRecord,
+    ResearchPaperEngine,
+)
 from btc_short_horizon.live.risk import (
     AccountSnapshot,
     RiskDecision,
@@ -191,13 +209,25 @@ __all__ = [
     "LiveOrderStatus",
     "LiveTrade",
     "LiveTradeStatus",
+    "ModelPaperPredictor",
+    "PaperExecutionConfig",
+    "PaperExecutionSimulator",
+    "PaperLedgerSnapshot",
+    "PaperLedgerStore",
+    "PaperMarketRules",
     "PaperOrderGateway",
+    "PaperOrderLayerState",
+    "PaperPlacement",
+    "PaperTradeRecord",
     "PreparedPostOnlyOrder",
     "PerformanceSnapshot",
     "PreflightCheck",
     "PreflightReportStore",
     "PreflightWriteReceipt",
     "PyClobV2Gateway",
+    "PublicPaperRulesClient",
+    "ResearchPaperEngine",
+    "ResearchPaperRuntime",
     "RiskDecision",
     "RiskReservations",
     "RecoveredOrderBinding",

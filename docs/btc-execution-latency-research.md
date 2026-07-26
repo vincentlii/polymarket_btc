@@ -10,6 +10,12 @@
 
 当前策略是 15 分钟 BTC 市场的 post-only maker，决策 cadence 为 5 秒，并要求连续两个信号。它不是微秒级 taker 抢单策略。更近的部署区域、已建立的连接、无数据 gap、正确的队列/撤单状态和稳定的 P99，通常比将 Python 局部代码再缩短 1 ms 更重要；但 maker 入队和撤单竞争仍受延迟影响，因此必须测量而不是忽略。
 
+当前 `Research Paper` 不执行签名、HMAC 或 HTTP POST，也不声称测量真实 submit
+latency。它固定注入正式场景中的 P99 `base + insert/cancel` 延迟，并在这段时间内
+执行 post-only crossing、queue 与 cancel-race 模拟。这样可以先验证策略状态机和
+数据链路；真实签名、连接复用、venue ack 与 User WebSocket 时延只能在最小 Canary
+中测量，不能从 Paper 看板倒推出。
+
 ## 原帖逐项核对
 
 | 原帖主张 | 判断 | 当前官方事实与本项目处理 |

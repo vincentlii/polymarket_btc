@@ -155,6 +155,21 @@ def load_btc_project_config(path: Path) -> BtcProjectConfig:
     if len({scenario.name for scenario in scenarios}) != len(scenarios):
         raise ValueError("execution scenario names must be unique")
     _validate_formal_scenario_grid(scenarios)
+    maximum_cancel_race_seconds = max(
+        (
+            scenario.execution.latency_model.base_latency_ms
+            + scenario.execution.latency_model.cancel_latency_ms
+        )
+        / 1_000
+        for scenario in scenarios
+    )
+    required_handoff_seconds = (
+        maker.entry_end_seconds + maker.max_work_seconds + maximum_cancel_race_seconds
+    )
+    if collection.opening_handoff_delay_seconds < required_handoff_seconds:
+        raise ValueError(
+            "opening handoff must cover the entry window, order lifecycle, and cancel latency"
+        )
     return BtcProjectConfig(
         paths=paths,
         primary_family=primary_family,

@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 import json
 from math import isfinite
 from pathlib import Path
+from queue import Empty, Full, Queue
 from threading import Lock, RLock, Thread
 from time import monotonic_ns
 from typing import Any
@@ -153,6 +154,48 @@ class CollectorBufferStats:
 
 class CollectorBufferCapacityError(RuntimeError):
     """Raised before admission when the bounded raw-event buffer is full."""
+
+
+class AdmittedEventBuffer:
+    """Bounded, non-blocking copy of collector-admitted events for research consumers.
+
+    Overflow is sticky and never backpressures or interrupts the durable raw collector.
+    A consumer must fail closed when ``overflowed`` becomes true.
+    """
+
+    def __init__(self, *, max_events: int = 10_000) -> None:
+        if isinstance(max_events, bool) or not isinstance(max_events, int) or max_events < 1:
+            raise ValueError("max_events must be a positive integer")
+        self._queue: Queue[RawCollectorEvent] = Queue(maxsize=max_events)
+        self._overflowed = False
+        self._dropped_events = 0
+
+    @property
+    def pending_events(self) -> int:
+        return self._queue.qsize()
+
+    @property
+    def overflowed(self) -> bool:
+        return self._overflowed
+
+    @property
+    def dropped_events(self) -> int:
+        return self._dropped_events
+
+    def publish(self, event: RawCollectorEvent) -> None:
+        if not isinstance(event, RawCollectorEvent):
+            raise TypeError("event must be a RawCollectorEvent")
+        try:
+            self._queue.put_nowait(event)
+        except Full:
+            self._overflowed = True
+            self._dropped_events += 1
+
+    def get_nowait(self) -> RawCollectorEvent:
+        try:
+            return self._queue.get_nowait()
+        except Empty:
+            raise
 
 
 class _FeedResubscribeRequired(RuntimeError):
@@ -369,6 +412,19 @@ class BtcForwardCollector:
         self._next_admission_sequence = 0
         self._lock = RLock()
         self._flush_lock = Lock()
+        self._admitted_event_buffer: AdmittedEventBuffer | None = None
+
+    def subscribe_admitted_events(self, buffer: AdmittedEventBuffer) -> None:
+        """Attach one non-blocking research subscriber before collection starts."""
+
+        if not isinstance(buffer, AdmittedEventBuffer):
+            raise TypeError("buffer must be an AdmittedEventBuffer")
+        with self._lock:
+            if self._admitted_event_buffer is not None:
+                raise RuntimeError("an admitted-event subscriber is already attached")
+            if self._next_admission_sequence != 0:
+                raise RuntimeError("subscribe before the collector admits its first event")
+            self._admitted_event_buffer = buffer
 
     @property
     def pending_event_count(self) -> int:
@@ -1681,6 +1737,7 @@ class BtcForwardCollector:
         normalized_okx_subscriptions = tuple(dict(item) for item in okx_subscriptions)
         resync_tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
         resync_failures: asyncio.Queue[Exception] = asyncio.Queue()
+        okx_metadata_task: asyncio.Task[None] | None = None
         flush_requested = asyncio.Event()
         capacity_available = asyncio.Event()
         capacity_available.set()
@@ -1882,6 +1939,8 @@ class BtcForwardCollector:
                 return receive
 
             async def on_okx(payload: Mapping[str, object], received: datetime) -> bool:
+                if okx_metadata_task is not None:
+                    await asyncio.shield(okx_metadata_task)
                 async with ingress_lock:
                     result = await admit_with_backpressure(
                         lambda: self.handle_okx(
@@ -1989,18 +2048,28 @@ class BtcForwardCollector:
 
                     await admit_with_backpressure(record_error)
 
-            if self.okx_swap_contract_value is None and any(
-                item.get("instId") == "BTC-USDT-SWAP" for item in normalized_okx_subscriptions
-            ):
+            async def initialize_okx_metadata() -> None:
                 try:
                     await self.refresh_okx_swap_contract_value(client=snapshot_client)
                 except (httpx.HTTPError, ValueError) as exc:
-                    self.mark_gap(
-                        source="okx_swap",
-                        instrument="BTC-USDT-SWAP",
-                        stream_id=_TRADE_STREAM,
-                        reason=f"contract_metadata_{type(exc).__name__}",
-                    )
+                    error_name = type(exc).__name__
+                    async with ingress_lock:
+                        await admit_with_backpressure(
+                            lambda: self.mark_gap(
+                                source="okx_swap",
+                                instrument="BTC-USDT-SWAP",
+                                stream_id=_TRADE_STREAM,
+                                reason=f"contract_metadata_{error_name}",
+                            )
+                        )
+
+            if self.okx_swap_contract_value is None and any(
+                item.get("instId") == "BTC-USDT-SWAP" for item in normalized_okx_subscriptions
+            ):
+                okx_metadata_task = asyncio.create_task(
+                    initialize_okx_metadata(),
+                    name="btc-okx-contract-metadata",
+                )
 
             collectors = [
                 JsonWebSocketCollector(
@@ -2158,7 +2227,11 @@ class BtcForwardCollector:
                 producer_errors: tuple[BaseException, ...] = ()
                 try:
                     producer_errors = await self._quiesce_tasks(
-                        (*feed_tasks, *resync_tasks.values()),
+                        (
+                            *feed_tasks,
+                            *resync_tasks.values(),
+                            *((okx_metadata_task,) if okx_metadata_task is not None else ()),
+                        ),
                         deadline=shutdown_deadline,
                     )
                     flush_requested.set()
@@ -2581,6 +2654,8 @@ class BtcForwardCollector:
             self._oldest_pending_monotonic_ns = monotonic_ns()
         self._pending.append(event)
         self._pending_bytes += event.estimated_size_bytes
+        if self._admitted_event_buffer is not None:
+            self._admitted_event_buffer.publish(event)
         self._high_water_events = max(
             self._high_water_events,
             len(self._pending) + self._inflight_events,

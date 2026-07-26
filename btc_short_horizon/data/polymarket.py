@@ -67,6 +67,16 @@ class PolymarketL2Normalizer:
     def has_snapshot(self) -> bool:
         return self._has_snapshot
 
+    def book_levels(
+        self,
+    ) -> tuple[tuple[tuple[float, float], ...], tuple[tuple[float, float], ...]]:
+        """Return an immutable full-depth view without exposing mutable book state."""
+
+        return (
+            tuple(sorted(self._bids.items(), reverse=True)),
+            tuple(sorted(self._asks.items())),
+        )
+
     def fork(self) -> PolymarketL2Normalizer:
         """Return copy-on-write candidate state for one atomic channel batch."""
 

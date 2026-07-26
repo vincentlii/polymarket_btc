@@ -65,6 +65,12 @@ version 1 artifact 不得静默用于 version 2 shadow/live。它仍可保留为
 
 materialized dataset 的市场序列必须与请求 catalog 的精确、按时间排序 slug 序列一致；仅有相同 market count 不足以证明使用了相同日期或市场。
 
+实时 `Research Paper` 只允许加载通过上述 schema hash 与 protocol v2 检查的固定
+artifact，并使用与训练/回放相同的五秒 cadence 和两次连续信号确认。它不会重新
+训练、调参或自动晋级模型。当前 artifact 仍标为 `Research Proxy`：Paper 的虚拟
+PnL 可以产生新的 forward OOS 诊断证据，但不能补足少于 2,500 个 sealed holdout
+市场、缺失的因果 Polymarket baseline，也不能替代正式 queue/latency BookReplay。
+
 ## 验收标准
 
 - 浮点/布尔/非有限标签无法进入训练。

@@ -99,6 +99,14 @@ def test_dashboard_payload_reports_service_health_and_stop_request(tmp_path) -> 
     ]
 
 
+def test_dashboard_html_labels_research_paper_as_simulated_not_account_truth() -> None:
+    html = dashboard_html()
+
+    assert "Research Paper 模拟账本新鲜" in html
+    assert "Simulated ledger" in html
+    assert "research_paper:'Research Paper'" in html
+
+
 def test_dashboard_payload_fails_closed_when_status_is_stale(tmp_path) -> None:
     RuntimeStatusStore(tmp_path).write(
         RuntimeStatus(

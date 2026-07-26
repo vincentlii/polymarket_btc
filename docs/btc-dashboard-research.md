@@ -10,6 +10,12 @@
 
 主页面保持一屏可读，不把原始 JSON、完整日志、模型特征和 L2 深度图塞入首页。Grafana 官方建议看板围绕明确问题、按“整体到细节”的顺序组织，并降低认知负担；Google SRE 同样强调监控与告警链路应简单、可理解，而不是要求人持续盯屏。[Grafana dashboard best practices](https://grafana.com/docs/grafana/latest/visualizations/dashboards/build-dashboards/best-practices/)、[Google SRE: Monitoring Distributed Systems](https://sre.google/sre-book/monitoring-distributed-systems/)
 
+当前 VPS 阶段允许 `Research Paper` 写入一套严格标为“模拟”的绩效投影：
+虚拟余额、模拟成交、逐市场盈亏和资金曲线均来自独立 Paper ledger，不得显示为
+真实账户或实盘成交。首页必须同时显示其固定假设（P99 latency、完整可见 queue、
+50% seller-initiated trade volume）以及 `Research Proxy / Maker Gate No-Go`；这样可
+观察策略与运行链路，但不会把 L2 heuristic 误包装成可实现利润。
+
 ## 第一手产品与规范中可直接借鉴的做法
 
 | 官方来源 | 可直接借鉴 | 本项目的定制推断 |
@@ -103,6 +109,11 @@ Research → Challenge → Shadow → Canary → Live
 #### 第四行：最近交易
 
 首页只展示最近 8–10 个市场级交易：时间、市场、方向、状态、成本、净 PnL。点击后打开交易抽屉；完整列表进入“交易”页。
+
+在 `research_paper` 模式中，状态使用 `simulated_*` 或明确的 Paper 生命周期；
+未成交但已结算的订单不计入胜负交易，partial fill 只按实际模拟成交份额计 PnL，
+working notional 按各层真实挂单价冻结，而不是按模型 `p_fair` 估算。看板聚合任一
+runtime service 的失败：Paper 失败会显示故障，但不会把仍健康的原始采集器停掉。
 
 ### 视图二：交易
 

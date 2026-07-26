@@ -212,8 +212,8 @@ const stageOrder = ['research','challenge','shadow','canary','live'];
 const stageLabels = {research:'研究',challenge:'挑战',shadow:'影子',canary:'小额',live:'实盘'};
 const gateLabels = {pending:'待开始',running:'进行中',go:'GO',no_go:'NO-GO',blocked:'已阻断'};
 const stateLabels = {ok:'正常',warning:'注意',error:'异常',unknown:'未上报'};
-const runtimeServiceLabels = {forward_collector:'前瞻数据采集',opening_shadow:'开盘 Shadow'};
-const runtimeModeLabels = {forward_collection:'实时采集',post_window_shadow:'开盘后 Shadow'};
+const runtimeServiceLabels = {forward_collector:'前瞻数据采集',opening_shadow:'开盘 Shadow',research_paper:'Research Paper'};
+const runtimeModeLabels = {forward_collection:'实时采集',post_window_shadow:'开盘后 Shadow',paper:'实时模拟'};
 const tradeSideLabels = {up:'看涨',down:'看跌'};
 const tradeStatusLabels = {planned:'计划中',submitted:'已提交',working:'挂单中',partially_filled:'部分成交',filled:'已成交',cancelled:'已撤单',rejected:'已拒绝',resolved:'已结算'};
 
@@ -254,7 +254,7 @@ function svgNode(name,attributes={}) { const node=document.createElementNS('http
 function renderEquity(rawPoints,currency) {
   const points=(rawPoints||[]).filter(item=>item&&finite(item.equity)&&item.timestamp);
   const empty=byId('chart-empty'),wrap=byId('chart-wrap'),svg=byId('equity-chart'); svg.replaceChildren();
-  if(points.length<2) { empty.hidden=false; wrap.hidden=true; byId('curve-range').textContent='等待真实记录'; return; }
+  if(points.length<2) { empty.hidden=false; wrap.hidden=true; byId('curve-range').textContent='等待结算记录'; return; }
   empty.hidden=true; wrap.hidden=false;
   const values=points.map(item=>item.equity), min=Math.min(...values), max=Math.max(...values), span=Math.max(max-min,Math.max(max,1)*.005);
   const left=35,right=775,top=20,bottom=192;
@@ -286,8 +286,8 @@ function renderLifecycle(strategy) {
 
 function healthFromRuntime(payload) {
   const items=(payload.statuses||[]).map(item=>({key:`runtime-${item.service}`,label:runtimeServiceLabel(item.service),state:item.health&&item.health.healthy?'ok':'error',detail:`${runtimeModeLabel(item.mode)} · ${item.state==='running'?'运行中':readableIdentifier(item.state)}`,updated_at:item.updated_at,latency_ms:null,age_seconds:item.health&&item.health.age_seconds}));
-  const projection=payload.snapshot_health, hasLive=(payload.statuses||[]).some(item=>item.service==='live_operations');
-  if(payload.snapshot||hasLive) items.push({key:'performance-projection',label:'账户与盈亏快照',state:projection&&projection.healthy?'ok':'error',detail:projection&&projection.healthy?'真实账户账本投影新鲜':`投影不可用 · ${readableIdentifier(projection&&projection.reason||'missing_snapshot')}`,updated_at:payload.snapshot&&payload.snapshot.generated_at||payload.generated_at,latency_ms:null,age_seconds:projection&&projection.age_seconds});
+  const projection=payload.snapshot_health, hasLive=(payload.statuses||[]).some(item=>item.service==='live_operations'), isPaper=payload.snapshot&&payload.snapshot.run_mode==='research_paper';
+  if(payload.snapshot||hasLive) items.push({key:'performance-projection',label:isPaper?'模拟资金与盈亏快照':'账户与盈亏快照',state:projection&&projection.healthy?'ok':'error',detail:projection&&projection.healthy?(isPaper?'Research Paper 模拟账本新鲜':'真实账户账本投影新鲜'):`投影不可用 · ${readableIdentifier(projection&&projection.reason||'missing_snapshot')}`,updated_at:payload.snapshot&&payload.snapshot.generated_at||payload.generated_at,latency_ms:null,age_seconds:projection&&projection.age_seconds});
   const shadow=payload.shadow, coverage=shadow&&shadow.coverage;
   if(shadow) items.push({key:'shadow-evidence',label:'Shadow 证据',state:'ok',detail:`${shadow.market_slug} · 合格 ${coverage&&coverage.quality_eligible||0}/${coverage&&coverage.predictions||0} · 未提交订单`,updated_at:payload.generated_at,latency_ms:null,age_seconds:null});
   const collector=(payload.statuses||[]).find(item=>item.service==='forward_collector');
@@ -317,12 +317,12 @@ function renderAlerts(payload,snapshot) {
 }
 
 function render(payload) {
-  const snapshot=payload.snapshot||null; const snapshotHealth=(snapshot&&snapshot.health)||[]; const staleProjection=snapshot&&(!payload.snapshot_health||!payload.snapshot_health.healthy); const overallState=!payload.health||!payload.health.healthy||(payload.errors||[]).length>0||staleProjection||snapshotHealth.some(item=>item.state==='error')?'error':payload.stop_request||snapshotHealth.some(item=>item.state==='warning'||item.state==='unknown')?'warning':'ok';
+  const snapshot=payload.snapshot||null; const snapshotHealth=(snapshot&&snapshot.health)||[]; const staleProjection=snapshot&&(!payload.snapshot_health||!payload.snapshot_health.healthy); const runtimeFailure=(payload.statuses||[]).some(item=>!item.health||!item.health.healthy); const overallState=!payload.health||!payload.health.healthy||runtimeFailure||(payload.errors||[]).length>0||staleProjection||snapshotHealth.some(item=>item.state==='error')?'error':payload.stop_request||snapshotHealth.some(item=>item.state==='warning'||item.state==='unknown')?'warning':'ok';
   const overall=byId('overall'); overall.className=`pill ${overallState}`; overall.replaceChildren(); const dot=document.createElement('span'); dot.className='dot'; const label=document.createElement('span'); label.textContent=overallState==='ok'?'Bot 运行正常':overallState==='warning'?'需要关注':'运行异常'; overall.append(dot,label);
   const mode=byId('run-mode'); mode.textContent=snapshot?String(snapshot.run_mode).replaceAll('_',' ').toUpperCase():payload.shadow?'POST-WINDOW SHADOW':'NO PERFORMANCE SNAPSHOT'; mode.className=`pill ${snapshot||payload.shadow?'ok':''}`;
   const collector=(payload.statuses||[]).find(item=>item.service==='forward_collector'); const market=collector&&collector.details&&(collector.details.active_market||collector.details.scheduled_market); byId('active-market').textContent=market?`当前市场 · ${market}`:'当前市场尚未上报';
   byId('freshness-title').textContent=payload.health&&payload.health.healthy?'运行状态新鲜':'运行状态不可用'; byId('freshness-time').textContent=`刷新 ${localTime(payload.generated_at)} · ${ageText(payload.health&&payload.health.age_seconds)}`;
-  byId('snapshot-source').textContent=snapshot?`Snapshot ${localTime(snapshot.generated_at)}${staleProjection?' · STALE':''}`:payload.shadow?'Shadow evidence · no account PnL':'Runtime status only';
+  byId('snapshot-source').textContent=snapshot?`${snapshot.run_mode==='research_paper'?'Simulated ledger':'Account snapshot'} ${localTime(snapshot.generated_at)}${staleProjection?' · STALE':''}`:payload.shadow?'Shadow evidence · no account PnL':'Runtime status only';
   renderAlerts(payload,snapshot); renderSummary(snapshot); renderLifecycle(snapshot&&snapshot.strategy); renderHealth(payload,snapshot);
 }
 

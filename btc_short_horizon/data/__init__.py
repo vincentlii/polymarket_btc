@@ -17,9 +17,14 @@ from btc_short_horizon.data.catalog_io import (
     read_market_catalog,
     write_market_catalog,
 )
-from btc_short_horizon.data.forward import BtcForwardCollector, CollectorIngressResult
+from btc_short_horizon.data.forward import (
+    AdmittedEventBuffer,
+    BtcForwardCollector,
+    CollectorIngressResult,
+)
 
 __all__ = [
+    "AdmittedEventBuffer",
     "BTC_15M_MARKET_FAMILY",
     "BTC_5M_MARKET_FAMILY",
     "CATALOG_SCHEMA_VERSION",

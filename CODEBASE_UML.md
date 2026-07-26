@@ -1,8 +1,8 @@
 # Codebase UML Inventory
 
 This file is generated from Python AST metadata and excludes `tests/` plus git-ignored private strategy/research directories.
-Generated: 2026-07-25T18:23:24+00:00
-Modules: 210 | Classes: 409 | Functions/methods: 2945
+Generated: 2026-07-26T18:40:24+00:00
+Modules: 214 | Classes: 423 | Functions/methods: 3024
 
 ## Backtesting Data Flow
 
@@ -184,70 +184,70 @@ flowchart TD
 
 ### `btc_short_horizon/backtest/strategy.py`
 - Imports: `__future__, btc_short_horizon, dataclasses, decimal, functools, nautilus_trader, prediction_market_extensions, typing`
-- Function L43: `_as_float(value: object | None) -> float | None`
-- Function L55: `_event_ts_ns(event: object) -> int`
-- Class L70: `BtcOpeningMispricingConfig(StrategyConfig)`
-  - Method L91: `__post_init__(self) -> None`
-  - Method L100: `maker_config(self) -> MakerStrategyConfig`
-- Class L119: `BtcOpeningMispricingStrategy(Strategy)`
-  - Method L122: `__init__(self, config: BtcOpeningMispricingConfig) -> None`
-  - Method L140: `order_audit_events(self) -> tuple[dict[str, object], ...]`
-  - Method L143: `on_start(self) -> None`
-  - Method L164: `on_data(self, data) -> None`
-  - Method L179: `on_order_book_deltas(self, deltas) -> None`
-  - Method L191: `on_order_accepted(self, event) -> None`
-  - Method L202: `on_order_filled(self, event) -> None`
-  - Method L283: `on_order_canceled(self, event) -> None`
-  - Method L286: `on_order_expired(self, event) -> None`
-  - Method L289: `on_order_rejected(self, event) -> None`
-  - Method L292: `on_order_denied(self, event) -> None`
-  - Method L295: `on_order_cancel_rejected(self, event) -> None`
-  - Method L308: `on_stop(self) -> None`
-  - Method L312: `on_reset(self) -> None`
-  - Method L323: `_process_signal(self, *, now_ts_ns: int) -> None`
-  - Method L332: `_submit_plan_if_actionable(self, *, signal: BtcOpeningMispricingSignal, now_ts_ns: int) -> None`
-  - Method L401: `_evaluate_working_orders(self, *, signal: BtcOpeningMispricingSignal, now_ts_ns: int) -> None`
-  - Method L429: `_outcome_books(self) -> OutcomeBooks | None`
-  - Method L439: `_side_book(self, side: TokenSide) -> SideBook | None`
-  - Method L462: `_visible_levels(levels: list[Any]) -> tuple[VisibleBookLevel, ...]`
-  - Method L473: `_materialize_plan(self, plan: OrderPlan) -> OrderPlan | None`
-  - Method L509: `_submit_orders(self, plan: OrderPlan) -> None`
-  - Method L570: `_request_cancel(self, reason: str, *, now_ts_ns: int) -> None`
-  - Method L584: `_close_order_event(self, event, *, terminal_event: str, rejected: bool) -> None`
-  - Method L607: `_confirm_candidate(self, *, side: TokenSide, signal_ts_ns: int) -> bool`
-  - Method L621: `_reset_candidate(self) -> None`
-  - Method L626: `_on_work_expiry(self, event) -> None`
-  - Method L631: `_schedule_fill_markouts(self, *, client_order_id: str, trade_id: str, instrument_id: InstrumentId, fill_price: float, fill_ts_ns: int) -> None`
-  - Method L657: `_on_fill_markout(self, event, *, client_order_id: str, trade_id: str, instrument_id: InstrumentId, fill_price: float, horizon_seconds: int) -> None`
-  - Method L696: `_clear_work_expiry(self) -> None`
-  - Method L701: `_side_for_instrument(self, instrument_id: object) -> TokenSide | None`
-  - Method L708: `_instrument_id_for(self, side: TokenSide) -> InstrumentId`
-  - Method L713: `_book_age_seconds(self, *, side: TokenSide, now_ts_ns: int) -> float | None`
-  - Method L719: `_execution_book_rejection_reason(self, *, now_ts_ns: int) -> str | None`
+- Function L44: `_as_float(value: object | None) -> float | None`
+- Function L56: `_event_ts_ns(event: object) -> int`
+- Class L71: `BtcOpeningMispricingConfig(StrategyConfig)`
+  - Method L92: `__post_init__(self) -> None`
+  - Method L101: `maker_config(self) -> MakerStrategyConfig`
+- Class L120: `BtcOpeningMispricingStrategy(Strategy)`
+  - Method L123: `__init__(self, config: BtcOpeningMispricingConfig) -> None`
+  - Method L143: `order_audit_events(self) -> tuple[dict[str, object], ...]`
+  - Method L146: `on_start(self) -> None`
+  - Method L167: `on_data(self, data) -> None`
+  - Method L182: `on_order_book_deltas(self, deltas) -> None`
+  - Method L194: `on_order_accepted(self, event) -> None`
+  - Method L205: `on_order_filled(self, event) -> None`
+  - Method L286: `on_order_canceled(self, event) -> None`
+  - Method L289: `on_order_expired(self, event) -> None`
+  - Method L292: `on_order_rejected(self, event) -> None`
+  - Method L295: `on_order_denied(self, event) -> None`
+  - Method L298: `on_order_cancel_rejected(self, event) -> None`
+  - Method L311: `on_stop(self) -> None`
+  - Method L315: `on_reset(self) -> None`
+  - Method L326: `_process_signal(self, *, now_ts_ns: int) -> None`
+  - Method L335: `_submit_plan_if_actionable(self, *, signal: BtcOpeningMispricingSignal, now_ts_ns: int) -> None`
+  - Method L404: `_evaluate_working_orders(self, *, signal: BtcOpeningMispricingSignal, now_ts_ns: int) -> None`
+  - Method L432: `_outcome_books(self) -> OutcomeBooks | None`
+  - Method L442: `_side_book(self, side: TokenSide) -> SideBook | None`
+  - Method L465: `_visible_levels(levels: list[Any]) -> tuple[VisibleBookLevel, ...]`
+  - Method L476: `_materialize_plan(self, plan: OrderPlan) -> OrderPlan | None`
+  - Method L512: `_submit_orders(self, plan: OrderPlan) -> None`
+  - Method L573: `_request_cancel(self, reason: str, *, now_ts_ns: int) -> None`
+  - Method L587: `_close_order_event(self, event, *, terminal_event: str, rejected: bool) -> None`
+  - Method L610: `_confirm_candidate(self, *, side: TokenSide, signal_ts_ns: int) -> bool`
+  - Method L613: `_reset_candidate(self) -> None`
+  - Method L616: `_on_work_expiry(self, event) -> None`
+  - Method L621: `_schedule_fill_markouts(self, *, client_order_id: str, trade_id: str, instrument_id: InstrumentId, fill_price: float, fill_ts_ns: int) -> None`
+  - Method L647: `_on_fill_markout(self, event, *, client_order_id: str, trade_id: str, instrument_id: InstrumentId, fill_price: float, horizon_seconds: int) -> None`
+  - Method L686: `_clear_work_expiry(self) -> None`
+  - Method L691: `_side_for_instrument(self, instrument_id: object) -> TokenSide | None`
+  - Method L698: `_instrument_id_for(self, side: TokenSide) -> InstrumentId`
+  - Method L703: `_book_age_seconds(self, *, side: TokenSide, now_ts_ns: int) -> float | None`
+  - Method L709: `_execution_book_rejection_reason(self, *, now_ts_ns: int) -> str | None`
 
 ### `btc_short_horizon/config.py`
 - Imports: `__future__, btc_short_horizon, dataclasses, math, pathlib, prediction_market_extensions, tomllib, typing`
 - Function L81: `load_btc_project_config(path: Path) -> BtcProjectConfig`
-- Function L170: `_scenario(section: Mapping[str, object]) -> ExecutionScenario`
-- Function L204: `_validate_formal_scenario_grid(scenarios: tuple[ExecutionScenario, ...]) -> None`
-- Function L241: `_forward_collection(section: Mapping[str, object]) -> ForwardCollectionConfig`
-- Function L293: `_family(section: Mapping[str, object]) -> BtcMarketFamily`
-- Function L302: `_mapping(raw: Mapping[str, object], name: str) -> Mapping[str, object]`
-- Function L309: `_mapping_list(raw: Mapping[str, object], name: str) -> tuple[Mapping[str, object], ...]`
-- Function L316: `_text(section: Mapping[str, object], name: str) -> str`
-- Function L323: `_text_list(raw: Mapping[str, object], name: str) -> tuple[str, ...]`
-- Function L330: `_data_sources(root: Path, raw: Mapping[str, object]) -> tuple[str, ...]`
-- Function L334: `_resolve_data_source(root: Path, value: str) -> str`
-- Function L343: `_int(section: Mapping[str, object], name: str) -> int`
-- Function L350: `_positive_int(section: Mapping[str, object], name: str) -> int`
-- Function L357: `_int_list(section: Mapping[str, object], name: str) -> tuple[int, ...]`
-- Function L364: `_nonnegative_int_list(section: Mapping[str, object], name: str) -> tuple[int, ...]`
-- Function L371: `_positive_float(section: Mapping[str, object], name: str) -> float`
-- Function L378: `_nonnegative_float(section: Mapping[str, object], name: str) -> float`
-- Function L391: `_probability(section: Mapping[str, object], name: str) -> float`
-- Function L398: `_probability_excluding_zero(section: Mapping[str, object], name: str) -> float`
-- Function L405: `_bool(section: Mapping[str, object], name: str) -> bool`
-- Function L412: `_resolve_path(root: Path, value: str) -> Path`
+- Function L185: `_scenario(section: Mapping[str, object]) -> ExecutionScenario`
+- Function L219: `_validate_formal_scenario_grid(scenarios: tuple[ExecutionScenario, ...]) -> None`
+- Function L256: `_forward_collection(section: Mapping[str, object]) -> ForwardCollectionConfig`
+- Function L308: `_family(section: Mapping[str, object]) -> BtcMarketFamily`
+- Function L317: `_mapping(raw: Mapping[str, object], name: str) -> Mapping[str, object]`
+- Function L324: `_mapping_list(raw: Mapping[str, object], name: str) -> tuple[Mapping[str, object], ...]`
+- Function L331: `_text(section: Mapping[str, object], name: str) -> str`
+- Function L338: `_text_list(raw: Mapping[str, object], name: str) -> tuple[str, ...]`
+- Function L345: `_data_sources(root: Path, raw: Mapping[str, object]) -> tuple[str, ...]`
+- Function L349: `_resolve_data_source(root: Path, value: str) -> str`
+- Function L358: `_int(section: Mapping[str, object], name: str) -> int`
+- Function L365: `_positive_int(section: Mapping[str, object], name: str) -> int`
+- Function L372: `_int_list(section: Mapping[str, object], name: str) -> tuple[int, ...]`
+- Function L379: `_nonnegative_int_list(section: Mapping[str, object], name: str) -> tuple[int, ...]`
+- Function L386: `_positive_float(section: Mapping[str, object], name: str) -> float`
+- Function L393: `_nonnegative_float(section: Mapping[str, object], name: str) -> float`
+- Function L406: `_probability(section: Mapping[str, object], name: str) -> float`
+- Function L413: `_probability_excluding_zero(section: Mapping[str, object], name: str) -> float`
+- Function L420: `_bool(section: Mapping[str, object], name: str) -> bool`
+- Function L427: `_resolve_path(root: Path, value: str) -> Path`
 - Class L22: `ProjectPaths`
 - Class L29: `ResearchTimingConfig`
 - Class L39: `ForwardCollectionConfig`
@@ -422,95 +422,103 @@ flowchart TD
   - Method L310: `is_event_time_only(self) -> bool`
 
 ### `btc_short_horizon/data/forward.py`
-- Imports: `__future__, asyncio, btc_short_horizon, collections, copy, dataclasses, datetime, httpx, json, math, pathlib, threading, time, typing, uuid`
-- Function L2637: `_session_epoch_id(*, epoch_id_offset: int, local_epoch_id: int) -> int`
-- Function L2648: `_normalize_gap_identity(*, source: str, instrument: str, stream_id: str, reason: str) -> tuple[str, str, str, str]`
-- Function L2673: `_consume_background_task_exception(task: asyncio.Task[Any]) -> None`
-- Function L2678: `_cancel_background_task(task: asyncio.Task[Any]) -> None`
-- Function L2684: `_gap_boundary_time(*, observed_at: datetime | None, previous_available_ts: datetime | None) -> datetime`
-- Function L2701: `_quality_gap_requires_resubscribe(*, source: str, stream_id: str) -> bool`
-- Function L2707: `_raise_first_with_notes(errors: Sequence[BaseException], *, note_prefix: str) -> None`
-- Function L2720: `_pending_event_candidate(*, timing: TimedMarketEvent, event_type: str, payload: Mapping[str, object], collector_session_id: str) -> RawCollectorEvent`
-- Function L2736: `_normalize_polymarket_token_groups(*, token_ids: tuple[str, ...], token_groups: Sequence[Sequence[str]] | None) -> tuple[tuple[str, ...], ...]`
-- Function L2756: `_normalize_polymarket_subscription_windows(*, token_groups: tuple[tuple[str, ...], ...], subscription_windows: Sequence[PolymarketSubscriptionWindow] | None) -> tuple[PolymarketSubscriptionWindow, ...]`
-- Function L2769: `async _wait_until_or_stop(*, deadline: datetime, stop_event: asyncio.Event) -> bool`
-- Function L2782: `async _collect_polymarket_during_window(*, token_group: tuple[str, ...], window: PolymarketSubscriptionWindow, stop_event: asyncio.Event, on_payload: Callable[[Mapping[str, object], datetime], Awaitable[bool]], on_error: Callable[[Exception], Awaitable[None]]) -> None`
-- Function L2830: `_rejected(reason: str) -> CollectorIngressResult`
-- Function L2834: `_with_depth_status(outcome: CollectorIngressResult, status: DepthUpdateStatus, reason: str | None, *, resubscribe_on_unavailable: bool = True) -> CollectorIngressResult`
-- Function L2858: `_okx_source_for_instrument(instrument: str) -> str | None`
-- Function L2866: `_okx_item_payload(payload: Mapping[str, object], item: Mapping[str, object]) -> Mapping[str, object]`
-- Function L2877: `_positive_number(value: object, name: str) -> float`
-- Function L2887: `_binance_instruments(streams: Sequence[str]) -> tuple[str, ...]`
-- Function L2899: `_binance_depth_instruments(streams: Sequence[str]) -> tuple[str, ...]`
-- Function L2911: `_binance_stream_ids(streams: Sequence[str]) -> tuple[str, ...]`
-- Function L2930: `_binance_feed_keys(source: str, streams: Sequence[str]) -> set[_QualityStreamKey]`
-- Function L2942: `_okx_stream_id(channel: object) -> str | None`
-- Function L2953: `_partition_key(timing: TimedMarketEvent, *, collector_session_id: str) -> _RawPartitionKey`
-- Function L2970: `_add_quality_counts(counts_by_partition: dict[_RawPartitionKey, tuple[int, int]], key: _RawPartitionKey, *, duplicate_count: int = 0, gap_count: int = 0) -> None`
-- Class L89: `PolymarketSubscriptionWindow`
-  - Method L96: `__post_init__(self) -> None`
-- Class L114: `CollectorIngressResult`
-  - Method L121: `merged(self, other: CollectorIngressResult) -> CollectorIngressResult`
-- Class L132: `RequiredFeedHealth`
-- Class L139: `CollectorBufferStats`
-- Class L154: `CollectorBufferCapacityError(RuntimeError)`
-- Class L158: `_FeedResubscribeRequired(RuntimeError)`
-- Class L162: `BtcForwardCollector`
-  - Method L165: `__init__(self, *, raw_data_root: Path, polymarket_token_ids: Sequence[str], polymarket_token_groups: Sequence[Sequence[str]] | None = None, polymarket_subscription_windows: Sequence[PolymarketSubscriptionWindow] | None = None, flush_size: int = 10000, flush_interval_seconds: float = 60.0, shutdown_flush_timeout_seconds: float = 30.0, ingest_version: str = 'btc-short-horizon-v1', epoch_id_offset: int = 0, collector_session_id: str | None = None, max_pending_events: int = _DEFAULT_MAX_PENDING_EVENTS, max_pending_bytes: int = _DEFAULT_MAX_PENDING_BYTES, binance_depth_snapshot_url: str = _BINANCE_DEPTH_SNAPSHOT_URL, binance_futures_depth_snapshot_url: str = _BINANCE_FUTURES_DEPTH_SNAPSHOT_URL, binance_spot_depth_snapshot_limit: int = 1000, binance_futures_depth_snapshot_limit: int = 1000, binance_depth_snapshot_timeout_seconds: float = 10.0, binance_depth_snapshot_retry_initial_seconds: float = 0.5, binance_depth_snapshot_retry_max_seconds: float = 30.0, polymarket_source_timestamp_regression_tolerance_seconds: float = 1.0, okx_instruments_url: str = _OKX_PUBLIC_INSTRUMENTS_URL, okx_swap_contract_value: float | None = None) -> None`
-  - Method L374: `pending_event_count(self) -> int`
-  - Method L379: `pending_bytes(self) -> int`
-  - Method L384: `flush_required(self) -> bool`
-  - Method L391: `buffer_at_capacity(self) -> bool`
-  - Method L399: `buffer_stats(self) -> CollectorBufferStats`
-  - Method L417: `quality_stats(self) -> dict[_QualityStreamKey, DataQualityStats]`
-  - Method L420: `configure_required_feeds(self, *, binance_streams: Sequence[str] = DEFAULT_BINANCE_STREAMS, binance_futures_market_streams: Sequence[str] = DEFAULT_BINANCE_FUTURES_MARKET_STREAMS, binance_futures_public_streams: Sequence[str] = DEFAULT_BINANCE_FUTURES_PUBLIC_STREAMS, okx_subscriptions: Sequence[Mapping[str, str]] = DEFAULT_OKX_SUBSCRIPTIONS) -> None`
-  - Method L444: `configure_required_polymarket_tokens(self, token_ids: Sequence[str]) -> None`
-  - Method L456: `feed_health(self, *, now: datetime, stale_after_seconds: float) -> RequiredFeedHealth`
-  - Method L530: `handle_polymarket(self, payload: Mapping[str, object], *, collector_receive_ts: datetime) -> CollectorIngressResult`
-  - Method L541: `_handle_polymarket_tokens(self, payload: Mapping[str, object], *, collector_receive_ts: datetime, token_ids: tuple[str, ...]) -> CollectorIngressResult`
-  - Method L682: `handle_chainlink_rtds(self, payload: Mapping[str, object], *, collector_receive_ts: datetime) -> CollectorIngressResult`
-  - Method L696: `invalidate_polymarket_token(self, token_id: str) -> None`
-  - Method L703: `handle_binance(self, payload: Mapping[str, object], *, collector_receive_ts: datetime, source: str = 'binance_spot') -> CollectorIngressResult`
-  - Method L746: `handle_binance_depth_snapshot(self, *, instrument: str, payload: Mapping[str, object], collector_receive_ts: datetime, source: str = 'binance_spot') -> CollectorIngressResult`
-  - Method L862: `async refresh_binance_depth_snapshot(self, *, instrument: str, client: httpx.AsyncClient | None = None, source: str = 'binance_spot', snapshot_handler: Callable[[Mapping[str, object], datetime], Awaitable[CollectorIngressResult]] | None = None) -> CollectorIngressResult`
-  - Method L909: `binance_depth_needs_snapshot(self, instrument: str, *, source: str = 'binance_spot') -> bool`
-  - Method L914: `binance_depth_requires_snapshot(self, instrument: str, *, source: str = 'binance_spot') -> bool`
-  - Method L922: `binance_depth_is_synchronized(self, instrument: str, *, source: str = 'binance_spot') -> bool`
-  - Method L930: `invalidate_binance_depth(self, instrument: str, *, source: str = 'binance_spot') -> None`
-  - Method L933: `_invalidate_binance_depth_after_error(self, *, source: str, instrument: str, reason: str, observed_at: datetime) -> None`
-  - Method L964: `_handle_binance_trade(self, message: Mapping[str, object], *, payload: Mapping[str, object], collector_receive_ts: datetime, source: str) -> CollectorIngressResult`
-  - Method L987: `_handle_binance_kline(self, message: Mapping[str, object], *, payload: Mapping[str, object], collector_receive_ts: datetime, source: str) -> CollectorIngressResult`
-  - Method L1013: `_handle_binance_depth_update(self, message: Mapping[str, object], *, payload: Mapping[str, object], collector_receive_ts: datetime, source: str) -> CollectorIngressResult`
-  - Method L1129: `_handle_binance_book_ticker(self, message: Mapping[str, object], *, payload: Mapping[str, object], collector_receive_ts: datetime, source: str) -> CollectorIngressResult`
-  - Method L1152: `handle_okx(self, payload: Mapping[str, object], *, collector_receive_ts: datetime) -> CollectorIngressResult`
-  - Method L1223: `async refresh_okx_swap_contract_value(self, *, client: httpx.AsyncClient | None = None) -> float`
-  - Method L1272: `_handle_okx_trades(self, *, data: Sequence[object], payload: Mapping[str, object], instrument: str, collector_receive_ts: datetime, source: str) -> CollectorIngressResult`
-  - Method L1329: `_handle_okx_books(self, *, data: Sequence[object], payload: Mapping[str, object], action: str, instrument: str, collector_receive_ts: datetime, source: str) -> CollectorIngressResult`
-  - Method L1454: `_invalidate_okx_book_after_error(self, *, source: str, instrument: str, reason: str, observed_at: datetime) -> None`
-  - Method L1488: `mark_gap(self, *, source: str, instrument: str, stream_id: str, reason: str, observed_at: datetime | None = None) -> None`
-  - Method L1503: `mark_gaps(self, gaps: Sequence[tuple[str, str, str, str, datetime | None]]) -> None`
-  - Method L1543: `_gap_capacity_event_locked(self, *, source: str, instrument: str, stream_id: str, observed_at: datetime | None) -> RawCollectorEvent`
-  - Method L1565: `flush(self) -> tuple[DataPartitionManifest, ...]`
-  - Method L1637: `async collect_forever(self, *, stop_event: asyncio.Event, binance_streams: Sequence[str] = DEFAULT_BINANCE_STREAMS, binance_futures_market_streams: Sequence[str] = DEFAULT_BINANCE_FUTURES_MARKET_STREAMS, binance_futures_public_streams: Sequence[str] = DEFAULT_BINANCE_FUTURES_PUBLIC_STREAMS, okx_subscriptions: Sequence[Mapping[str, str]] = DEFAULT_OKX_SUBSCRIPTIONS) -> None`
-  - Method L2213: `_record_session_failure(self, error: BaseException) -> None`
-  - Method L2219: `async _await_flush_task(self, task: asyncio.Task[Any], *, deadline: float) -> Any`
-  - Method L2247: `async _flush_async(self) -> tuple[DataPartitionManifest, ...]`
-  - Method L2282: `async _quiesce_tasks(self, tasks: Sequence[asyncio.Task[Any]], *, deadline: float) -> tuple[BaseException, ...]`
-  - Method L2322: `async _coordinate_buffer(self, *, flush_requested: asyncio.Event, capacity_available: asyncio.Event) -> None`
-  - Method L2336: `async _run_flush_worker(self, *, stop_event: asyncio.Event, flush_requested: asyncio.Event, capacity_available: asyncio.Event) -> None`
-  - Method L2372: `_ingest(self, *, timing: TimedMarketEvent, event_type: str, payload: Mapping[str, object], stream_id: str) -> CollectorIngressResult`
-  - Method L2451: `_quality_would_accept(self, *, timing: TimedMarketEvent, stream_id: str) -> bool`
-  - Method L2469: `_ensure_capacity_locked(self, events: Sequence[RawCollectorEvent]) -> None`
-  - Method L2479: `_validator(self, *, source: str, instrument: str, stream_id: str) -> EventQualityValidator`
-  - Method L2487: `_new_gap_event(self, *, source: str, instrument: str, stream_id: str, reason: str, observed_at: datetime | None, previous_available_ts: datetime | None) -> RawCollectorEvent`
-  - Method L2528: `_append_gap_event_locked(self, *, event: RawCollectorEvent, validator: EventQualityValidator, stream_id: str) -> None`
-  - Method L2562: `_commit_gap_event_locked(self, *, event: RawCollectorEvent, validator: EventQualityValidator, stream_id: str, reason: str) -> None`
-  - Method L2577: `_append_pending_event_locked(self, event: RawCollectorEvent) -> None`
-  - Method L2593: `_binance_depth_snapshot_url(self, source: str) -> str`
-  - Method L2600: `_binance_depth_snapshot_limit(self, source: str) -> int`
-  - Method L2607: `_depth_synchronizer(self, *, source: str, instrument: str) -> BinanceDepthSynchronizer`
-  - Method L2616: `_okx_book_synchronizer(self, *, source: str, instrument: str) -> OkxBookSynchronizer`
-  - Method L2624: `_invalidate_state_after_quality_gap(self, timing: TimedMarketEvent, *, stream_id: str) -> None`
+- Imports: `__future__, asyncio, btc_short_horizon, collections, copy, dataclasses, datetime, httpx, json, math, pathlib, queue, threading, time, typing, uuid`
+- Function L2712: `_session_epoch_id(*, epoch_id_offset: int, local_epoch_id: int) -> int`
+- Function L2723: `_normalize_gap_identity(*, source: str, instrument: str, stream_id: str, reason: str) -> tuple[str, str, str, str]`
+- Function L2748: `_consume_background_task_exception(task: asyncio.Task[Any]) -> None`
+- Function L2753: `_cancel_background_task(task: asyncio.Task[Any]) -> None`
+- Function L2759: `_gap_boundary_time(*, observed_at: datetime | None, previous_available_ts: datetime | None) -> datetime`
+- Function L2776: `_quality_gap_requires_resubscribe(*, source: str, stream_id: str) -> bool`
+- Function L2782: `_raise_first_with_notes(errors: Sequence[BaseException], *, note_prefix: str) -> None`
+- Function L2795: `_pending_event_candidate(*, timing: TimedMarketEvent, event_type: str, payload: Mapping[str, object], collector_session_id: str) -> RawCollectorEvent`
+- Function L2811: `_normalize_polymarket_token_groups(*, token_ids: tuple[str, ...], token_groups: Sequence[Sequence[str]] | None) -> tuple[tuple[str, ...], ...]`
+- Function L2831: `_normalize_polymarket_subscription_windows(*, token_groups: tuple[tuple[str, ...], ...], subscription_windows: Sequence[PolymarketSubscriptionWindow] | None) -> tuple[PolymarketSubscriptionWindow, ...]`
+- Function L2844: `async _wait_until_or_stop(*, deadline: datetime, stop_event: asyncio.Event) -> bool`
+- Function L2857: `async _collect_polymarket_during_window(*, token_group: tuple[str, ...], window: PolymarketSubscriptionWindow, stop_event: asyncio.Event, on_payload: Callable[[Mapping[str, object], datetime], Awaitable[bool]], on_error: Callable[[Exception], Awaitable[None]]) -> None`
+- Function L2905: `_rejected(reason: str) -> CollectorIngressResult`
+- Function L2909: `_with_depth_status(outcome: CollectorIngressResult, status: DepthUpdateStatus, reason: str | None, *, resubscribe_on_unavailable: bool = True) -> CollectorIngressResult`
+- Function L2933: `_okx_source_for_instrument(instrument: str) -> str | None`
+- Function L2941: `_okx_item_payload(payload: Mapping[str, object], item: Mapping[str, object]) -> Mapping[str, object]`
+- Function L2952: `_positive_number(value: object, name: str) -> float`
+- Function L2962: `_binance_instruments(streams: Sequence[str]) -> tuple[str, ...]`
+- Function L2974: `_binance_depth_instruments(streams: Sequence[str]) -> tuple[str, ...]`
+- Function L2986: `_binance_stream_ids(streams: Sequence[str]) -> tuple[str, ...]`
+- Function L3005: `_binance_feed_keys(source: str, streams: Sequence[str]) -> set[_QualityStreamKey]`
+- Function L3017: `_okx_stream_id(channel: object) -> str | None`
+- Function L3028: `_partition_key(timing: TimedMarketEvent, *, collector_session_id: str) -> _RawPartitionKey`
+- Function L3045: `_add_quality_counts(counts_by_partition: dict[_RawPartitionKey, tuple[int, int]], key: _RawPartitionKey, *, duplicate_count: int = 0, gap_count: int = 0) -> None`
+- Class L90: `PolymarketSubscriptionWindow`
+  - Method L97: `__post_init__(self) -> None`
+- Class L115: `CollectorIngressResult`
+  - Method L122: `merged(self, other: CollectorIngressResult) -> CollectorIngressResult`
+- Class L133: `RequiredFeedHealth`
+- Class L140: `CollectorBufferStats`
+- Class L155: `CollectorBufferCapacityError(RuntimeError)`
+- Class L159: `AdmittedEventBuffer`
+  - Method L166: `__init__(self, *, max_events: int = 10000) -> None`
+  - Method L174: `pending_events(self) -> int`
+  - Method L178: `overflowed(self) -> bool`
+  - Method L182: `dropped_events(self) -> int`
+  - Method L185: `publish(self, event: RawCollectorEvent) -> None`
+  - Method L194: `get_nowait(self) -> RawCollectorEvent`
+- Class L201: `_FeedResubscribeRequired(RuntimeError)`
+- Class L205: `BtcForwardCollector`
+  - Method L208: `__init__(self, *, raw_data_root: Path, polymarket_token_ids: Sequence[str], polymarket_token_groups: Sequence[Sequence[str]] | None = None, polymarket_subscription_windows: Sequence[PolymarketSubscriptionWindow] | None = None, flush_size: int = 10000, flush_interval_seconds: float = 60.0, shutdown_flush_timeout_seconds: float = 30.0, ingest_version: str = 'btc-short-horizon-v1', epoch_id_offset: int = 0, collector_session_id: str | None = None, max_pending_events: int = _DEFAULT_MAX_PENDING_EVENTS, max_pending_bytes: int = _DEFAULT_MAX_PENDING_BYTES, binance_depth_snapshot_url: str = _BINANCE_DEPTH_SNAPSHOT_URL, binance_futures_depth_snapshot_url: str = _BINANCE_FUTURES_DEPTH_SNAPSHOT_URL, binance_spot_depth_snapshot_limit: int = 1000, binance_futures_depth_snapshot_limit: int = 1000, binance_depth_snapshot_timeout_seconds: float = 10.0, binance_depth_snapshot_retry_initial_seconds: float = 0.5, binance_depth_snapshot_retry_max_seconds: float = 30.0, polymarket_source_timestamp_regression_tolerance_seconds: float = 1.0, okx_instruments_url: str = _OKX_PUBLIC_INSTRUMENTS_URL, okx_swap_contract_value: float | None = None) -> None`
+  - Method L417: `subscribe_admitted_events(self, buffer: AdmittedEventBuffer) -> None`
+  - Method L430: `pending_event_count(self) -> int`
+  - Method L435: `pending_bytes(self) -> int`
+  - Method L440: `flush_required(self) -> bool`
+  - Method L447: `buffer_at_capacity(self) -> bool`
+  - Method L455: `buffer_stats(self) -> CollectorBufferStats`
+  - Method L473: `quality_stats(self) -> dict[_QualityStreamKey, DataQualityStats]`
+  - Method L476: `configure_required_feeds(self, *, binance_streams: Sequence[str] = DEFAULT_BINANCE_STREAMS, binance_futures_market_streams: Sequence[str] = DEFAULT_BINANCE_FUTURES_MARKET_STREAMS, binance_futures_public_streams: Sequence[str] = DEFAULT_BINANCE_FUTURES_PUBLIC_STREAMS, okx_subscriptions: Sequence[Mapping[str, str]] = DEFAULT_OKX_SUBSCRIPTIONS) -> None`
+  - Method L500: `configure_required_polymarket_tokens(self, token_ids: Sequence[str]) -> None`
+  - Method L512: `feed_health(self, *, now: datetime, stale_after_seconds: float) -> RequiredFeedHealth`
+  - Method L586: `handle_polymarket(self, payload: Mapping[str, object], *, collector_receive_ts: datetime) -> CollectorIngressResult`
+  - Method L597: `_handle_polymarket_tokens(self, payload: Mapping[str, object], *, collector_receive_ts: datetime, token_ids: tuple[str, ...]) -> CollectorIngressResult`
+  - Method L738: `handle_chainlink_rtds(self, payload: Mapping[str, object], *, collector_receive_ts: datetime) -> CollectorIngressResult`
+  - Method L752: `invalidate_polymarket_token(self, token_id: str) -> None`
+  - Method L759: `handle_binance(self, payload: Mapping[str, object], *, collector_receive_ts: datetime, source: str = 'binance_spot') -> CollectorIngressResult`
+  - Method L802: `handle_binance_depth_snapshot(self, *, instrument: str, payload: Mapping[str, object], collector_receive_ts: datetime, source: str = 'binance_spot') -> CollectorIngressResult`
+  - Method L918: `async refresh_binance_depth_snapshot(self, *, instrument: str, client: httpx.AsyncClient | None = None, source: str = 'binance_spot', snapshot_handler: Callable[[Mapping[str, object], datetime], Awaitable[CollectorIngressResult]] | None = None) -> CollectorIngressResult`
+  - Method L965: `binance_depth_needs_snapshot(self, instrument: str, *, source: str = 'binance_spot') -> bool`
+  - Method L970: `binance_depth_requires_snapshot(self, instrument: str, *, source: str = 'binance_spot') -> bool`
+  - Method L978: `binance_depth_is_synchronized(self, instrument: str, *, source: str = 'binance_spot') -> bool`
+  - Method L986: `invalidate_binance_depth(self, instrument: str, *, source: str = 'binance_spot') -> None`
+  - Method L989: `_invalidate_binance_depth_after_error(self, *, source: str, instrument: str, reason: str, observed_at: datetime) -> None`
+  - Method L1020: `_handle_binance_trade(self, message: Mapping[str, object], *, payload: Mapping[str, object], collector_receive_ts: datetime, source: str) -> CollectorIngressResult`
+  - Method L1043: `_handle_binance_kline(self, message: Mapping[str, object], *, payload: Mapping[str, object], collector_receive_ts: datetime, source: str) -> CollectorIngressResult`
+  - Method L1069: `_handle_binance_depth_update(self, message: Mapping[str, object], *, payload: Mapping[str, object], collector_receive_ts: datetime, source: str) -> CollectorIngressResult`
+  - Method L1185: `_handle_binance_book_ticker(self, message: Mapping[str, object], *, payload: Mapping[str, object], collector_receive_ts: datetime, source: str) -> CollectorIngressResult`
+  - Method L1208: `handle_okx(self, payload: Mapping[str, object], *, collector_receive_ts: datetime) -> CollectorIngressResult`
+  - Method L1279: `async refresh_okx_swap_contract_value(self, *, client: httpx.AsyncClient | None = None) -> float`
+  - Method L1328: `_handle_okx_trades(self, *, data: Sequence[object], payload: Mapping[str, object], instrument: str, collector_receive_ts: datetime, source: str) -> CollectorIngressResult`
+  - Method L1385: `_handle_okx_books(self, *, data: Sequence[object], payload: Mapping[str, object], action: str, instrument: str, collector_receive_ts: datetime, source: str) -> CollectorIngressResult`
+  - Method L1510: `_invalidate_okx_book_after_error(self, *, source: str, instrument: str, reason: str, observed_at: datetime) -> None`
+  - Method L1544: `mark_gap(self, *, source: str, instrument: str, stream_id: str, reason: str, observed_at: datetime | None = None) -> None`
+  - Method L1559: `mark_gaps(self, gaps: Sequence[tuple[str, str, str, str, datetime | None]]) -> None`
+  - Method L1599: `_gap_capacity_event_locked(self, *, source: str, instrument: str, stream_id: str, observed_at: datetime | None) -> RawCollectorEvent`
+  - Method L1621: `flush(self) -> tuple[DataPartitionManifest, ...]`
+  - Method L1693: `async collect_forever(self, *, stop_event: asyncio.Event, binance_streams: Sequence[str] = DEFAULT_BINANCE_STREAMS, binance_futures_market_streams: Sequence[str] = DEFAULT_BINANCE_FUTURES_MARKET_STREAMS, binance_futures_public_streams: Sequence[str] = DEFAULT_BINANCE_FUTURES_PUBLIC_STREAMS, okx_subscriptions: Sequence[Mapping[str, str]] = DEFAULT_OKX_SUBSCRIPTIONS) -> None`
+  - Method L2286: `_record_session_failure(self, error: BaseException) -> None`
+  - Method L2292: `async _await_flush_task(self, task: asyncio.Task[Any], *, deadline: float) -> Any`
+  - Method L2320: `async _flush_async(self) -> tuple[DataPartitionManifest, ...]`
+  - Method L2355: `async _quiesce_tasks(self, tasks: Sequence[asyncio.Task[Any]], *, deadline: float) -> tuple[BaseException, ...]`
+  - Method L2395: `async _coordinate_buffer(self, *, flush_requested: asyncio.Event, capacity_available: asyncio.Event) -> None`
+  - Method L2409: `async _run_flush_worker(self, *, stop_event: asyncio.Event, flush_requested: asyncio.Event, capacity_available: asyncio.Event) -> None`
+  - Method L2445: `_ingest(self, *, timing: TimedMarketEvent, event_type: str, payload: Mapping[str, object], stream_id: str) -> CollectorIngressResult`
+  - Method L2524: `_quality_would_accept(self, *, timing: TimedMarketEvent, stream_id: str) -> bool`
+  - Method L2542: `_ensure_capacity_locked(self, events: Sequence[RawCollectorEvent]) -> None`
+  - Method L2552: `_validator(self, *, source: str, instrument: str, stream_id: str) -> EventQualityValidator`
+  - Method L2560: `_new_gap_event(self, *, source: str, instrument: str, stream_id: str, reason: str, observed_at: datetime | None, previous_available_ts: datetime | None) -> RawCollectorEvent`
+  - Method L2601: `_append_gap_event_locked(self, *, event: RawCollectorEvent, validator: EventQualityValidator, stream_id: str) -> None`
+  - Method L2635: `_commit_gap_event_locked(self, *, event: RawCollectorEvent, validator: EventQualityValidator, stream_id: str, reason: str) -> None`
+  - Method L2650: `_append_pending_event_locked(self, event: RawCollectorEvent) -> None`
+  - Method L2668: `_binance_depth_snapshot_url(self, source: str) -> str`
+  - Method L2675: `_binance_depth_snapshot_limit(self, source: str) -> int`
+  - Method L2682: `_depth_synchronizer(self, *, source: str, instrument: str) -> BinanceDepthSynchronizer`
+  - Method L2691: `_okx_book_synchronizer(self, *, source: str, instrument: str) -> OkxBookSynchronizer`
+  - Method L2699: `_invalidate_state_after_quality_gap(self, timing: TimedMarketEvent, *, stream_id: str) -> None`
 
 ### `btc_short_horizon/data/gamma.py`
 - Imports: `__future__, btc_short_horizon, collections, datetime, hashlib, httpx, json`
@@ -571,36 +579,37 @@ flowchart TD
 
 ### `btc_short_horizon/data/polymarket.py`
 - Imports: `__future__, btc_short_horizon, dataclasses, datetime, enum, hashlib, json, math, typing`
-- Function L408: `_levels(value: object) -> tuple[tuple[float, float], ...]`
-- Function L424: `_metadata_references_token(payload: Mapping[str, object], token_id: str) -> bool`
-- Function L436: `_payload_hash(payload: Mapping[str, object]) -> str`
-- Function L441: `_text(value: object, name: str) -> str`
-- Function L447: `_number(value: object, name: str) -> float`
-- Function L457: `_probability(value: object, name: str) -> float`
-- Function L464: `_positive_float(value: object, name: str) -> float`
-- Function L471: `_nonnegative_float(value: object, name: str) -> float`
-- Function L478: `_timestamp_millis(value: object, name: str) -> datetime`
-- Function L488: `_as_utc(value: datetime, name: str) -> datetime`
-- Function L494: `_datetime_to_ns(value: datetime) -> int`
+- Function L418: `_levels(value: object) -> tuple[tuple[float, float], ...]`
+- Function L434: `_metadata_references_token(payload: Mapping[str, object], token_id: str) -> bool`
+- Function L446: `_payload_hash(payload: Mapping[str, object]) -> str`
+- Function L451: `_text(value: object, name: str) -> str`
+- Function L457: `_number(value: object, name: str) -> float`
+- Function L467: `_probability(value: object, name: str) -> float`
+- Function L474: `_positive_float(value: object, name: str) -> float`
+- Function L481: `_nonnegative_float(value: object, name: str) -> float`
+- Function L488: `_timestamp_millis(value: object, name: str) -> datetime`
+- Function L498: `_as_utc(value: datetime, name: str) -> datetime`
+- Function L504: `_datetime_to_ns(value: datetime) -> int`
 - Class L17: `PolymarketL2Status(StrEnum)`
 - Class L25: `PolymarketL2Result`
 - Class L38: `PolymarketL2Normalizer`
   - Method L41: `__init__(self, *, token_id: str, source: str = 'polymarket_clob', source_timestamp_regression_tolerance: timedelta = timedelta(seconds=1)) -> None`
   - Method L63: `tick_size(self) -> float | None`
   - Method L67: `has_snapshot(self) -> bool`
-  - Method L70: `fork(self) -> PolymarketL2Normalizer`
-  - Method L86: `reset(self) -> None`
-  - Method L96: `apply(self, payload: Mapping[str, object], *, collector_receive_ts: datetime) -> PolymarketL2Result`
-  - Method L126: `_apply_book(self, payload: Mapping[str, object], *, receive_ts: datetime) -> PolymarketL2Result`
-  - Method L162: `_apply_price_change(self, payload: Mapping[str, object], *, receive_ts: datetime) -> PolymarketL2Result`
-  - Method L248: `_apply_trade(self, payload: Mapping[str, object], *, receive_ts: datetime) -> PolymarketL2Result`
-  - Method L284: `_apply_tick_size_change(self, payload: Mapping[str, object], *, receive_ts: datetime) -> PolymarketL2Result`
-  - Method L313: `_apply_market_metadata(self, payload: Mapping[str, object], *, receive_ts: datetime, event_type: str) -> PolymarketL2Result`
-  - Method L336: `_ignored(self, payload: Mapping[str, object], receive_ts: datetime, reason: str) -> PolymarketL2Result`
-  - Method L346: `_timing(self, payload: Mapping[str, object], *, receive_ts: datetime) -> TimedMarketEvent`
-  - Method L367: `_accept_timing(self, timing: TimedMarketEvent) -> None`
-  - Method L376: `_has_material_source_timestamp_regression(self, source_ts: datetime) -> bool`
-  - Method L381: `_book_top(self, timing: TimedMarketEvent, *, bids: Mapping[float, float] | None = None, asks: Mapping[float, float] | None = None) -> BtcBookTop | None`
+  - Method L70: `book_levels(self) -> tuple[tuple[tuple[float, float], ...], tuple[tuple[float, float], ...]]`
+  - Method L80: `fork(self) -> PolymarketL2Normalizer`
+  - Method L96: `reset(self) -> None`
+  - Method L106: `apply(self, payload: Mapping[str, object], *, collector_receive_ts: datetime) -> PolymarketL2Result`
+  - Method L136: `_apply_book(self, payload: Mapping[str, object], *, receive_ts: datetime) -> PolymarketL2Result`
+  - Method L172: `_apply_price_change(self, payload: Mapping[str, object], *, receive_ts: datetime) -> PolymarketL2Result`
+  - Method L258: `_apply_trade(self, payload: Mapping[str, object], *, receive_ts: datetime) -> PolymarketL2Result`
+  - Method L294: `_apply_tick_size_change(self, payload: Mapping[str, object], *, receive_ts: datetime) -> PolymarketL2Result`
+  - Method L323: `_apply_market_metadata(self, payload: Mapping[str, object], *, receive_ts: datetime, event_type: str) -> PolymarketL2Result`
+  - Method L346: `_ignored(self, payload: Mapping[str, object], receive_ts: datetime, reason: str) -> PolymarketL2Result`
+  - Method L356: `_timing(self, payload: Mapping[str, object], *, receive_ts: datetime) -> TimedMarketEvent`
+  - Method L377: `_accept_timing(self, timing: TimedMarketEvent) -> None`
+  - Method L386: `_has_material_source_timestamp_regression(self, source_ts: datetime) -> bool`
+  - Method L391: `_book_top(self, timing: TimedMarketEvent, *, bids: Mapping[float, float] | None = None, asks: Mapping[float, float] | None = None) -> BtcBookTop | None`
 
 ### `btc_short_horizon/data/quality.py`
 - Imports: `__future__, btc_short_horizon, collections, dataclasses, datetime`
@@ -1079,6 +1088,56 @@ flowchart TD
   - Method L397: `_heartbeat_healthy(self, ts_ns: int) -> bool`
   - Method L403: `_require_restored(self) -> None`
 
+### `btc_short_horizon/live/paper_execution.py`
+- Imports: `__future__, btc_short_horizon, dataclasses, hashlib, json, math, typing`
+- Class L16: `PaperExecutionConfig`
+  - Method L23: `__post_init__(self) -> None`
+- Class L36: `PaperMarketRules`
+  - Method L45: `__post_init__(self) -> None`
+  - Method L66: `rules_sha256(self) -> str`
+- Class L80: `PaperOrderLayerState`
+  - Method L88: `remaining_size(self) -> float`
+- Class L93: `PaperPlacement`
+  - Method L106: `filled_size(self) -> float`
+  - Method L110: `filled_notional(self) -> float`
+  - Method L114: `average_fill_price(self) -> float | None`
+- Class L118: `PaperExecutionSimulator`
+  - Method L121: `__init__(self, *, gateway: PaperOrderGateway, config: PaperExecutionConfig) -> None`
+  - Method L129: `placements(self) -> tuple[PaperPlacement, ...]`
+  - Method L132: `submit(self, *, plan: OrderPlan, rules: PaperMarketRules, book: SideBook, now_ts_ns: int) -> PaperPlacement`
+  - Method L189: `advance(self, *, now_ts_ns: int, books: dict[str, SideBook]) -> None`
+  - Method L210: `request_cancel(self, placement: PaperPlacement, *, now_ts_ns: int) -> None`
+  - Method L217: `on_trade(self, *, token_id: str, aggressor_side: Literal['buy', 'sell', 'unknown'], price: float, size: float, available_ts_ns: int) -> None`
+  - Method L256: `_reject(self, placement: PaperPlacement, reason: str) -> None`
+
+### `btc_short_horizon/live/paper_runtime.py`
+- Imports: `__future__, asyncio, btc_short_horizon, collections, datetime, httpx, math, pathlib, queue`
+- Function L412: `_positive_number(value: object, name: str) -> float`
+- Function L422: `_nonnegative_integer(value: object, name: str) -> int`
+- Function L432: `_decimal_text(value: object, name: str) -> str`
+- Class L39: `PublicPaperRulesClient`
+  - Method L42: `__init__(self, *, base_url: str = _CLOB_HOST, timeout_seconds: float = 10.0) -> None`
+  - Method L50: `async fetch(self, market: MarketWindow, *, client: httpx.AsyncClient | None = None) -> dict[str, PaperMarketRules]`
+- Class L104: `ModelPaperPredictor`
+  - Method L107: `__init__(self, *, project: BtcProjectConfig, model_directory: Path) -> None`
+  - Method L121: `model_id(self) -> str`
+  - Method L124: `__call__(self, market, history, observation) -> Any`
+- Class L136: `ResearchPaperRuntime`
+  - Method L139: `__init__(self, *, project: BtcProjectConfig, model_directory: Path, runtime_root: Path, rule_epoch: str, event_buffer: AdmittedEventBuffer, starting_balance: float = 1000.0, rules_client: PublicPaperRulesClient | None = None, gamma_client: GammaMarketClient | None = None) -> None`
+  - Method L192: `model_id(self) -> str`
+  - Method L195: `register_markets(self, market: MarketWindow, lookahead: MarketWindow | None) -> None`
+  - Method L203: `async run(self, *, stop_event: asyncio.Event) -> None`
+  - Method L229: `async _bootstrap_history(self) -> None`
+  - Method L237: `async _fetch_rules(self, market: MarketWindow) -> None`
+  - Method L247: `_schedule_rule_fetch(self, market: MarketWindow, *, now: datetime) -> None`
+  - Method L262: `_drain_events(self) -> None`
+  - Method L271: `_activate_current_market(self, now: datetime) -> None`
+  - Method L315: `_run_due_decision(self, now: datetime) -> None`
+  - Method L336: `async _settle_resolved_markets(self) -> None`
+  - Method L357: `async _refresh_resolutions(self) -> None`
+  - Method L366: `_publish_running_if_due(self, now: datetime) -> None`
+  - Method L376: `_publish(self, *, now: datetime, state: str, healthy: bool) -> None`
+
 ### `btc_short_horizon/live/reconciliation.py`
 - Imports: `__future__, btc_short_horizon, collections, dataclasses, datetime, decimal, enum, hashlib, json, math, re, time, typing`
 - Function L743: `_local_order_expectations(values: Sequence[LocalOrderExpectation]) -> tuple[LocalOrderExpectation, ...]`
@@ -1133,6 +1192,44 @@ flowchart TD
   - Method L585: `_fetch_pending_trade_ids(self, ledger: DailyLedgerSnapshot) -> frozenset[str]`
   - Method L660: `_fetch_positions(self) -> _PositionTotals`
   - Method L721: `_fetch_geo(self) -> tuple[bool, str, str]`
+
+### `btc_short_horizon/live/research_paper.py`
+- Imports: `__future__, btc_short_horizon, collections, dataclasses, datetime, json, math, numpy, os, pathlib, uuid`
+- Function L719: `_text(value: object, name: str) -> str`
+- Function L725: `_optional_text(value: object, name: str) -> str | None`
+- Function L729: `_integer(value: object, name: str) -> int`
+- Function L735: `_optional_integer(value: object, name: str) -> int | None`
+- Function L739: `_number(value: object, name: str) -> float`
+- Function L745: `_optional_number(value: object, name: str) -> float | None`
+- Class L59: `PaperTradeRecord`
+  - Method L78: `entry_price(self) -> float | None`
+  - Method L81: `to_json(self) -> dict[str, object]`
+  - Method L102: `from_json(cls, raw: object) -> PaperTradeRecord`
+- Class L129: `PaperLedgerSnapshot`
+- Class L134: `PaperLedgerStore`
+  - Method L137: `__init__(self, runtime_root: Path) -> None`
+  - Method L140: `write(self, snapshot: PaperLedgerSnapshot) -> Path`
+  - Method L159: `read(self) -> PaperLedgerSnapshot | None`
+- Class L180: `ResearchPaperEngine`
+  - Method L183: `__init__(self, *, predictor: PaperPredictor, model_id: str, maker_config: MakerStrategyConfig, execution_config: PaperExecutionConfig, ledger_store: PaperLedgerStore, starting_balance: float, kline_history: BinanceKlineHistory | None = None) -> None`
+  - Method L235: `active_placement(self) -> PaperPlacement | None`
+  - Method L238: `activate_market(self, market: MarketWindow, *, rules: Mapping[str, PaperMarketRules]) -> None`
+  - Method L262: `on_event(self, event: RawCollectorEvent) -> None`
+  - Method L303: `on_trade(self, *, token_id: str, aggressor_side: str, price: float, size: float, available_ts_ns: int) -> None`
+  - Method L321: `advance(self, *, now_ts_ns: int) -> None`
+  - Method L325: `decide(self, *, now_ts_ns: int) -> str`
+  - Method L409: `reevaluate(self, prediction: OpeningMispricingPrediction, *, now_ts_ns: int) -> str`
+  - Method L431: `settle(self, *, market_slug: str, outcome: MarketOutcome, label_available_ts_ns: int) -> None`
+  - Method L460: `dashboard_snapshot(self, *, now: datetime) -> BotDashboardSnapshot`
+  - Method L494: `_sync_active_record(self) -> None`
+  - Method L518: `_outcome_books(self) -> OutcomeBooks | None`
+  - Method L531: `_predict_current(self, *, books: OutcomeBooks, now_ts_ns: int) -> OpeningMispricingPrediction`
+  - Method L556: `_books_by_token(self) -> dict[str, SideBook]`
+  - Method L575: `_performance(self, now: datetime) -> PerformanceSnapshot`
+  - Method L658: `_available_balance(self) -> float`
+  - Method L662: `_cash_and_working_notional(self) -> tuple[float, float]`
+  - Method L677: `_append_binance_kline(self, payload: Mapping[str, object]) -> None`
+  - Method L710: `_persist(self) -> None`
 
 ### `btc_short_horizon/live/risk.py`
 - Imports: `__future__, dataclasses, datetime, math`
@@ -1699,6 +1796,13 @@ flowchart TD
 
 ### `btc_short_horizon/strategy/__init__.py`
 - Imports: `btc_short_horizon`
+
+### `btc_short_horizon/strategy/confirmation.py`
+- Imports: `__future__, btc_short_horizon, dataclasses, math`
+- Class L12: `ConsecutiveSignalConfirmation`
+  - Method L20: `__post_init__(self) -> None`
+  - Method L36: `observe(self, side: TokenSide, *, signal_ts_ns: int) -> bool`
+  - Method L55: `reset(self) -> None`
 
 ### `btc_short_horizon/strategy/lifecycle.py`
 - Imports: `__future__, btc_short_horizon, dataclasses, enum, math`
@@ -3506,13 +3610,14 @@ flowchart TD
 
 ### `scripts/btc_forward_runtime.py`
 - Imports: `__future__, argparse, asyncio, btc_short_horizon, collections, dataclasses, datetime, math, pathlib, scripts, signal`
-- Function L53: `_effective_market(window: _ActiveWindow, *, now: datetime) -> MarketWindow`
-- Function L59: `_captured_market(window: _ActiveWindow, *, now: datetime, lead_seconds: float, handoff_seconds: float) -> MarketWindow | None`
-- Function L78: `_refresh_required_clob_feeds(window: _ActiveWindow, *, now: datetime, lead_seconds: float, handoff_seconds: float) -> MarketWindow | None`
-- Function L96: `parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace`
-- Function L120: `async run_async(args: argparse.Namespace) -> None`
-- Function L346: `main(argv: Sequence[str] | None = None) -> int`
-- Class L47: `_ActiveWindow`
+- Function L57: `_effective_market(window: _ActiveWindow, *, now: datetime) -> MarketWindow`
+- Function L63: `_captured_market(window: _ActiveWindow, *, now: datetime, lead_seconds: float, handoff_seconds: float) -> MarketWindow | None`
+- Function L82: `_refresh_required_clob_feeds(window: _ActiveWindow, *, now: datetime, lead_seconds: float, handoff_seconds: float) -> MarketWindow | None`
+- Function L100: `parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace`
+- Function L127: `_initialize_research_paper(*, project: BtcProjectConfig, model_directory: Path, runtime_root: Path, rule_epoch: str, starting_balance: float, max_events: int) -> tuple[AdmittedEventBuffer | None, ResearchPaperRuntime | None]`
+- Function L168: `async run_async(args: argparse.Namespace) -> None`
+- Function L424: `main(argv: Sequence[str] | None = None) -> int`
+- Class L51: `_ActiveWindow`
 
 ### `scripts/btc_gamma_catalog.py`
 - Imports: `__future__, argparse, asyncio, btc_short_horizon, collections, pathlib`
@@ -3596,23 +3701,23 @@ flowchart TD
 
 ### `scripts/btc_opening_proxy_shadow.py`
 - Imports: `__future__, argparse, asyncio, btc_short_horizon, collections, dataclasses, datetime, json, pathlib, pyarrow`
-- Function L67: `parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace`
-- Function L89: `build_shadow_predictions(*, model: FittedDirectionModel, metadata: ModelArtifactMetadata, market: MarketWindow, klines: BinanceKlineHistory, observations: Sequence[OpeningMarketObservation], availability_delay: timedelta = timedelta(seconds=1)) -> tuple[tuple[OpeningMispricingPrediction, ...], tuple[BtcOpeningMispricingSignal, ...]]`
-- Function L119: `shadow_bootstrap_window(*, market_start: datetime, last_decision_time: datetime, max_lookback_seconds: int, availability_delay: timedelta) -> tuple[datetime, datetime]`
-- Function L138: `async run_async(args: argparse.Namespace) -> dict[str, object]`
-- Function L312: `_load_summary(load: ForwardBookEventLoad) -> dict[str, int]`
-- Function L322: `_shadow_regime_coverage(*, market: MarketWindow, decisions: Sequence[int], observations: Sequence[OpeningMarketObservation], predictions: Sequence[OpeningMispricingPrediction], stale_after_seconds: float) -> dict[str, dict[str, int]]`
-- Function L368: `_datetime(value: str) -> datetime`
-- Function L378: `_ns(value: datetime) -> int`
-- Function L382: `main(argv: Sequence[str] | None = None) -> int`
-- Class L58: `ShadowEvidenceUnavailableError(ValueError)`
+- Function L65: `parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace`
+- Function L87: `build_shadow_predictions(*, model: FittedDirectionModel, metadata: ModelArtifactMetadata, market: MarketWindow, klines: BinanceKlineHistory, observations: Sequence[OpeningMarketObservation], availability_delay: timedelta = timedelta(seconds=1)) -> tuple[tuple[OpeningMispricingPrediction, ...], tuple[BtcOpeningMispricingSignal, ...]]`
+- Function L117: `shadow_bootstrap_window(*, market_start: datetime, last_decision_time: datetime, max_lookback_seconds: int, availability_delay: timedelta) -> tuple[datetime, datetime]`
+- Function L136: `async run_async(args: argparse.Namespace) -> dict[str, object]`
+- Function L310: `_load_summary(load: ForwardBookEventLoad) -> dict[str, int]`
+- Function L320: `_shadow_regime_coverage(*, market: MarketWindow, decisions: Sequence[int], observations: Sequence[OpeningMarketObservation], predictions: Sequence[OpeningMispricingPrediction], stale_after_seconds: float) -> dict[str, dict[str, int]]`
+- Function L366: `_datetime(value: str) -> datetime`
+- Function L376: `_ns(value: datetime) -> int`
+- Function L380: `main(argv: Sequence[str] | None = None) -> int`
+- Class L61: `ShadowEvidenceUnavailableError(ValueError)`
 
 ### `scripts/btc_opening_shadow_scheduler.py`
 - Imports: `__future__, argparse, asyncio, btc_short_horizon, collections, datetime, math, pathlib, scripts, signal`
 - Function L43: `parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace`
 - Function L62: `async run_async(args: argparse.Namespace) -> None`
-- Function L363: `_write_status(*, store: RuntimeStatusStore, started_at: datetime, state: str, healthy: bool, details: dict[str, object]) -> None`
-- Function L384: `main(argv: Sequence[str] | None = None) -> int`
+- Function L364: `_write_status(*, store: RuntimeStatusStore, started_at: datetime, state: str, healthy: bool, details: dict[str, object]) -> None`
+- Function L385: `main(argv: Sequence[str] | None = None) -> int`
 
 ### `scripts/btc_pmxt_coverage_audit.py`
 - Imports: `__future__, argparse, asyncio, btc_short_horizon, collections, datetime, json, pandas, pathlib, prediction_market_extensions`

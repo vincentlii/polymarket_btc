@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from btc_short_horizon.strategy import (
+    ConsecutiveSignalConfirmation,
     LayerStructure,
     MakerStrategyConfig,
     MarketExecution,
@@ -241,3 +242,17 @@ def test_lifecycle_rejects_replacement_cycle_and_impossible_fill() -> None:
         execution.submit_plan(_up_plan())
     with pytest.raises(ValueError, match="exceeds remaining"):
         execution.record_fill(100.0)
+
+
+def test_signal_confirmation_requires_same_side_at_the_frozen_cadence() -> None:
+    confirmation = ConsecutiveSignalConfirmation(
+        required_signals=2,
+        cadence_seconds=5.0,
+        tolerance_seconds=0.25,
+    )
+
+    assert not confirmation.observe(TokenSide.UP, signal_ts_ns=5_000_000_000)
+    assert not confirmation.observe(TokenSide.UP, signal_ts_ns=9_000_000_000)
+    assert confirmation.observe(TokenSide.UP, signal_ts_ns=14_000_000_000)
+    assert confirmation.count == 2
+    assert not confirmation.observe(TokenSide.DOWN, signal_ts_ns=19_000_000_000)

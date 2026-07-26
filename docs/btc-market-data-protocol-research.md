@@ -189,9 +189,11 @@ whose default is `true` in the
   token's prior book immediately and request/retain `initial_dump=true`.
 - Keep the current and look-ahead market pairs on separate physical CLOB
   connections. A connection-level fault invalidates only the Up/Down pair on
-  that connection. Under ingest v11 each pair connects only from
+  that connection. Under ingest v12 each pair connects only from
   `t0 - polymarket_capture_lead_seconds` through
-  `t0 + opening_handoff_delay_seconds`; the baseline is `[-90s, +180s)`.
+  `t0 + opening_handoff_delay_seconds`; the baseline is `[-90s, +200s)`.
+  The extra 20 seconds cover an order placed at the final `t0+180s` decision,
+  its 15-second maximum work period and the configured P99 cancel race.
   Binance and Chainlink subscriptions remain continuous outside this interval.
   Planned CLOB inactivity is excluded from required-feed health rather than
   reported as a disconnect.
@@ -225,6 +227,10 @@ whose default is `true` in the
   monotonic/wall-clock receive timestamp. Use local receipt as the causal
   availability boundary. Persist a collector-session admission sequence as the
   final tie-breaker because the venue does not guarantee timestamp uniqueness.
+- A real-time research consumer receives a bounded non-blocking copy only after
+  the durable collector assigns that admission sequence. Duplicate/rejected
+  payloads are not published. Consumer overflow is sticky and must stop that
+  research projection, but it must never block, drop, or terminate raw capture.
 - If the socket disconnects, local backpressure drops a message, payload
   validation fails, or ordering becomes suspect, open a new book epoch and
   require a new WebSocket snapshot. A REST `/book` response can be used for

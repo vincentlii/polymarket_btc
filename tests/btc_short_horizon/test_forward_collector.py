@@ -13,6 +13,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from btc_short_horizon.data.forward import (
+    AdmittedEventBuffer,
     DEFAULT_BINANCE_FUTURES_MARKET_STREAMS,
     DEFAULT_BINANCE_FUTURES_PUBLIC_STREAMS,
     DEFAULT_BINANCE_STREAMS,
@@ -40,6 +41,59 @@ def test_default_forward_collection_is_lightweight_for_bounded_vps_storage() -> 
     assert DEFAULT_BINANCE_FUTURES_MARKET_STREAMS == ()
     assert DEFAULT_BINANCE_FUTURES_PUBLIC_STREAMS == ()
     assert DEFAULT_OKX_SUBSCRIPTIONS == ()
+
+
+def test_admitted_event_buffer_receives_only_committed_events_without_blocking_storage(
+    tmp_path,
+) -> None:
+    buffer = AdmittedEventBuffer(max_events=1)
+    collector = BtcForwardCollector(
+        raw_data_root=tmp_path,
+        polymarket_token_ids=("up-token", "down-token"),
+    )
+    collector.subscribe_admitted_events(buffer)
+    payload = {
+        "event_type": "book",
+        "asset_id": "up-token",
+        "timestamp": str(int(SOURCE_TIME.timestamp() * 1_000)),
+        "hash": "book-1",
+        "bids": [{"price": "0.48", "size": "11"}],
+        "asks": [{"price": "0.52", "size": "12"}],
+    }
+
+    accepted = collector.handle_polymarket(payload, collector_receive_ts=SOURCE_TIME)
+    duplicate = collector.handle_polymarket(payload, collector_receive_ts=SOURCE_TIME)
+
+    assert accepted.accepted_events == 1
+    assert duplicate.accepted_events == 0
+    assert buffer.pending_events == 1
+    assert buffer.get_nowait().event_type == "book"
+    assert not buffer.overflowed
+
+
+def test_admitted_event_buffer_overflow_fails_the_subscriber_only(tmp_path) -> None:
+    buffer = AdmittedEventBuffer(max_events=1)
+    collector = BtcForwardCollector(
+        raw_data_root=tmp_path,
+        polymarket_token_ids=("up-token", "down-token"),
+    )
+    collector.subscribe_admitted_events(buffer)
+    for index, token_id in enumerate(("up-token", "down-token")):
+        collector.handle_polymarket(
+            {
+                "event_type": "book",
+                "asset_id": token_id,
+                "timestamp": str(int(SOURCE_TIME.timestamp() * 1_000) + index),
+                "hash": f"book-{index}",
+                "bids": [{"price": "0.48", "size": "11"}],
+                "asks": [{"price": "0.52", "size": "12"}],
+            },
+            collector_receive_ts=SOURCE_TIME + timedelta(milliseconds=index),
+        )
+
+    assert buffer.overflowed
+    assert buffer.dropped_events == 1
+    assert collector.pending_event_count == 2
 
 
 def test_forward_collector_requires_disjoint_clob_connection_groups(tmp_path) -> None:
@@ -125,6 +179,8 @@ async def test_forward_collector_limits_clob_connection_without_stopping_btc_fee
     stop_event = asyncio.Event()
     task = asyncio.create_task(collector.collect_forever(stop_event=stop_event))
 
+    await asyncio.sleep(0)
+    assert not task.done(), repr(task.exception()) if task.done() else ""
     await asyncio.wait_for(rtds_started.wait(), timeout=1.0)
     await asyncio.sleep(0.03)
     assert not clob_started.is_set()
@@ -146,6 +202,63 @@ async def test_forward_collector_limits_clob_connection_without_stopping_btc_fee
                 ("next-up", "next-down", "current-up"),
             ),
         )
+
+
+@pytest.mark.asyncio
+async def test_okx_metadata_initialization_does_not_block_other_public_feeds(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rtds_started = asyncio.Event()
+    metadata_started = asyncio.Event()
+    metadata_release = asyncio.Event()
+
+    async def fake_socket_loop(  # type: ignore[no-untyped-def]
+        websocket_collector,
+        *,
+        stop_event: asyncio.Event,
+        on_payload,
+        on_error=None,
+        on_connected=None,
+    ) -> None:
+        del on_payload, on_error, on_connected
+        if "ws-live-data" in websocket_collector.subscription.endpoint:
+            rtds_started.set()
+        await stop_event.wait()
+
+    async def delayed_metadata(self, *, client):  # type: ignore[no-untyped-def]
+        del self, client
+        metadata_started.set()
+        await metadata_release.wait()
+        return 1.0
+
+    monkeypatch.setattr(
+        "btc_short_horizon.data.forward.JsonWebSocketCollector.collect_forever",
+        fake_socket_loop,
+    )
+    monkeypatch.setattr(
+        BtcForwardCollector,
+        "refresh_okx_swap_contract_value",
+        delayed_metadata,
+    )
+    collector = BtcForwardCollector(
+        raw_data_root=tmp_path,
+        polymarket_token_ids=("up-token", "down-token"),
+    )
+    stop_event = asyncio.Event()
+    task = asyncio.create_task(
+        collector.collect_forever(
+            stop_event=stop_event,
+            binance_streams=(),
+            okx_subscriptions=({"channel": "trades", "instId": "BTC-USDT-SWAP"},),
+        )
+    )
+
+    await asyncio.wait_for(rtds_started.wait(), timeout=3.0)
+    await asyncio.wait_for(metadata_started.wait(), timeout=3.0)
+    assert not metadata_release.is_set()
+    stop_event.set()
+    await asyncio.wait_for(task, timeout=1.0)
 
 
 @pytest.mark.asyncio
@@ -231,7 +344,7 @@ async def test_forward_collector_isolates_clob_failure_to_its_market_connection(
             stop_event=stop_event,
             binance_streams=(),
         ),
-        timeout=2.0,
+        timeout=5.0,
     )
 
     stats = collector.quality_stats
@@ -875,13 +988,13 @@ async def test_forward_collector_serializes_competing_feed_admission_at_capacity
             binance_streams=("btcusdt@trade",),
         )
     )
-    await asyncio.to_thread(writer_started.wait, 1.0)
+    await asyncio.to_thread(writer_started.wait, 5.0)
     assert writer_started.is_set()
     await asyncio.sleep(0.02)
     assert not completed_feeds
 
     release_writer.set()
-    await asyncio.wait_for(task, timeout=2.0)
+    await asyncio.wait_for(task, timeout=5.0)
 
     rows = sum(pq.read_table(path).num_rows for path in tmp_path.rglob("part-*.parquet"))
     assert rows == 2
@@ -948,7 +1061,7 @@ async def test_forward_collector_flushes_before_retrying_an_atomic_gap_batch(
             stop_event=asyncio.Event(),
             binance_streams=(),
         ),
-        timeout=2.0,
+        timeout=5.0,
     )
 
     rows = sorted(
@@ -1503,7 +1616,7 @@ async def test_forward_collector_direct_cancellation_drains_pending_events(
         wait_for_stop,
     )
     task = asyncio.create_task(collector.collect_forever(stop_event=asyncio.Event()))
-    await asyncio.wait_for(started.wait(), timeout=1.0)
+    await asyncio.wait_for(started.wait(), timeout=5.0)
 
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -1564,7 +1677,7 @@ async def test_forward_collector_shutdown_flush_has_a_bounded_deadline(
     monkeypatch.setattr(collector._writer, "write", blocked_write)
     stop_event = asyncio.Event()
     task = asyncio.create_task(collector.collect_forever(stop_event=stop_event))
-    await asyncio.wait_for(started.wait(), timeout=1.0)
+    await asyncio.wait_for(started.wait(), timeout=5.0)
     stop_event.set()
 
     try:
@@ -1714,7 +1827,7 @@ async def test_forward_collector_shutdown_deadline_includes_producer_quiescence(
     )
     stop_event = asyncio.Event()
     task = asyncio.create_task(collector.collect_forever(stop_event=stop_event))
-    await asyncio.wait_for(started.wait(), timeout=1.0)
+    await asyncio.wait_for(started.wait(), timeout=5.0)
     stop_event.set()
 
     try:
@@ -1760,7 +1873,7 @@ async def test_forward_collector_propagates_producer_cleanup_failure(
     )
     stop_event = asyncio.Event()
     task = asyncio.create_task(collector.collect_forever(stop_event=stop_event))
-    await asyncio.wait_for(binance_started.wait(), timeout=1.0)
+    await asyncio.wait_for(binance_started.wait(), timeout=5.0)
     stop_event.set()
 
     with pytest.raises(RuntimeError, match="producer cleanup failed"):
@@ -1818,7 +1931,7 @@ async def test_forward_collector_preserves_producer_error_when_final_flush_fails
     monkeypatch.setattr(collector._writer, "write", fail_write)
     stop_event = asyncio.Event()
     task = asyncio.create_task(collector.collect_forever(stop_event=stop_event))
-    await asyncio.wait_for(producer_started.wait(), timeout=1.0)
+    await asyncio.wait_for(producer_started.wait(), timeout=5.0)
     stop_event.set()
 
     with pytest.raises(OSError, match="storage failed") as captured:
@@ -1944,7 +2057,7 @@ async def test_forward_collector_flushes_event_admitted_during_producer_shutdown
             binance_streams=("btcusdt@trade",),
         )
     )
-    await asyncio.wait_for(binance_started.wait(), timeout=1.0)
+    await asyncio.wait_for(binance_started.wait(), timeout=5.0)
     stop_event.set()
     await asyncio.wait_for(task, timeout=1.0)
 

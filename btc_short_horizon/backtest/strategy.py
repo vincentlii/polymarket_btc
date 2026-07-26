@@ -25,6 +25,7 @@ from btc_short_horizon.backtest.signals import (
     validate_opening_mispricing_signal,
 )
 from btc_short_horizon.strategy import (
+    ConsecutiveSignalConfirmation,
     LayerStructure,
     MakerOrderLayer,
     MakerStrategyConfig,
@@ -127,9 +128,11 @@ class BtcOpeningMispricingStrategy(Strategy):
         self._latest_signal: BtcOpeningMispricingSignal | None = None
         self._last_book_ts_ns: dict[InstrumentId, int] = {}
         self._active_orders: dict[str, Any] = {}
-        self._candidate_side: TokenSide | None = None
-        self._candidate_last_signal_ts_ns: int | None = None
-        self._candidate_signal_count = 0
+        self._confirmation = ConsecutiveSignalConfirmation(
+            required_signals=self._maker_config.confirmation_signals,
+            cadence_seconds=self._maker_config.signal_cadence_seconds,
+            tolerance_seconds=self._maker_config.signal_cadence_tolerance_seconds,
+        )
         self._seen_fill_ids: set[str] = set()
         self._any_order_rejected = False
         self._work_timer_set = False
@@ -390,7 +393,7 @@ class BtcOpeningMispricingStrategy(Strategy):
             model_edge=materialized.model_edge,
             net_edge=materialized.net_edge(materialized.layers[0].price),
             layer_count=len(materialized.layers),
-            confirmation_signals=self._candidate_signal_count,
+            confirmation_signals=self._confirmation.count,
             up_book_age_seconds=book_ages[TokenSide.UP],
             down_book_age_seconds=book_ages[TokenSide.DOWN],
             entry_book_age_seconds_max=max(book_ages.values()),
@@ -605,23 +608,10 @@ class BtcOpeningMispricingStrategy(Strategy):
         self._clear_work_expiry()
 
     def _confirm_candidate(self, *, side: TokenSide, signal_ts_ns: int) -> bool:
-        cadence_ns = round(self._maker_config.signal_cadence_seconds * 1_000_000_000)
-        tolerance_ns = round(self._maker_config.signal_cadence_tolerance_seconds * 1_000_000_000)
-        previous_ts = self._candidate_last_signal_ts_ns
-        consecutive = (
-            self._candidate_side is side
-            and previous_ts is not None
-            and cadence_ns - tolerance_ns <= signal_ts_ns - previous_ts <= cadence_ns + tolerance_ns
-        )
-        self._candidate_signal_count = self._candidate_signal_count + 1 if consecutive else 1
-        self._candidate_side = side
-        self._candidate_last_signal_ts_ns = signal_ts_ns
-        return self._candidate_signal_count >= self._maker_config.confirmation_signals
+        return self._confirmation.observe(side, signal_ts_ns=signal_ts_ns)
 
     def _reset_candidate(self) -> None:
-        self._candidate_side = None
-        self._candidate_last_signal_ts_ns = None
-        self._candidate_signal_count = 0
+        self._confirmation.reset()
 
     def _on_work_expiry(self, event: Any) -> None:
         self._work_timer_set = False

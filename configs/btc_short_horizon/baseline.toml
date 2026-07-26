@@ -37,13 +37,13 @@ max_pending_events = 100000
 max_pending_bytes = 67108864
 rotation_poll_seconds = 2.0
 polymarket_capture_lead_seconds = 90.0
-opening_handoff_delay_seconds = 180.0
+opening_handoff_delay_seconds = 200.0
 binance_spot_depth_snapshot_limit = 1000
 binance_futures_depth_snapshot_limit = 1000
 binance_depth_snapshot_retry_initial_seconds = 0.5
 binance_depth_snapshot_retry_max_seconds = 30.0
 polymarket_source_timestamp_regression_tolerance_seconds = 1.0
-ingest_version = "btc-short-horizon-v11"
+ingest_version = "btc-short-horizon-v12"
 
 [maker]
 structure = "single"

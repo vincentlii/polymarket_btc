@@ -16,25 +16,34 @@ and reporting plumbing without importing archived BTC strategy logic.
   account equity/PnL, an equity curve, recent market-level trades, connection
   and order-latency health, active alerts, and the Research-to-Live lifecycle.
   Missing projections stay visibly empty; research Proxy and Shadow output are
-  never rendered as real profit. An optional post-window Shadow scheduler
-  writes one SHA-versioned causal pass per completed window. This is
-  collection/observability plumbing only; Docker build verification still
-  requires a Docker Engine, and it does not authorize Paper, Canary, or live
-  orders.
+  never rendered as real profit. A credential-free real-time Research Paper
+  runtime now consumes only collector-admitted events and publishes an
+  explicitly simulated virtual ledger, per-market orders/PnL and equity curve.
+  It uses a zero-network `PaperOrderGateway`, P99 insert/cancel latency, full
+  visible queue ahead and 50% seller-initiated trade volume. It cannot authorize
+  Canary or live orders. An optional post-window Shadow scheduler still writes
+  one SHA-versioned causal pass per completed window.
 - Data boundary: 15m is the only trading family; 5m is collection-only.
 - Forward collection: `btc_forward_collector.py --follow-current` now discovers
   current and next exact Gamma slugs and persists separate rule-hash catalogs.
-  In ingest v11, each isolated token pair connects only during `t0-90s` through
-  `t0+180s`; every interval requests a fresh official full-book snapshot.
+  In ingest v12, each isolated token pair connects only during `t0-90s` through
+  `t0+200s`; every interval requests a fresh official full-book snapshot.
   Binance and Chainlink remain continuous, and planned CLOB sleep is excluded
   from required-feed health. This targets the measured dominant disk source
-  without weakening the strategy's complete 3-180s opening evidence window.
+  while covering the complete 3-180s decision window, a final order's 15-second
+  work period and P99 cancel race.
   Shadow now records a terminal, explicit skip for pre-epoch windows with no
   causal observations instead of retrying them forever. Its container health
   freshness threshold covers the configured 60-second scheduler cadence.
 - Evidence boundary: no profitability or deployability claim exists until real
   data passes the documented holdout and the complete queue-enabled P99
   trade-volume/timestamp-order robustness grid.
+- Research Paper hardening: a bounded non-blocking admitted-event seam cannot
+  backpressure durable collection; overflow fails Paper only. The runtime pins
+  public CLOB token/tick/min-size/neg-risk/zero-maker-fee rules, preserves one
+  placement cycle across restart, continuously revalues working orders, permits
+  cancel-race fills, rejects insufficient virtual balance and settles only from
+  explicit Gamma outcomes. Unfilled resolved orders do not distort win rate.
 - Model/research hardening: model inputs and probabilities now reject coercion,
   non-finite values, invalid shapes, and inconsistent lineage. Walk-forward
   tests are non-overlapping and group-safe; LightGBM early stopping, calibration,
@@ -152,7 +161,7 @@ and reporting plumbing without importing archived BTC strategy logic.
   source events and their gap boundaries reserve capacity and commit together.
   Follow catalogs preserve their first pre-open `collected_at` timestamp and
   reject same-path metadata conflicts instead of overwriting provenance.
-  Current v9 adds a durable prepared/committed session inventory, process-level
+  Version v9 introduced a durable prepared/committed session inventory, process-level
   single-writer lease, interrupted-session recovery, and content-addressed
   object backup with full-download verification. Readers now detect deletion of
   both a part and its adjacent manifest; archive is dry-run by default and
@@ -165,8 +174,8 @@ and reporting plumbing without importing archived BTC strategy logic.
   enhanced audit explicitly opted into the current Binance Futures `/public`
   route for trade and Book Ticker. The deploy default remains Spot closed
   `kline_1s` only, and the runtime reports the look-ahead market as active after
-  handoff. This run does not validate the v9 storage/session boundary; fresh v9
-  evidence is required before promotion.
+  handoff. This historical run does not validate the current v12 collection;
+  fresh v12 evidence is required before promotion.
 - The runtime model path uses the same feature schema as training and bootstraps
   at most four Binance REST pages. A full three-minute shadow needs 3,782 closed
   one-second bars instead of downloading another historical archive.
@@ -194,13 +203,13 @@ the input/output contract and operational commands.
 - Existing local raw roots contain historical v2--v8 epochs and an open legacy
   session. They remain immutable research provenance and must not be copied to
   the first VPS or repaired in place. The VPS starts from empty data/output
-  roots and collects only current v9 evidence.
+  roots and collects only current v12 evidence.
 - Target-only evidence cannot be manufactured locally: actual-IP geoblock and
-  legal eligibility, NTP and endpoint latency, Linux Docker build, fresh v9
-  collection, object-store full verification/restore and long-running recovery
+  legal eligibility, NTP and endpoint latency, Linux Docker build, fresh v12
+  collection, off-VPS full verification/restore and long-running recovery
   must all pass on the purchased host.
-- The approved first VPS scope is therefore collector, optional post-window
-  Shadow and loopback dashboard only. Paper, Canary and real orders remain
+- The approved VPS scope is collector, credential-free Research Paper, optional
+  post-window Shadow and loopback dashboard. Canary and real orders remain
   disabled until their independent promotion gates pass.
 
 ## Roadmap
@@ -225,16 +234,16 @@ the input/output contract and operational commands.
 
 ## Known Issues
 
-- Runtime and raw-data backup tools are implemented, but a real target bucket
-  still needs versioning/Object Lock policy, least-privilege credentials and an
-  off-VPS copy of snapshot IDs. One successful target-host full backup and
-  isolated restore drill remains deployment evidence; local deterministic tests
-  cannot prove the user's future cloud account or storage policy.
+- Runtime and raw-data backup tools are implemented. The selected operational
+  path is periodic transfer to a local staging root and content-addressed
+  `--transport local` snapshots on a removable drive, with full-download
+  verification and isolated restore drill. Until the first verified off-VPS
+  snapshot exists, the VPS remains a single point of data loss.
 - The operations supervisor is intentionally not exposed as a real-order
   Compose service. There is no production decision runner connecting the
   opening model to live placement, and the direction/maker evidence gates are
-  still No-Go. First deployment remains collector, optional post-window Shadow
-  and read-only dashboard only.
+  still No-Go. Research Paper is a credential-free heuristic projection, not a
+  production decision runner and not Maker-Go evidence.
 - A single fresh 36-decision Shadow window proves runtime compatibility, not
   statistical stability. Promotion still requires accumulated forward windows,
   target holdout counts, synchronized executable L2/TradeTick evidence, and the
@@ -261,7 +270,7 @@ the input/output contract and operational commands.
 - Forward data through `btc-short-horizon-v6` predates the explicit
   collector-session column and hard queued/in-flight buffer contract. It
   remains immutable provenance and can be audited only with its matching
-  schema; current v9 readers select one ingest version and apply its matching
+  schema; current readers select one ingest version and apply its matching
   row contract without mixing epochs.
 - Kalshi is not currently exposed as a public runnable backtest path. The repo
   still contains Kalshi instrument, trade/candlestick loader, fee-model, and

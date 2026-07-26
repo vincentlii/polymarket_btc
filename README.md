@@ -149,6 +149,7 @@ Detailed guides have been filed away in the [docs index](https://evan-kolberg.gi
     - [Opening Feature Evidence Audit](https://evan-kolberg.github.io/prediction-market-backtesting/btc-short-horizon-architecture/#opening-feature-evidence-audit)
   - [Running One Replay](https://evan-kolberg.github.io/prediction-market-backtesting/btc-short-horizon-architecture/#running-one-replay)
   - [Dashboard Observability](https://evan-kolberg.github.io/prediction-market-backtesting/btc-short-horizon-architecture/#dashboard-observability)
+  - [Real-time Research Paper](https://evan-kolberg.github.io/prediction-market-backtesting/btc-short-horizon-architecture/#real-time-research-paper)
   - [Live Progression](https://evan-kolberg.github.io/prediction-market-backtesting/btc-short-horizon-architecture/#live-progression)
     - [Live Order Identity And Recovery](https://evan-kolberg.github.io/prediction-market-backtesting/btc-short-horizon-architecture/#live-order-identity-and-recovery)
   - [Windows Native Build](https://evan-kolberg.github.io/prediction-market-backtesting/btc-short-horizon-architecture/#windows-native-build)

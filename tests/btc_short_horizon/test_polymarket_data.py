@@ -26,6 +26,10 @@ def test_polymarket_book_price_change_trade_and_tick_events_are_causal() -> None
     )
     assert snapshot.status is PolymarketL2Status.APPLIED
     assert snapshot.book_top is not None
+    assert normalizer.book_levels() == (
+        ((0.5, 10.0),),
+        ((0.52, 20.0),),
+    )
 
     changed = normalizer.apply(
         {
@@ -37,6 +41,7 @@ def test_polymarket_book_price_change_trade_and_tick_events_are_causal() -> None
     )
     assert changed.book_top is not None
     assert changed.book_top.bid == pytest.approx(0.51)
+    assert normalizer.book_levels()[0] == ((0.51, 5.0), (0.5, 10.0))
 
     trade = normalizer.apply(
         {

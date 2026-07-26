@@ -2,7 +2,9 @@
 
 ## Scope
 
-本文件定义首次 VPS 部署的边界：运行 BTC 15m 前瞻采集器和只读状态看板，持续保存原始数据、质量计数与运行状态。它不运行实盘下单、Canary 或自动扩容。
+本文件定义当前 VPS 部署边界：运行 BTC 15m 前瞻采集器、实时
+`Research Paper` 和只读看板，持续保存原始数据、模拟订单/盈亏、质量计数与
+运行状态。它不加载账户凭据，不发送真实订单，也不运行 Canary 或自动扩容。
 
 VPS 是不可变运行环境：本地完成代码、模型、回测与审查后，发布固定的 Git revision 或镜像；服务器只拉取该发布物、挂载数据目录并运行容器。不要在 VPS 上直接修改策略代码或训练模型。
 
@@ -11,6 +13,7 @@ VPS 是不可变运行环境：本地完成代码、模型、回测与审查后�
 | Component | Responsibility | Authority |
 |---|---|---|
 | `btc_forward_runtime.py` | 发现 BTC 15m 当前/下一市场，采集公开 CLOB、Chainlink 与 Binance 证据，写入质量与运行状态 | 无订单网关、无密钥、无交易权力 |
+| `ResearchPaperRuntime` | 对采集器已接纳的实时事件执行模型、两次确认、模拟挂单/queue/cancel race、Gamma 结算与虚拟账本 | 只允许内存 `PaperOrderGateway`；无网络下单能力 |
 | `btc_runtime_dashboard.py` | 聚合运行健康、绩效快照、逐单盈亏与策略周期 | 只读 HTTP；没有下单、撤单、改参或停机接口 |
 | `btc_runtime_control.py` | 写入或清除本地 stop request | 只能停止本项目运行进程；没有订单权限 |
 | `btc_opening_proxy_shadow.py` | 对已完成的完整窗口作因果 Shadow 重建 | 不提交或模拟订单；不是实时成交证明 |
@@ -18,20 +21,25 @@ VPS 是不可变运行环境：本地完成代码、模型、回测与审查后�
 
 `/healthz` 只表示运行器存活、状态新鲜且自身未报告失败。它不等同于交易所每条订阅都已成功送达；状态详情中的质量计数才是后续数据审计的输入。
 
-Paper 网关只能在本地内存中使用。Canary/实盘路径仍需要独立的市场规则、账户、地区、时钟、SDK、手续费和用户频道对账验证，不能随 VPS 一起启用。
+Paper 使用官方公开 CLOB market-info 验证 token、tick、minimum size、neg-risk
+和 fee，但订单网关只在内存中运行。它采用 P99 latency、完整可见 queue 与 50%
+卖方主动成交量的悲观 heuristic；结果只证明在线流程和模拟表现，不证明实盘可成交
+edge。Canary/实盘仍需独立的账户、地区、时钟、SDK 和 User channel 对账审查。
 
 ## Dashboard Data Contract
 
 看板默认每 5 秒读取两个互相隔离的数据源：
 
-- `status/*.json`：采集器、Shadow 和未来执行运行器的存活、状态新鲜度及数据质量。
-- `dashboard/snapshot.json`：账户权益、累计/今日 PnL、回撤、资金曲线、最近市场级交易、连接/延迟健康、活跃告警和策略生命周期。
+- `status/*.json`：采集器、Research Paper、Shadow 和未来执行运行器的存活、状态新鲜度及数据质量。
+- `dashboard/snapshot.json`：明确标为模拟的虚拟权益、累计/今日 PnL、回撤、资金曲线、最近市场级订单、连接/延迟健康、活跃告警和策略生命周期。
 
 页面始终只读。快照不存在时，资金与逐单区域显示明确空状态；研究 Proxy、expected edge 和事后 Shadow 不得写成真实 PnL。Shadow 中没有真实订单时，下单延迟显示 `N/A`，不得显示为 `0 ms`。
 
 生命周期使用 `Research → Challenge → Shadow → Canary → Live`，并显示 Champion、Challenger、阶段进度、数据截止时间、下次训练和下次评审。默认治理节奏是每日自动汇总、每 14 天冻结一个 Challenger、每 28 天或达到预注册样本门槛后进行一次人工 Promotion Review；不得自动替换 Champion。规则、fee、tick、schema、数据源、漂移或延迟异常可提前触发 Challenge 或降级。
 
-界面与字段取舍依据记录在 [BTC Bot Dashboard Research](btc-dashboard-research.md)。真实 Paper/Canary/Live 运行器只有在账户 ledger、订单状态和 User channel 对账完成后，才允许写入绩效快照。
+界面与字段取舍依据记录在 [BTC Bot Dashboard Research](btc-dashboard-research.md)。
+Research Paper 只能从独立 `paper/ledger.json` 写入带模拟标签的投影；Canary/Live
+只有在真实账户 ledger、订单状态和 User channel 对账完成后才能写账户绩效。
 
 ## Local Validation
 
@@ -39,7 +47,8 @@ Paper 网关只能在本地内存中使用。Canary/实盘路径仍需要独立�
 
 ```powershell
 uv run python scripts/btc_forward_runtime.py `
-  --rule-epoch <verified-current-rule-epoch>
+  --rule-epoch <verified-current-rule-epoch> `
+  --paper-model-directory <validated-model-artifact-directory>
 
 uv run python scripts/btc_runtime_dashboard.py
 ```
@@ -92,13 +101,16 @@ absolute、regular、non-symlink、UTF-8；不得进入 Git、镜像 build conte
 第一次部署必须使用全新的空 `deploy/runtime/data` 和
 `deploy/runtime/output`，不得复制当前本地 `data/btc_short_horizon`。本地目录
 混有历史 v2--v8 epoch 与未关闭的旧 session；它们只保留作不可变研究 provenance，
-不能修补或迁移成 v9 证据。若启用可选 Shadow，只复制已验证的 protocol v2
+不能修补或迁移成 v12 证据。部署前只复制已验证的 protocol v2
 模型目录
 `output/btc_short_horizon/research/opening-proxy-protocol-v2-clean-20260428-20260713/model/`
 到 `deploy/runtime/data/btc_short_horizon/models/<model-id>/`，不要复制同级的
-`dataset.parquet`、旧 raw 或旧 Shadow 输出。VPS 必须重新采集 fresh v9 数据。
+`dataset.parquet`、旧 raw 或旧 Shadow 输出。VPS 必须重新采集 fresh v12 数据。
 
-首次部署只需要 Docker Engine 与 Compose。将 `.env.example` 复制为部署目录中的 `.env`，填入经过当期 Gamma/市场规则核实的 `BTC_RULE_EPOCH`。不要从旧市场或旧文档盲目复制该值。
+首次部署只需要 Docker Engine 与 Compose。将 `.env.example` 复制为部署目录中的
+`.env`，填入经过当期 Gamma/市场规则核实的 `BTC_RULE_EPOCH`、测试过的完整
+`BTC_CODE_REVISION`，以及容器内的 `BTC_MODEL_DIRECTORY`。不要从旧市场或旧文档
+盲目复制 rule epoch。
 
 ```bash
 cd /path/to/polymarket_btc
@@ -114,9 +126,9 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml logs -f forward_col
 
 容器镜像不包含 `data/` 或 `output/`。它们被挂载到宿主机：模型、原始数据和运行状态都在 `deploy/runtime/` 下。后续替换 VPS 时只能迁移通过当前 audit 与远端全量校验的 runtime snapshot；首次部署不迁移历史本地 raw。
 
-当且仅当本地已经验证过模型 artefact 后，可在 `.env` 设置
-`BTC_MODEL_DIRECTORY` 并启用可选 Shadow profile。它会在市场窗口和数据
-handoff 完成后调用既有 Shadow pass；不会提交任何订单：
+基础 Compose 会启动实时 Research Paper；它的模型目录因此是必填项。可选
+`shadow` profile 复用同一 artifact，在市场窗口和数据 handoff 完成后再运行一遍
+事后因果重建；两者都不会提交真实订单：
 
 ```bash
 docker compose --env-file deploy/.env -f deploy/compose.yaml --profile shadow up -d
@@ -152,7 +164,11 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml up -d forward_colle
 
 ## Data Backup And Restore
 
-前瞻原始数据使用 v9 session inventory，而不是按目录中文件数量判断完整性。每次安全停机后先运行 audit；至少每天把 complete sessions 上传到异地对象存储并执行全量下载校验。当前容器镜像不包含 `rclone`，首次部署由宿主机安装并配置 rclone，再从固定代码 revision 运行 `scripts/btc_data_archive.py`。
+前瞻原始数据沿用 v9 引入的 session inventory（当前写入 epoch 为 v12），而不是
+按目录中文件数量判断完整性。每次安全停机后先运行 audit。若按当前决定使用移动
+硬盘而非 COS，应每几天安全停机，把 complete sessions 拉到本机暂存目录，再在
+连接移动硬盘的本机使用 `--transport local` 创建内容寻址 snapshot 并全量回读验证；
+VPS 上未验证的普通文件复制不算备份。
 
 ```bash
 uv run python scripts/btc_data_archive.py \
@@ -166,6 +182,21 @@ uv run python scripts/btc_data_archive.py \
   --remote btc-archive:polymarket-btc/forward \
   --temporary-root deploy/runtime/tmp
 ```
+
+移动硬盘在本机挂载后可替换为：
+
+```bash
+uv run python scripts/btc_data_archive.py \
+  --raw-data-root /local/staging/btc_short_horizon \
+  backup \
+  --transport local \
+  --remote /media/polymarket-btc/forward \
+  --temporary-root /local/staging/tmp
+```
+
+`/local/staging` 必须来自一次完整、安全停机后的 VPS 同步，并在备份前通过
+`audit --require-closed`。移动硬盘不在线期间 VPS 仍是单点故障，因此同步间隔就是
+可接受的数据损失窗口；空间接近阈值时必须提前同步，不能边采集边删。
 
 备份命令只有在重新下载并核对 snapshot 中每个对象后才写 verification receipt。snapshot ID 与 receipt 路径必须同步到本地电脑或独立运维记录。对象存储至少开启 versioning，并使用与主 VPS 隔离、无历史版本删除权限的凭据。
 
@@ -215,9 +246,15 @@ receipt 默认全部保留在本地；60G 空间首先通过已验证的 raw-ses
 
 ## Pre-Purchase Validation Status
 
-本地购买前验收已经覆盖完整的 180 秒窗口：双 token CLOB Shadow 的 36 个决策点全部完成，零订单提交；增强的 Binance Spot/Perpetual、Chainlink 与 CLOB 特征审计观察到 36/36 个决策点，其中 32 个满足严格的一秒数据新鲜度，另外 4 个按设计 fail closed。运行器已验证市场 handoff、stop request、pending event 清空、feed health、磁盘状态和只读看板状态投影。
+本地购买前验收已覆盖完整 180 秒决策窗口。当前 v12 进一步采集到 `t0+200s`，
+用于覆盖最后一次决策产生订单的 15 秒工作期与 P99 cancel race。实时 Research
+Paper 复用相同模型/确认规则，模拟 ledger 与看板明确隔离于真实账户。
 
-购买首尔 VPS 后仍必须在目标 IP 上完成、且不能由本地替代的检查包括：Geo-block/法律资格、到 CLOB/RTDS/Binance 的实际 P50/P95/P99 RTT、NTP 偏差、Docker 镜像构建与重启策略、长期断线恢复、真实账户 user channel 对账，以及后续最小规模 Canary。首次部署只启用 collector、Shadow scheduler 与 dashboard，不启用真实订单网关。
+首尔 VPS 仍必须在目标 IP 上完成、且不能由本地替代的检查包括：Geo-block/法律
+资格、到 CLOB/RTDS/Binance 的实际 P50/P95/P99 RTT、NTP 偏差、Docker 镜像构建
+与重启策略、长期断线恢复，以及后续真实账户 User channel 与最小规模 Canary。
+当前部署启用 collector、Research Paper、可选 Shadow scheduler 与 dashboard，
+不启用真实订单网关。
 
 ## Release Gates
 

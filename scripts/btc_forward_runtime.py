@@ -18,9 +18,10 @@ else:
 
 ensure_repo_root(__file__)
 
-from btc_short_horizon.config import load_btc_project_config  # noqa: E402
+from btc_short_horizon.config import BtcProjectConfig, load_btc_project_config  # noqa: E402
 from btc_short_horizon.data import BtcForwardCollector, MarketWindow  # noqa: E402
 from btc_short_horizon.data.forward import (  # noqa: E402
+    AdmittedEventBuffer,
     DEFAULT_BINANCE_FUTURES_MARKET_STREAMS,
     DEFAULT_BINANCE_FUTURES_PUBLIC_STREAMS,
     DEFAULT_BINANCE_STREAMS,
@@ -33,7 +34,10 @@ from btc_short_horizon.live.forward_runtime import (  # noqa: E402
     ForwardCollectorRuntimeConfig,
     run_forward_collector_runtime,
 )
+from btc_short_horizon.live.paper_runtime import ResearchPaperRuntime  # noqa: E402
 from btc_short_horizon.live.runtime import (  # noqa: E402
+    RuntimeStatus,
+    RuntimeStatusStore,
     build_runtime_identity,
     filesystem_usage,
 )
@@ -114,7 +118,51 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--binance-stream", action="append", default=None)
     parser.add_argument("--binance-futures-market-stream", action="append", default=None)
     parser.add_argument("--binance-futures-public-stream", action="append", default=None)
+    parser.add_argument("--paper-model-directory", type=Path)
+    parser.add_argument("--paper-starting-balance", type=float, default=1_000.0)
+    parser.add_argument("--paper-event-buffer-size", type=int, default=20_000)
     return parser.parse_args(argv)
+
+
+def _initialize_research_paper(
+    *,
+    project: BtcProjectConfig,
+    model_directory: Path,
+    runtime_root: Path,
+    rule_epoch: str,
+    starting_balance: float,
+    max_events: int,
+) -> tuple[AdmittedEventBuffer | None, ResearchPaperRuntime | None]:
+    started_at = datetime.now(UTC)
+    try:
+        buffer = AdmittedEventBuffer(max_events=max_events)
+        runtime = ResearchPaperRuntime(
+            project=project,
+            model_directory=model_directory,
+            runtime_root=runtime_root,
+            rule_epoch=rule_epoch,
+            event_buffer=buffer,
+            starting_balance=starting_balance,
+        )
+    except Exception as exc:
+        RuntimeStatusStore(runtime_root).write(
+            RuntimeStatus(
+                service="research_paper",
+                mode="paper",
+                state="failed",
+                healthy=False,
+                started_at=started_at,
+                updated_at=datetime.now(UTC),
+                details={
+                    "ready": False,
+                    "last_error": f"{type(exc).__name__}: {exc}",
+                    "credentials_loaded": False,
+                    "real_orders_enabled": False,
+                },
+            )
+        )
+        return None, None
+    return buffer, runtime
 
 
 async def run_async(args: argparse.Namespace) -> None:
@@ -156,6 +204,17 @@ async def run_async(args: argparse.Namespace) -> None:
     )
     recovered_interrupted_sessions: tuple[str, ...] = ()
     stop_event = asyncio.Event()
+    paper_buffer: AdmittedEventBuffer | None = None
+    paper_runtime: ResearchPaperRuntime | None = None
+    if args.paper_model_directory is not None:
+        paper_buffer, paper_runtime = _initialize_research_paper(
+            project=project,
+            model_directory=args.paper_model_directory,
+            runtime_root=runtime_root,
+            rule_epoch=args.rule_epoch,
+            starting_balance=args.paper_starting_balance,
+            max_events=args.paper_event_buffer_size,
+        )
     loop = asyncio.get_running_loop()
     registered_signals: list[signal.Signals] = []
     for item in (signal.SIGINT, signal.SIGTERM):
@@ -177,6 +236,9 @@ async def run_async(args: argparse.Namespace) -> None:
             binance_futures_market_streams=binance_futures_market_streams,
             binance_futures_public_streams=binance_futures_public_streams,
         )
+        if paper_buffer is not None and paper_runtime is not None:
+            collector.subscribe_admitted_events(paper_buffer)
+            paper_runtime.register_markets(market, lookahead)
         active = _ActiveWindow(market=market, lookahead=lookahead, collector=collector)
         _refresh_required_clob_feeds(
             active,
@@ -269,51 +331,67 @@ async def run_async(args: argparse.Namespace) -> None:
         return details
 
     async def collect(stop_event: asyncio.Event) -> None:
-        await collect_current_market_windows(
-            family=project.primary_family,
-            rule_epoch=args.rule_epoch,
-            raw_data_root=project.paths.raw_data_root,
-            catalog_directory=catalog_directory,
-            flush_size=(
-                args.flush_size if args.flush_size is not None else project.collection.flush_size
-            ),
-            flush_interval_seconds=(
-                args.flush_interval_seconds
-                if args.flush_interval_seconds is not None
-                else project.collection.flush_interval_seconds
-            ),
-            shutdown_flush_timeout_seconds=(project.collection.shutdown_flush_timeout_seconds),
-            max_pending_events=project.collection.max_pending_events,
-            max_pending_bytes=project.collection.max_pending_bytes,
-            binance_spot_depth_snapshot_limit=(
-                project.collection.binance_spot_depth_snapshot_limit
-            ),
-            binance_futures_depth_snapshot_limit=(
-                project.collection.binance_futures_depth_snapshot_limit
-            ),
-            binance_depth_snapshot_retry_initial_seconds=(
-                project.collection.binance_depth_snapshot_retry_initial_seconds
-            ),
-            binance_depth_snapshot_retry_max_seconds=(
-                project.collection.binance_depth_snapshot_retry_max_seconds
-            ),
-            polymarket_source_timestamp_regression_tolerance_seconds=(
-                project.collection.polymarket_source_timestamp_regression_tolerance_seconds
-            ),
-            ingest_version=project.collection.ingest_version,
-            binance_streams=binance_streams,
-            binance_futures_market_streams=binance_futures_market_streams,
-            binance_futures_public_streams=binance_futures_public_streams,
-            rotation_poll_seconds=(
-                args.rotation_poll_seconds
-                if args.rotation_poll_seconds is not None
-                else project.collection.rotation_poll_seconds
-            ),
-            polymarket_capture_lead_seconds=polymarket_capture_lead_seconds,
-            opening_handoff_delay_seconds=opening_handoff_delay_seconds,
-            stop_event=stop_event,
-            on_market_active=on_market_active,
+        paper_task = (
+            None
+            if paper_runtime is None
+            else asyncio.create_task(
+                paper_runtime.run(stop_event=stop_event),
+                name="btc-research-paper",
+            )
         )
+        try:
+            await collect_current_market_windows(
+                family=project.primary_family,
+                rule_epoch=args.rule_epoch,
+                raw_data_root=project.paths.raw_data_root,
+                catalog_directory=catalog_directory,
+                flush_size=(
+                    args.flush_size
+                    if args.flush_size is not None
+                    else project.collection.flush_size
+                ),
+                flush_interval_seconds=(
+                    args.flush_interval_seconds
+                    if args.flush_interval_seconds is not None
+                    else project.collection.flush_interval_seconds
+                ),
+                shutdown_flush_timeout_seconds=(project.collection.shutdown_flush_timeout_seconds),
+                max_pending_events=project.collection.max_pending_events,
+                max_pending_bytes=project.collection.max_pending_bytes,
+                binance_spot_depth_snapshot_limit=(
+                    project.collection.binance_spot_depth_snapshot_limit
+                ),
+                binance_futures_depth_snapshot_limit=(
+                    project.collection.binance_futures_depth_snapshot_limit
+                ),
+                binance_depth_snapshot_retry_initial_seconds=(
+                    project.collection.binance_depth_snapshot_retry_initial_seconds
+                ),
+                binance_depth_snapshot_retry_max_seconds=(
+                    project.collection.binance_depth_snapshot_retry_max_seconds
+                ),
+                polymarket_source_timestamp_regression_tolerance_seconds=(
+                    project.collection.polymarket_source_timestamp_regression_tolerance_seconds
+                ),
+                ingest_version=project.collection.ingest_version,
+                binance_streams=binance_streams,
+                binance_futures_market_streams=binance_futures_market_streams,
+                binance_futures_public_streams=binance_futures_public_streams,
+                rotation_poll_seconds=(
+                    args.rotation_poll_seconds
+                    if args.rotation_poll_seconds is not None
+                    else project.collection.rotation_poll_seconds
+                ),
+                polymarket_capture_lead_seconds=polymarket_capture_lead_seconds,
+                opening_handoff_delay_seconds=opening_handoff_delay_seconds,
+                stop_event=stop_event,
+                on_market_active=on_market_active,
+            )
+        finally:
+            if paper_task is not None:
+                if not stop_event.is_set():
+                    stop_event.set()
+                await paper_task
 
     lease = CollectorStorageLease(
         project.paths.raw_data_root,

@@ -117,9 +117,14 @@ prepared. Version v10 keeps those durability guarantees and isolates each
 current/look-ahead market pair on its own physical CLOB connection. A malformed
 payload, source-time regression, disconnect, or forced resubscription therefore
 invalidates only the two tokens carried by that connection; it cannot reset the
-next market's pre-open/opening book state. Version v11 preserves that isolation
-but bounds each pair's physical connection to the configured pre-open/opening
-capture interval. Every bounded connection still starts from the venue's
+next market's pre-open/opening book state. Version v11 preserved that isolation
+and bounded each pair's physical connection to the configured pre-open/opening
+capture interval. Version v12 extends the baseline interval through `t0+200s`
+so an order first placed at `t0+180s` retains L2/trade evidence for its complete
+15-second work period and P99 cancel race. It also exposes a bounded,
+non-blocking copy of admitted raw events to the Research Paper consumer;
+overflow fails Paper closed but never backpressures or stops durable collection.
+Every bounded connection still starts from the venue's
 official initial full-book dump; window-external deltas are neither required
 nor silently treated as collected evidence. A collector restart after a capture
 window begins produces an explicitly partial session, not fabricated history.
@@ -610,6 +615,36 @@ catalog scan and refreshes status before each bounded market reconstruction.
 A genuinely stuck reconstruction therefore becomes stale, while a normal
 startup cannot inherit a stopped or failed status from the previous release.
 
+### Real-time Research Paper
+
+The forward runtime can run one credential-free `ResearchPaperRuntime` beside
+the durable collector. It consumes only events that already passed collector
+admission, reconstructs both token books, evaluates the pinned model at the
+same five-second cadence as replay, requires the shared two-signal confirmation,
+and permits one placement cycle per market. Working orders continue to be
+revalued through `entry_end + max_work`; stale/gapped data, probability decay,
+rule changes and expiry request a simulated cancel, with fills still possible
+during the configured cancel latency.
+
+Its matching is deliberately pessimistic and explicitly heuristic: P99
+insert/cancel latency, the full visible same-side L2 queue ahead, and only 50%
+of seller-initiated public trade volume can consume that queue and fill a
+passive BUY. A price touch alone never fills. Public `/clob-markets/{condition}`
+metadata pins token IDs, tick, minimum size, neg-risk and zero maker fee before
+the market is activated. The Paper gateway cannot send network requests and no
+credential is loaded.
+
+`paper/ledger.json` is a separate atomic simulated ledger. It persists planned
+notional, partial/cancel-race fills, settlement and virtual cash/equity. The
+dashboard labels every value as simulated; this evidence is useful for runtime
+and strategy iteration but cannot satisfy the formal Maker Go gate. A Paper
+model/bootstrap/rules/buffer failure writes an unhealthy `research_paper`
+status while the collector continues. Rule fetch retries are rate-limited;
+transient Gamma resolution failures remain unhealthy and retry every 30 seconds
+instead of terminating the Paper decision loop. Event intake remains at 50ms,
+while status/dashboard atomic writes are limited to the page's five-second
+refresh cadence to avoid unnecessary VPS disk I/O.
+
 The recommended governance cadence is operational review every day, a frozen
 challenger candidate every 14 days, and a manual promotion review every 28
 days or when the pre-registered evidence target is reached. A fee, tick, rule,
@@ -621,9 +656,10 @@ schedule automatically replaces the champion model.
 `LiveMode.SHADOW` is the default and never calls a gateway. `PAPER` and
 `CANARY` require a gateway and an explicit `trading_enabled` risk setting.
 `PAPER` accepts only the in-memory `PaperOrderGateway`, so a paper test cannot
-accidentally reach the CLOB client. The separate forward-collector runtime has
-no gateway at all: it writes atomic, credential-free status snapshots and a
-filesystem stop request for a read-only local dashboard. See
+accidentally reach the CLOB client. The forward collector owns no order gateway;
+its sibling Research Paper projection receives only admitted public events and
+uses the in-memory gateway. Both write atomic, credential-free status snapshots
+and honor the same filesystem stop request. See
 [BTC VPS Operations](btc-vps-operations.md) for the deployment and migration
 contract.
 Canary orders are bounded by `canary_max_shares`; the service tracks 200

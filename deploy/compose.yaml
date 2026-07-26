@@ -29,6 +29,10 @@ services:
       - "${BTC_RULE_EPOCH:?set BTC_RULE_EPOCH to the verified current market-rule epoch}"
       - --runtime-root
       - /app/output/btc_short_horizon/runtime
+      - --paper-model-directory
+      - "${BTC_MODEL_DIRECTORY:?set BTC_MODEL_DIRECTORY to a validated model artifact inside /app/data}"
+      - --paper-starting-balance
+      - "${BTC_PAPER_STARTING_BALANCE:-1000}"
     environment:
       PYTHONUNBUFFERED: "1"
       BTC_CODE_REVISION: "${BTC_CODE_REVISION}"
