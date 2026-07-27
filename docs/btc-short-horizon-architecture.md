@@ -649,6 +649,14 @@ instead of terminating the Paper decision loop. Event intake remains at 50ms,
 while status/dashboard atomic writes are limited to the page's five-second
 refresh cadence to avoid unnecessary VPS disk I/O.
 
+Paper startup does not anchor its REST history to wall-clock time before the
+collector feed exists. It waits up to 30 seconds for the first collector-admitted
+closed Binance kline, uses that kline's open time as the exclusive REST bootstrap
+end, then replays every deferred admitted event in causal order. This makes the
+REST tail and first WebSocket bar exactly adjacent. Missing anchors, malformed
+timestamps and buffer overflow still fail Paper closed instead of filling or
+ignoring a startup gap.
+
 The recommended governance cadence is operational review every day, a frozen
 challenger candidate every 14 days, and a manual promotion review every 28
 days or when the pre-registered evidence target is reached. A fee, tick, rule,

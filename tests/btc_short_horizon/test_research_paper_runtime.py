@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import asyncio
+from collections import defaultdict, deque
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from btc_short_horizon.data import BTC_15M_MARKET_FAMILY, MarketOutcome, MarketWindow
 from btc_short_horizon.data.collector import RawCollectorEvent
 from btc_short_horizon.data.contracts import TimedMarketEvent
+from btc_short_horizon.data.forward import AdmittedEventBuffer
 from btc_short_horizon.live.paper_execution import PaperExecutionConfig, PaperMarketRules
+from btc_short_horizon.live.paper_runtime import ResearchPaperRuntime
+import btc_short_horizon.live.paper_runtime as paper_runtime_module
 from btc_short_horizon.live.research_paper import PaperLedgerStore, ResearchPaperEngine
 from btc_short_horizon.models import OpeningMispricingPrediction
 from btc_short_horizon.research.binance_history import BinanceKlineHistory
@@ -198,6 +205,53 @@ def test_research_paper_accepts_binance_decimal_strings_from_admitted_wire_event
 
     assert engine.kline_history.close.tolist() == [64750.0, 64754.55]
     assert engine.kline_history.volume[-1] == 0.00443
+
+
+@pytest.mark.asyncio
+async def test_paper_bootstrap_anchors_to_first_admitted_closed_kline(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    anchor = _closed_binance_kline(second=0)
+    buffer = AdmittedEventBuffer(max_events=10)
+    buffer.publish(anchor)
+    bootstrap = BinanceKlineHistory(
+        open_ts_ns=np.array([T0_NS - 1_000_000_000], dtype=np.int64),
+        close=np.array([64750.0]),
+        volume=np.array([0.0]),
+        quote_volume=np.array([0.0]),
+        taker_buy_volume=np.array([0.0]),
+        interval_seconds=1,
+    )
+    observed: dict[str, datetime] = {}
+
+    async def fetch_history(*, start_time, end_time, **_kwargs):  # type: ignore[no-untyped-def]
+        observed["start"] = start_time
+        observed["end"] = end_time
+        return bootstrap
+
+    monkeypatch.setattr(
+        paper_runtime_module,
+        "fetch_binance_spot_kline_history",
+        fetch_history,
+    )
+    runtime = object.__new__(ResearchPaperRuntime)
+    runtime.project = SimpleNamespace(
+        research_timing=SimpleNamespace(max_feature_lookback_seconds=3_600)
+    )
+    runtime.event_buffer = buffer
+    runtime.engine = _engine(tmp_path)
+    runtime._recent_events = defaultdict(lambda: deque(maxlen=20_000))
+
+    ready = await runtime._bootstrap_history(stop_event=asyncio.Event())
+
+    assert ready is True
+    assert observed == {"start": T0 - timedelta(seconds=3_600), "end": T0}
+    assert runtime.engine.kline_history is not None
+    assert runtime.engine.kline_history.open_ts_ns.tolist() == [
+        T0_NS - 1_000_000_000,
+        T0_NS,
+    ]
 
 
 def test_research_paper_reevaluates_working_order_and_cancels_probability_drop(tmp_path) -> None:

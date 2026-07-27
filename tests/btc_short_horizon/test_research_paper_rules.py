@@ -115,8 +115,9 @@ async def test_paper_runtime_fails_before_processing_after_event_buffer_overflow
     runtime = object.__new__(ResearchPaperRuntime)
     published: list[tuple[str, bool]] = []
 
-    async def bootstrap() -> None:
-        return None
+    async def bootstrap(*, stop_event: asyncio.Event) -> bool:
+        assert isinstance(stop_event, asyncio.Event)
+        return True
 
     runtime._bootstrap_history = bootstrap  # type: ignore[method-assign]
     runtime._drain_events = lambda: pytest.fail("overflowed events must not be processed")  # type: ignore[method-assign]

@@ -34,6 +34,7 @@ from btc_short_horizon.research.opening_runtime import build_opening_proxy_predi
 _CLOB_HOST = "https://clob.polymarket.com"
 _RULES_RETRY_DELAY = timedelta(seconds=5)
 _STATUS_PUBLISH_INTERVAL = timedelta(seconds=5)
+_BOOTSTRAP_ANCHOR_TIMEOUT_SECONDS = 30.0
 
 
 class PublicPaperRulesClient:
@@ -205,7 +206,9 @@ class ResearchPaperRuntime:
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         try:
-            await self._bootstrap_history()
+            if not await self._bootstrap_history(stop_event=stop_event):
+                self._publish(now=datetime.now(UTC), state="stopped", healthy=True)
+                return
             self._ready = True
             while not stop_event.is_set():
                 if self.event_buffer.overflowed:
@@ -229,13 +232,41 @@ class ResearchPaperRuntime:
             self._last_error = f"{type(exc).__name__}: {exc}"
             self._publish(now=datetime.now(UTC), state="failed", healthy=False)
 
-    async def _bootstrap_history(self) -> None:
-        end = datetime.now(UTC).replace(microsecond=0)
+    async def _bootstrap_history(self, *, stop_event: asyncio.Event) -> bool:
+        deferred: list[RawCollectorEvent] = []
+        anchor: RawCollectorEvent | None = None
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _BOOTSTRAP_ANCHOR_TIMEOUT_SECONDS
+        while anchor is None:
+            if stop_event.is_set():
+                return False
+            if self.event_buffer.overflowed:
+                raise RuntimeError("admitted_event_buffer_overflow")
+            try:
+                event = self.event_buffer.get_nowait()
+            except Empty:
+                if loop.time() >= deadline:
+                    raise TimeoutError("timed out waiting for an admitted closed Binance kline")
+                await asyncio.sleep(0.05)
+                continue
+            deferred.append(event)
+            if _closed_binance_kline_open_ms(event) is not None:
+                anchor = event
+
+        anchor_open_ms = _closed_binance_kline_open_ms(anchor)
+        if anchor_open_ms is None:
+            raise RuntimeError("Binance bootstrap anchor disappeared")
+        end = datetime.fromtimestamp(anchor_open_ms / 1_000, tz=UTC)
         start = end - timedelta(seconds=self.project.research_timing.max_feature_lookback_seconds)
         self.engine.kline_history = await fetch_binance_spot_kline_history(
             start_time=start,
             end_time=end,
         )
+        if self.event_buffer.overflowed:
+            raise RuntimeError("admitted_event_buffer_overflow")
+        for event in deferred:
+            self._consume_event(event)
+        return True
 
     async def _fetch_rules(self, market: MarketWindow) -> None:
         try:
@@ -268,8 +299,11 @@ class ResearchPaperRuntime:
                 event = self.event_buffer.get_nowait()
             except Empty:
                 return
-            self._recent_events[event.timing.instrument].append(event)
-            self.engine.on_event(event)
+            self._consume_event(event)
+
+    def _consume_event(self, event: RawCollectorEvent) -> None:
+        self._recent_events[event.timing.instrument].append(event)
+        self.engine.on_event(event)
 
     def _activate_current_market(self, now: datetime) -> None:
         candidates = tuple(
@@ -420,6 +454,26 @@ def _positive_number(value: object, name: str) -> float:
     if not isfinite(result) or result <= 0.0:
         raise ValueError(f"{name} must be finite and > 0")
     return result
+
+
+def _closed_binance_kline_open_ms(event: RawCollectorEvent) -> int | None:
+    if (
+        event.timing.source != "binance_spot"
+        or event.timing.instrument != "BTCUSDT"
+        or event.event_type != "kline_1s"
+    ):
+        return None
+    data = event.payload.get("data")
+    message = data if isinstance(data, Mapping) else event.payload
+    kline = message.get("k")
+    if not isinstance(kline, Mapping) or kline.get("x") is not True:
+        return None
+    open_ms = kline.get("t")
+    if isinstance(open_ms, bool) or not isinstance(open_ms, int) or open_ms < 0:
+        raise ValueError("Binance bootstrap kline open time must be a non-negative integer")
+    if open_ms % 1_000 != 0:
+        raise ValueError("Binance bootstrap kline open time must align to one second")
+    return open_ms
 
 
 def _nonnegative_number(value: object, name: str) -> float:

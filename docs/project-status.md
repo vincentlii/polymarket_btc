@@ -234,6 +234,11 @@ the input/output contract and operational commands.
 
 ## Known Issues
 
+- The interrupted first Research Paper hotfix deployment left the forward
+  services stopped from 2026-07-26 19:18:54 UTC until 2026-07-27 15:29:45 UTC.
+  The restart created a new collector session, so durability provenance remains
+  honest, but every market overlapping that interval must be excluded from
+  continuous forward evidence and cannot be backfilled as live-parity data.
 - Runtime and raw-data backup tools are implemented. The selected operational
   path is periodic transfer to a local staging root and content-addressed
   `--transport local` snapshots on a removable drive, with full-download
@@ -281,6 +286,11 @@ the input/output contract and operational commands.
 
 ## Recently Fixed
 
+- [x] Research Paper bootstrap now waits for the first collector-admitted closed
+  Binance kline, anchors the bounded REST history immediately before that bar,
+  and causally replays the events deferred during the fetch. This removes the
+  deterministic 3--5 second REST/WebSocket startup gap without weakening gap
+  rejection; missing anchors and event-buffer overflow remain fail-closed.
 - [x] The first Research Paper VPS start exposed two real-wire mismatches that
   idealized fixtures had missed. Collector-admitted Binance kline decimal
   fields are now parsed from their documented string representation, and CLOB
