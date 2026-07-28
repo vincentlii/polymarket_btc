@@ -79,10 +79,12 @@ full `book` before the first decision. Polymarket CLOB collection ends at
 remain continuously connected between these bounded CLOB windows, preserving
 the model lookback while removing the dominant raw-storage source.
 `opening_handoff_delay_seconds` defines the end of each market's CLOB capture
-relative to its own `t0`; the shared collector generation remains alive until
-the look-ahead market finishes that interval. CLI overrides are available for
-a deliberately bounded operator run; do not lower these defaults without
-measuring resulting evidence coverage.
+relative to its own `t0`. The shared public-feed task stays alive across market
+boundaries; each newly discovered token pair is added to a bounded CLOB window
+manager, while the durable collector session rotates after the current CLOB
+handoff without closing Binance or Chainlink sockets. CLI overrides are
+available for a deliberately bounded operator run; do not lower these defaults
+without measuring resulting evidence coverage.
 
 `collection.ingest_version` is a mandatory reader/writer boundary for collector
 semantics. A behavior change that can alter causal reconstruction must use a
@@ -124,6 +126,16 @@ so an order first placed at `t0+180s` retains L2/trade evidence for its complete
 15-second work period and P99 cancel race. It also exposes a bounded,
 non-blocking copy of admitted raw events to the Research Paper consumer;
 overflow fails Paper closed but never backpressures or stops durable collection.
+Version v13 fixes the transport/storage lifecycle boundary: Gamma market
+rotation dynamically adds and retires bounded CLOB windows and rotates the
+prepared/committed raw session, but no longer reconstructs the whole collector.
+This prevents the deterministic 8--13 second Binance `kline_1s` holes previously
+created every 15 minutes while keeping inventories bounded for backup and
+recovery. Rotation waits for the current CLOB socket to close at `t0+200s`, after
+the last decision/work/cancel-race evidence and before the next pre-open socket.
+Offline readers continue to treat a session change as a conservative identity
+boundary; timestamp/sequence continuity is still validated and any real missing
+bar remains fail-closed.
 Every bounded connection still starts from the venue's
 official initial full-book dump; window-external deltas are neither required
 nor silently treated as collected evidence. A collector restart after a capture
@@ -614,6 +626,10 @@ The Shadow scheduler publishes its current release identity before the first
 catalog scan and refreshes status before each bounded market reconstruction.
 A genuinely stuck reconstruction therefore becomes stale, while a normal
 startup cannot inherit a stopped or failed status from the previous release.
+Services with a slower deliberate cadence publish
+`expected_status_interval_seconds`; the dashboard applies the configured grace
+factor to that service only, while the collector and Paper retain the stricter
+default freshness limit.
 
 ### Real-time Research Paper
 
@@ -648,6 +664,13 @@ transient Gamma resolution failures remain unhealthy and retry every 30 seconds
 instead of terminating the Paper decision loop. Event intake remains at 50ms,
 while status/dashboard atomic writes are limited to the page's five-second
 refresh cadence to avoid unnecessary VPS disk I/O.
+Any model/feature `ValueError` during an active decision is retained as a
+recoverable `prediction` health error with market and timestamp. It keeps Paper
+unhealthy until a later decision succeeds; the cumulative counter alone is not
+treated as sufficient observability.
+Market registration retains only current/look-ahead token books, rule caches and
+tasks; completed token deques are retired so 24/7 operation does not accumulate
+one in-memory book history per historical market.
 
 Paper startup does not anchor its REST history to wall-clock time before the
 collector feed exists. It waits up to 30 seconds for the first collector-admitted

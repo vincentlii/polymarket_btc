@@ -101,11 +101,11 @@ absolute、regular、non-symlink、UTF-8；不得进入 Git、镜像 build conte
 第一次部署必须使用全新的空 `deploy/runtime/data` 和
 `deploy/runtime/output`，不得复制当前本地 `data/btc_short_horizon`。本地目录
 混有历史 v2--v8 epoch 与未关闭的旧 session；它们只保留作不可变研究 provenance，
-不能修补或迁移成 v12 证据。部署前只复制已验证的 protocol v2
+不能修补或迁移成 v13 证据。部署前只复制已验证的 protocol v2
 模型目录
 `output/btc_short_horizon/research/opening-proxy-protocol-v2-clean-20260428-20260713/model/`
 到 `deploy/runtime/data/btc_short_horizon/models/<model-id>/`，不要复制同级的
-`dataset.parquet`、旧 raw 或旧 Shadow 输出。VPS 必须重新采集 fresh v12 数据。
+`dataset.parquet`、旧 raw 或旧 Shadow 输出。VPS 必须重新采集 fresh v13 数据。
 
 首次部署只需要 Docker Engine 与 Compose。将 `.env.example` 复制为部署目录中的
 `.env`，填入经过当期 Gamma/市场规则核实的 `BTC_RULE_EPOCH`、测试过的完整
@@ -164,7 +164,7 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml up -d forward_colle
 
 ## Data Backup And Restore
 
-前瞻原始数据沿用 v9 引入的 session inventory（当前写入 epoch 为 v12），而不是
+前瞻原始数据沿用 v9 引入的 session inventory（当前写入 epoch 为 v13），而不是
 按目录中文件数量判断完整性。每次安全停机后先运行 audit。若按当前决定使用移动
 硬盘而非 COS，应每几天安全停机，把 complete sessions 拉到本机暂存目录，再在
 连接移动硬盘的本机使用 `--transport local` 创建内容寻址 snapshot 并全量回读验证；
@@ -246,8 +246,10 @@ receipt 默认全部保留在本地；60G 空间首先通过已验证的 raw-ses
 
 ## Pre-Purchase Validation Status
 
-本地购买前验收已覆盖完整 180 秒决策窗口。当前 v12 进一步采集到 `t0+200s`，
-用于覆盖最后一次决策产生订单的 15 秒工作期与 P99 cancel race。实时 Research
+本地购买前验收已覆盖完整 180 秒决策窗口。当前 v13 采集到 `t0+200s`，并在
+每个 `t0+200s` CLOB handoff 后只轮换 durable session、不重连连续 BTC feeds，
+用于覆盖最后一次决策
+产生订单的 15 秒工作期与 P99 cancel race。实时 Research
 Paper 复用相同模型/确认规则，模拟 ledger 与看板明确隔离于真实账户。
 
 首尔 VPS 仍必须在目标 IP 上完成、且不能由本地替代的检查包括：Geo-block/法律

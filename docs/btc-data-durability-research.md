@@ -1,6 +1,6 @@
 # BTC 前瞻数据持久性与灾难恢复
 
-> v12 容量策略：Polymarket CLOB 只在每个 15m 市场的 `t0-90s` 至
+> v13 容量策略：Polymarket CLOB 只在每个 15m 市场的 `t0-90s` 至
 > `t0+200s` 建立独立连接并保存原始证据；Binance 与 Chainlink 仍连续采集。
 > 这减少的是最大的数据源，不改变 prepared/committed、备份验证或恢复规则。
 > 实际日增量必须在 VPS 连续运行至少 24 小时后重新测量，不能把理论比例当成
@@ -10,7 +10,9 @@
 
 `btc-short-horizon-v9` 把前瞻原始数据从“目录里还剩哪些文件”升级为可审计的会话账本。每个 Parquet part 必须经历 `prepared → committed`，采集会话必须经历 `open → complete|failed`；研究读取器以会话清单为权威，因此 part 与相邻 manifest 同时丢失也会被发现。
 
-当前 v12 仍使用同一会话事务，同时新增独立的
+当前 v13 仍使用同一会话事务，并在每个市场的 `t0+200s` CLOB handoff 完成与
+flush 后轮换 raw session，
+但不会重连连续的 Binance/Chainlink transport。它同时保留独立的
 `runtime/paper/ledger.json` 原子模拟账本。该账本不是原始市场数据、不是实盘
 账户 ledger，也不参与 raw session 的 prepared/committed 清理；备份时归入
 runtime ledger 类别。重启时无法证明仍在场内的模拟 working order 会被保守标为

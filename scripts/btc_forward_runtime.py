@@ -231,13 +231,15 @@ async def run_async(args: argparse.Namespace) -> None:
         collector: BtcForwardCollector,
     ) -> None:
         nonlocal active
+        first_activation = active is None or active.collector is not collector
         collector.configure_required_feeds(
             binance_streams=binance_streams,
             binance_futures_market_streams=binance_futures_market_streams,
             binance_futures_public_streams=binance_futures_public_streams,
         )
         if paper_buffer is not None and paper_runtime is not None:
-            collector.subscribe_admitted_events(paper_buffer)
+            if first_activation:
+                collector.subscribe_admitted_events(paper_buffer)
             paper_runtime.register_markets(market, lookahead)
         active = _ActiveWindow(market=market, lookahead=lookahead, collector=collector)
         _refresh_required_clob_feeds(

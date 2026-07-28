@@ -124,6 +124,39 @@ def test_dashboard_payload_fails_closed_when_status_is_stale(tmp_path) -> None:
     assert payload["health"] == {"healthy": False, "reason": "stale_status", "age_seconds": 31.0}
 
 
+def test_dashboard_uses_service_declared_publish_interval_for_freshness(tmp_path) -> None:
+    RuntimeStatusStore(tmp_path).write(
+        RuntimeStatus(
+            service="forward_collector",
+            mode="forward_collection",
+            state="running",
+            healthy=True,
+            started_at=_now() - timedelta(minutes=2),
+            updated_at=_now(),
+        )
+    )
+    RuntimeStatusStore(tmp_path).write(
+        RuntimeStatus(
+            service="opening_shadow",
+            mode="post_window_shadow",
+            state="running",
+            healthy=True,
+            started_at=_now() - timedelta(minutes=2),
+            updated_at=_now() - timedelta(seconds=61),
+            details={"expected_status_interval_seconds": 60.0},
+        )
+    )
+
+    payload = build_dashboard_payload(DashboardConfig(runtime_root=tmp_path), now=_now())
+    by_service = {item["service"]: item for item in payload["statuses"]}
+
+    assert by_service["opening_shadow"]["health"] == {
+        "healthy": True,
+        "reason": "ok",
+        "age_seconds": 61.0,
+    }
+
+
 def test_dashboard_payload_includes_validated_performance_and_lifecycle_snapshot(tmp_path) -> None:
     RuntimeStatusStore(tmp_path).write(
         RuntimeStatus(

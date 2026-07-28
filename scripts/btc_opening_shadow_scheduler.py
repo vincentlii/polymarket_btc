@@ -80,6 +80,7 @@ async def run_async(args: argparse.Namespace) -> None:
             config_path=args.config,
             ingest_version=project.collection.ingest_version,
         ),
+        "expected_status_interval_seconds": args.poll_seconds,
         "storage": {"runtime": filesystem_usage(runtime_root)},
     }
     stop_request = control.stop_request()

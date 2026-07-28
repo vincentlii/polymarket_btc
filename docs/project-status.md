@@ -26,15 +26,20 @@ and reporting plumbing without importing archived BTC strategy logic.
 - Data boundary: 15m is the only trading family; 5m is collection-only.
 - Forward collection: `btc_forward_collector.py --follow-current` now discovers
   current and next exact Gamma slugs and persists separate rule-hash catalogs.
-  In ingest v12, each isolated token pair connects only during `t0-90s` through
+  In ingest v13, each isolated token pair connects only during `t0-90s` through
   `t0+200s`; every interval requests a fresh official full-book snapshot.
-  Binance and Chainlink remain continuous, and planned CLOB sleep is excluded
-  from required-feed health. This targets the measured dominant disk source
+  Binance and Chainlink now remain on the same live transport across market
+  boundaries; raw prepared/committed sessions rotate independently after the
+  current `t0+200s` CLOB handoff and a complete flush. This removes the previously observed deterministic 8--13s
+  `kline_1s` gap every 15 minutes without creating an unbounded inventory.
+  Planned CLOB sleep is excluded from required-feed health. This targets the
+  measured dominant disk source
   while covering the complete 3-180s decision window, a final order's 15-second
   work period and P99 cancel race.
   Shadow now records a terminal, explicit skip for pre-epoch windows with no
   causal observations instead of retrying them forever. Its container health
-  freshness threshold covers the configured 60-second scheduler cadence.
+  and dashboard freshness thresholds cover the declared 60-second scheduler
+  cadence instead of intermittently reporting a 30-second stale failure.
 - Evidence boundary: no profitability or deployability claim exists until real
   data passes the documented holdout and the complete queue-enabled P99
   trade-volume/timestamp-order robustness grid.
@@ -44,6 +49,9 @@ and reporting plumbing without importing archived BTC strategy logic.
   placement cycle across restart, continuously revalues working orders, permits
   cancel-race fills, rejects insufficient virtual balance and settles only from
   explicit Gamma outcomes. Unfilled resolved orders do not distort win rate.
+  Active prediction failures now make Paper unhealthy with the exact market,
+  timestamp and reason until a later decision succeeds; a cumulative error
+  counter can no longer coexist with a misleading healthy status.
 - Model/research hardening: model inputs and probabilities now reject coercion,
   non-finite values, invalid shapes, and inconsistent lineage. Walk-forward
   tests are non-overlapping and group-safe; LightGBM early stopping, calibration,
@@ -165,7 +173,10 @@ and reporting plumbing without importing archived BTC strategy logic.
   single-writer lease, interrupted-session recovery, and content-addressed
   object backup with full-download verification. Readers now detect deletion of
   both a part and its adjacent manifest; archive is dry-run by default and
-  remote-only evidence must be restored before research.
+  remote-only evidence must be restored before research. Version v13 separates
+  public-feed transport lifetime from storage-session lifetime: session
+  rotation after CLOB handoff no longer reconnects Binance/Chainlink, while dynamic CLOB windows
+  still start from a fresh official snapshot and retire after handoff.
 - The historical v6 collector completed a fresh 180-second audit on
   `btc-updown-15m-1784214900`. The dual-token Shadow reconstructed all 36
   decisions with zero submitted orders. The enhanced multi-venue audit observed
@@ -174,8 +185,8 @@ and reporting plumbing without importing archived BTC strategy logic.
   enhanced audit explicitly opted into the current Binance Futures `/public`
   route for trade and Book Ticker. The deploy default remains Spot closed
   `kline_1s` only, and the runtime reports the look-ahead market as active after
-  handoff. This historical run does not validate the current v12 collection;
-  fresh v12 evidence is required before promotion.
+  handoff. This historical run does not validate the current v13 collection;
+  fresh v13 evidence is required before promotion.
 - The runtime model path uses the same feature schema as training and bootstraps
   at most four Binance REST pages. A full three-minute shadow needs 3,782 closed
   one-second bars instead of downloading another historical archive.
@@ -203,9 +214,9 @@ the input/output contract and operational commands.
 - Existing local raw roots contain historical v2--v8 epochs and an open legacy
   session. They remain immutable research provenance and must not be copied to
   the first VPS or repaired in place. The VPS starts from empty data/output
-  roots and collects only current v12 evidence.
+  roots and collects only current v13 evidence.
 - Target-only evidence cannot be manufactured locally: actual-IP geoblock and
-  legal eligibility, NTP and endpoint latency, Linux Docker build, fresh v12
+  legal eligibility, NTP and endpoint latency, Linux Docker build, fresh v13
   collection, off-VPS full verification/restore and long-running recovery
   must all pass on the purchased host.
 - The approved VPS scope is collector, credential-free Research Paper, optional

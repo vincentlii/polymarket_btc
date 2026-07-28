@@ -35,6 +35,13 @@ _CLOB_HOST = "https://clob.polymarket.com"
 _RULES_RETRY_DELAY = timedelta(seconds=5)
 _STATUS_PUBLISH_INTERVAL = timedelta(seconds=5)
 _BOOTSTRAP_ANCHOR_TIMEOUT_SECONDS = 30.0
+_DECISIONS_WITHOUT_PREDICTION = {
+    "book_unavailable",
+    "cancel_pending",
+    "market_unavailable",
+    "outside_entry_window",
+    "placement_cycle_used",
+}
 
 
 class PublicPaperRulesClient:
@@ -188,6 +195,7 @@ class ResearchPaperRuntime:
         self._last_error: str | None = None
         self._recoverable_errors: dict[str, str] = {}
         self._prediction_errors = 0
+        self._last_prediction_error: dict[str, str] | None = None
         self._resolution_errors = 0
         self._started_at = datetime.now(UTC)
         self._ready = False
@@ -198,9 +206,23 @@ class ResearchPaperRuntime:
 
     def register_markets(self, market: MarketWindow, lookahead: MarketWindow | None) -> None:
         now = datetime.now(UTC)
-        for item in (market, lookahead):
-            if item is None:
-                continue
+        registered = tuple(item for item in (market, lookahead) if item is not None)
+        retained_slugs = {item.slug for item in registered}
+        retired = tuple(item for slug, item in self._markets.items() if slug not in retained_slugs)
+        for item in retired:
+            self._markets.pop(item.slug, None)
+            self._rules.pop(item.slug, None)
+            self._next_rule_retry.pop(item.slug, None)
+            self._recoverable_errors.pop(f"rules:{item.slug}", None)
+            task = self._rule_tasks.pop(item.slug, None)
+            if task is not None and not task.done():
+                task.cancel()
+            self._recent_events.pop(item.up_token_id, None)
+            self._recent_events.pop(item.down_token_id, None)
+        if self._active_slug not in retained_slugs:
+            self._active_slug = None
+            self._next_decision_ns = None
+        for item in registered:
             self._markets[item.slug] = item
             self._schedule_rule_fetch(item, now=now)
 
@@ -368,6 +390,16 @@ class ResearchPaperRuntime:
         except ValueError as exc:
             self._prediction_errors += 1
             self._last_decision_result = f"prediction_unavailable:{exc}"
+            message = f"{type(exc).__name__}: {exc}"
+            self._recoverable_errors["prediction"] = message
+            self._last_prediction_error = {
+                "market_slug": self.engine.market.slug,
+                "observed_at": now.isoformat(),
+                "message": message,
+            }
+        else:
+            if self._last_decision_result not in _DECISIONS_WITHOUT_PREDICTION:
+                self._recoverable_errors.pop("prediction", None)
         self._next_decision_ns += round(self.project.maker.signal_cadence_seconds * 1_000_000_000)
 
     async def _settle_resolved_markets(self) -> None:
@@ -417,6 +449,7 @@ class ResearchPaperRuntime:
             "ready": self._ready,
             "last_decision_result": self._last_decision_result,
             "prediction_errors": self._prediction_errors,
+            "last_prediction_error": self._last_prediction_error,
             "order_count": len(self.engine.records),
             "fill_count": sum(item.filled_shares > 0.0 for item in self.engine.records),
             "resolved_count": sum(item.realized_pnl is not None for item in self.engine.records),

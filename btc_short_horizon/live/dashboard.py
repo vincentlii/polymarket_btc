@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+from math import isfinite
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -27,12 +28,18 @@ class DashboardConfig:
     runtime_root: Path
     health_service: str = "forward_collector"
     max_age_seconds: float = 30.0
+    status_interval_grace_factor: float = 1.5
 
     def __post_init__(self) -> None:
         if not self.health_service.strip():
             raise ValueError("health_service is required")
         if self.max_age_seconds <= 0.0:
             raise ValueError("max_age_seconds must be > 0")
+        if (
+            not isfinite(self.status_interval_grace_factor)
+            or self.status_interval_grace_factor < 1.0
+        ):
+            raise ValueError("status_interval_grace_factor must be finite and >= 1")
 
 
 def build_dashboard_payload(
@@ -59,10 +66,11 @@ def build_dashboard_payload(
         errors.append(str(exc))
 
     by_service = {status.service: status for status in statuses}
+    primary_status = by_service.get(config.health_service)
     primary = check_runtime_health(
-        by_service.get(config.health_service),
+        primary_status,
         now=current_time,
-        max_age_seconds=config.max_age_seconds,
+        max_age_seconds=_status_max_age_seconds(primary_status, config=config),
     )
     if not statuses and errors:
         primary = RuntimeHealth(False, "invalid_runtime_status", primary.age_seconds)
@@ -81,7 +89,12 @@ def build_dashboard_payload(
             "age_seconds": primary.age_seconds,
         },
         "statuses": [
-            _status_payload(status, current_time, config.max_age_seconds) for status in statuses
+            _status_payload(
+                status,
+                current_time,
+                _status_max_age_seconds(status, config=config),
+            )
+            for status in statuses
         ],
         "snapshot": None if snapshot is None else snapshot.to_json(),
         "snapshot_health": snapshot_health,
@@ -228,3 +241,19 @@ def _status_payload(
             "age_seconds": health.age_seconds,
         },
     }
+
+
+def _status_max_age_seconds(
+    status: RuntimeStatus | None,
+    *,
+    config: DashboardConfig,
+) -> float:
+    if status is None:
+        return config.max_age_seconds
+    interval = status.details.get("expected_status_interval_seconds")
+    if isinstance(interval, bool) or not isinstance(interval, (int, float)):
+        return config.max_age_seconds
+    seconds = float(interval)
+    if not isfinite(seconds) or seconds <= 0.0:
+        return config.max_age_seconds
+    return max(config.max_age_seconds, seconds * config.status_interval_grace_factor)

@@ -99,6 +99,7 @@ def test_paper_runtime_keeps_deciding_through_order_work_horizon() -> None:
     runtime._next_decision_ns = int(T0.timestamp() * 1_000_000_000) + 185_000_000_000
     runtime._last_decision_result = "not_started"
     runtime._prediction_errors = 0
+    runtime._recoverable_errors = {}
 
     for second in (185, 190, 195, 200):
         runtime._run_due_decision(T0 + timedelta(seconds=second))

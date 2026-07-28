@@ -526,6 +526,25 @@ class CollectorSessionInventory:
         with self._lock:
             return self.repository.read_session(self.session_id)
 
+    def update_attributes(self, attributes: Mapping[str, str]) -> None:
+        """Replace descriptive attributes while the durable session is open."""
+
+        normalized = _string_mapping(attributes, "attributes")
+        with self._lock:
+            session = self.repository.read_session(self.session_id)
+            if session.status != SESSION_STATUS_OPEN:
+                raise SessionInventoryError("only an open collector session can update attributes")
+            if session.attributes == normalized:
+                return
+            updated_at = _utc_now_text()
+            self._write(
+                replace(
+                    session,
+                    updated_at=updated_at,
+                    attributes=normalized,
+                )
+            )
+
     def prepare_part(
         self,
         *,

@@ -197,6 +197,12 @@ whose default is `true` in the
   Binance and Chainlink subscriptions remain continuous outside this interval.
   Planned CLOB inactivity is excluded from required-feed health rather than
   reported as a disconnect.
+- In ingest v13, market rotation must not reconstruct the shared collector.
+  Newly discovered CLOB windows are registered dynamically, completed windows
+  are retired, and the durable session inventory rotates under the ingress lock
+  only after the current `t0+200s` CLOB handoff and a complete flush. The
+  Binance/Chainlink socket tasks and their quality validators remain alive, so
+  rotation does not create the former transport-level one-second data gap.
 - A bounded CLOB interval must begin with a new physical subscription and the
   official `initial_dump=true` snapshot. Do not implement storage reduction by
   dropping pre-window deltas from an already-running socket: offline replay

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -26,6 +27,7 @@ from btc_short_horizon.data.session_inventory import (
     SESSION_STATUS_COMPLETE,
     SESSION_STATUS_FAILED,
     SESSION_STATUS_OPEN,
+    SessionInventoryRepository,
 )
 from btc_short_horizon.research.opening_evidence import (
     load_forward_polymarket_book_events,
@@ -41,6 +43,159 @@ def test_default_forward_collection_is_lightweight_for_bounded_vps_storage() -> 
     assert DEFAULT_BINANCE_FUTURES_MARKET_STREAMS == ()
     assert DEFAULT_BINANCE_FUTURES_PUBLIC_STREAMS == ()
     assert DEFAULT_OKX_SUBSCRIPTIONS == ()
+
+
+@pytest.mark.asyncio
+async def test_storage_session_rotates_without_stopping_public_feed_tasks(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(UTC)
+    collector = BtcForwardCollector(
+        raw_data_root=tmp_path,
+        polymarket_token_ids=("up-token", "down-token"),
+        polymarket_token_groups=(("up-token", "down-token"),),
+        polymarket_subscription_windows=(
+            PolymarketSubscriptionWindow(
+                token_ids=("up-token", "down-token"),
+                start=now + timedelta(hours=1),
+                end=now + timedelta(hours=1, minutes=3),
+            ),
+        ),
+    )
+    feed_started = asyncio.Event()
+    feed_stops = 0
+
+    async def keep_connection_open(  # type: ignore[no-untyped-def]
+        _websocket_collector,
+        *,
+        stop_event: asyncio.Event,
+        **_kwargs,
+    ) -> None:
+        nonlocal feed_stops
+        feed_started.set()
+        await stop_event.wait()
+        feed_stops += 1
+
+    monkeypatch.setattr(
+        "btc_short_horizon.data.forward.JsonWebSocketCollector.collect_forever",
+        keep_connection_open,
+    )
+    stop_event = asyncio.Event()
+    task = asyncio.create_task(
+        collector.collect_forever(
+            stop_event=stop_event,
+            binance_streams=(),
+            binance_futures_market_streams=(),
+            binance_futures_public_streams=(),
+            okx_subscriptions=(),
+        )
+    )
+    await asyncio.wait_for(feed_started.wait(), timeout=1.0)
+    old_session_id = collector.collector_session_id
+
+    await collector.rotate_storage_session(epoch_id_offset=int(now.timestamp()) + 900)
+
+    assert feed_stops == 0
+    assert collector.collector_session_id != old_session_id
+    assert (
+        SessionInventoryRepository(tmp_path).read_session(old_session_id).status
+        == SESSION_STATUS_COMPLETE
+    )
+    assert collector._session_inventory.snapshot().status == SESSION_STATUS_OPEN
+
+    stop_event.set()
+    await asyncio.wait_for(task, timeout=1.0)
+
+    assert feed_stops == 1
+    assert collector._session_inventory.snapshot().status == SESSION_STATUS_COMPLETE
+
+
+@pytest.mark.asyncio
+async def test_dynamic_clob_windows_retire_without_ending_shared_feed_collection(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(UTC)
+    initial = PolymarketSubscriptionWindow(
+        token_ids=("up-token", "down-token"),
+        start=now + timedelta(hours=1),
+        end=now + timedelta(hours=1, minutes=3),
+    )
+    collector = BtcForwardCollector(
+        raw_data_root=tmp_path,
+        polymarket_token_ids=initial.token_ids,
+        polymarket_token_groups=(initial.token_ids,),
+        polymarket_subscription_windows=(initial,),
+    )
+    observed: list[tuple[str, ...]] = []
+    first_complete = asyncio.Event()
+    second_complete = asyncio.Event()
+
+    async def keep_shared_connection_open(  # type: ignore[no-untyped-def]
+        _websocket_collector,
+        *,
+        stop_event: asyncio.Event,
+        **_kwargs,
+    ) -> None:
+        await stop_event.wait()
+
+    async def complete_clob_window(*, token_group, **_kwargs):  # type: ignore[no-untyped-def]
+        observed.append(token_group)
+        (first_complete if len(observed) == 1 else second_complete).set()
+
+    monkeypatch.setattr(
+        "btc_short_horizon.data.forward.JsonWebSocketCollector.collect_forever",
+        keep_shared_connection_open,
+    )
+    monkeypatch.setattr(
+        "btc_short_horizon.data.forward._collect_polymarket_during_window",
+        complete_clob_window,
+    )
+    stop_event = asyncio.Event()
+    task = asyncio.create_task(
+        collector.collect_forever(
+            stop_event=stop_event,
+            binance_streams=(),
+            binance_futures_market_streams=(),
+            binance_futures_public_streams=(),
+            okx_subscriptions=(),
+        )
+    )
+    await asyncio.wait_for(first_complete.wait(), timeout=1.0)
+    for _ in range(100):
+        if initial.token_ids not in collector.polymarket_token_groups:
+            break
+        await asyncio.sleep(0)
+
+    assert not task.done()
+    assert initial.token_ids not in collector.polymarket_token_groups
+    assert await collector.wait_polymarket_subscription_window(
+        initial,
+        stop_event=stop_event,
+        timeout_seconds=1.0,
+    )
+
+    following = PolymarketSubscriptionWindow(
+        token_ids=("next-up-token", "next-down-token"),
+        start=now + timedelta(hours=2),
+        end=now + timedelta(hours=2, minutes=3),
+    )
+    assert collector.register_polymarket_subscription_window(following) is True
+    assert json.loads(
+        collector._session_inventory.snapshot().attributes["polymarket_token_ids"]
+    ) == list(following.token_ids)
+    await asyncio.wait_for(second_complete.wait(), timeout=1.0)
+    for _ in range(100):
+        if following.token_ids not in collector.polymarket_token_groups:
+            break
+        await asyncio.sleep(0)
+
+    assert not task.done()
+    assert observed == [initial.token_ids, following.token_ids]
+
+    stop_event.set()
+    await asyncio.wait_for(task, timeout=1.0)
 
 
 def test_admitted_event_buffer_receives_only_committed_events_without_blocking_storage(

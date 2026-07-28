@@ -49,6 +49,7 @@ from btc_short_horizon.data.rtds import normalize_chainlink_btc_usd
 from btc_short_horizon.data.session_inventory import (
     SESSION_INVENTORY_MANIFEST_ATTRIBUTE,
     SESSION_INVENTORY_SCHEMA_VERSION,
+    CollectorSessionInventory,
     SessionInventoryRepository,
 )
 from btc_short_horizon.data.storage import DataPartitionManifest
@@ -344,40 +345,17 @@ class BtcForwardCollector:
         )
         self.okx_instruments_url = okx_instruments_url
         self.okx_swap_contract_value = okx_swap_contract_value
-        self._session_inventory = SessionInventoryRepository(raw_data_root).start_session(
-            session_id=self.collector_session_id,
-            ingest_version=self.ingest_version,
-            attributes={
-                "epoch_id_offset": str(self.epoch_id_offset),
-                "polymarket_token_ids": json.dumps(self.token_ids, separators=(",", ":")),
-                "polymarket_token_groups": json.dumps(
-                    self.polymarket_token_groups,
-                    separators=(",", ":"),
-                ),
-                "polymarket_subscription_windows": json.dumps(
-                    [
-                        {
-                            "token_ids": item.token_ids,
-                            "start": item.start.isoformat(),
-                            "end": item.end.isoformat(),
-                        }
-                        for item in self.polymarket_subscription_windows
-                    ],
-                    separators=(",", ":"),
-                ),
-            },
-        )
-        self._writer = PartitionedRawEventWriter(
-            raw_data_root,
-            manifest_attributes={
-                "polymarket_source_timestamp_regression_tolerance_seconds": format(
-                    polymarket_source_timestamp_regression_tolerance_seconds,
-                    ".17g",
-                ),
-                SESSION_INVENTORY_MANIFEST_ATTRIBUTE: SESSION_INVENTORY_SCHEMA_VERSION,
-            },
-            inventory=self._session_inventory,
-        )
+        self.raw_data_root = raw_data_root.resolve()
+        self._scheduled_polymarket_mode = bool(subscription_windows)
+        self._scheduled_polymarket_windows = {item.token_ids: item for item in subscription_windows}
+        self._polymarket_window_completions = {
+            item.token_ids: asyncio.Event() for item in subscription_windows
+        }
+        self._polymarket_window_queue: asyncio.Queue[PolymarketSubscriptionWindow] = asyncio.Queue()
+        for item in subscription_windows:
+            self._polymarket_window_queue.put_nowait(item)
+        self._ingress_lock: asyncio.Lock | None = None
+        self._session_inventory, self._writer = self._start_storage_session()
         source_regression_tolerance = timedelta(
             seconds=polymarket_source_timestamp_regression_tolerance_seconds
         )
@@ -413,6 +391,178 @@ class BtcForwardCollector:
         self._lock = RLock()
         self._flush_lock = Lock()
         self._admitted_event_buffer: AdmittedEventBuffer | None = None
+
+    def _storage_session_attributes(self) -> dict[str, str]:
+        return {
+            "epoch_id_offset": str(self.epoch_id_offset),
+            "polymarket_token_ids": json.dumps(self.token_ids, separators=(",", ":")),
+            "polymarket_token_groups": json.dumps(
+                self.polymarket_token_groups,
+                separators=(",", ":"),
+            ),
+            "polymarket_subscription_windows": json.dumps(
+                [
+                    {
+                        "token_ids": item.token_ids,
+                        "start": item.start.isoformat(),
+                        "end": item.end.isoformat(),
+                    }
+                    for item in self.polymarket_subscription_windows
+                ],
+                separators=(",", ":"),
+            ),
+        }
+
+    def _start_storage_session(
+        self,
+    ) -> tuple[CollectorSessionInventory, PartitionedRawEventWriter]:
+        inventory = SessionInventoryRepository(self.raw_data_root).start_session(
+            session_id=self.collector_session_id,
+            ingest_version=self.ingest_version,
+            attributes=self._storage_session_attributes(),
+        )
+        writer = PartitionedRawEventWriter(
+            self.raw_data_root,
+            manifest_attributes={
+                "polymarket_source_timestamp_regression_tolerance_seconds": format(
+                    self.polymarket_source_timestamp_regression_tolerance_seconds,
+                    ".17g",
+                ),
+                SESSION_INVENTORY_MANIFEST_ATTRIBUTE: SESSION_INVENTORY_SCHEMA_VERSION,
+            },
+            inventory=inventory,
+        )
+        return inventory, writer
+
+    def register_polymarket_subscription_window(
+        self,
+        window: PolymarketSubscriptionWindow,
+    ) -> bool:
+        """Schedule one new bounded CLOB pair without reconnecting shared BTC feeds."""
+
+        if not isinstance(window, PolymarketSubscriptionWindow):
+            raise TypeError("window must be a PolymarketSubscriptionWindow")
+        if not self._scheduled_polymarket_mode:
+            raise RuntimeError("dynamic windows require a scheduled Polymarket collector")
+        with self._lock:
+            existing = self._scheduled_polymarket_windows.get(window.token_ids)
+            if existing is not None:
+                if existing != window:
+                    raise ValueError("Polymarket token group already has a different window")
+                return False
+            overlap = set(window.token_ids).intersection(self._polymarket_normalizers)
+            if overlap:
+                raise ValueError("Polymarket subscription windows must not reuse token IDs")
+            self.token_ids = (*self.token_ids, *window.token_ids)
+            self.polymarket_token_groups = (*self.polymarket_token_groups, window.token_ids)
+            self.polymarket_subscription_windows = (
+                *self.polymarket_subscription_windows,
+                window,
+            )
+            self._scheduled_polymarket_windows[window.token_ids] = window
+            self._polymarket_window_completions[window.token_ids] = asyncio.Event()
+            self._polymarket_normalizers.update(
+                {
+                    token_id: PolymarketL2Normalizer(
+                        token_id=token_id,
+                        source_timestamp_regression_tolerance=timedelta(
+                            seconds=self.polymarket_source_timestamp_regression_tolerance_seconds
+                        ),
+                    )
+                    for token_id in window.token_ids
+                }
+            )
+            self._required_feed_keys.update(
+                ("polymarket_clob", token_id, _MARKET_STREAM) for token_id in window.token_ids
+            )
+            self._polymarket_window_queue.put_nowait(window)
+        self._session_inventory.update_attributes(self._storage_session_attributes())
+        return True
+
+    async def wait_polymarket_subscription_window(
+        self,
+        window: PolymarketSubscriptionWindow,
+        *,
+        stop_event: asyncio.Event,
+        timeout_seconds: float,
+    ) -> bool:
+        """Wait until one CLOB socket is closed, or return false on service stop."""
+
+        if not isfinite(timeout_seconds) or timeout_seconds <= 0.0:
+            raise ValueError("timeout_seconds must be finite and > 0")
+        with self._lock:
+            completion = self._polymarket_window_completions.get(window.token_ids)
+        if completion is None:
+            raise ValueError("Polymarket subscription window is not registered")
+        completion_task = asyncio.create_task(completion.wait())
+        stop_task = asyncio.create_task(stop_event.wait())
+        try:
+            done, _ = await asyncio.wait(
+                {completion_task, stop_task},
+                timeout=timeout_seconds,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if stop_task in done:
+                return False
+            if completion_task not in done:
+                raise RuntimeError("Polymarket subscription did not close before session rotation")
+            await completion_task
+            with self._lock:
+                if self._polymarket_window_completions.get(window.token_ids) is completion:
+                    self._polymarket_window_completions.pop(window.token_ids, None)
+            return True
+        finally:
+            for task in (completion_task, stop_task):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(completion_task, stop_task, return_exceptions=True)
+
+    async def rotate_storage_session(self, *, epoch_id_offset: int) -> None:
+        """Rotate durable inventory at a market boundary without closing public sockets."""
+
+        if (
+            isinstance(epoch_id_offset, bool)
+            or not isinstance(epoch_id_offset, int)
+            or epoch_id_offset < 0
+        ):
+            raise ValueError("epoch_id_offset must be a non-negative integer")
+        ingress_lock = self._ingress_lock
+        if ingress_lock is None:
+            raise RuntimeError("collector must be running before its storage session can rotate")
+        async with ingress_lock:
+            await self._flush_async()
+            self._session_inventory.complete()
+            self.epoch_id_offset = epoch_id_offset
+            self.collector_session_id = normalize_collector_session_id(uuid4().hex)
+            self._next_admission_sequence = 0
+            self._session_inventory, self._writer = self._start_storage_session()
+
+    def _retire_polymarket_subscription_window(
+        self,
+        window: PolymarketSubscriptionWindow,
+    ) -> None:
+        with self._lock:
+            if self._scheduled_polymarket_windows.get(window.token_ids) != window:
+                return
+            self._scheduled_polymarket_windows.pop(window.token_ids, None)
+            retired = set(window.token_ids)
+            self.token_ids = tuple(token for token in self.token_ids if token not in retired)
+            self.polymarket_token_groups = tuple(
+                group for group in self.polymarket_token_groups if group != window.token_ids
+            )
+            self.polymarket_subscription_windows = tuple(
+                item for item in self.polymarket_subscription_windows if item != window
+            )
+            for token_id in window.token_ids:
+                self._polymarket_normalizers.pop(token_id, None)
+                key = ("polymarket_clob", token_id, _MARKET_STREAM)
+                self._required_feed_keys.discard(key)
+                self._validators.pop(key, None)
+                self._unresolved_gaps.pop(key, None)
+                self._last_feed_event_at.pop(key, None)
+            completion = self._polymarket_window_completions.get(window.token_ids)
+            if completion is not None:
+                completion.set()
 
     def subscribe_admitted_events(self, buffer: AdmittedEventBuffer) -> None:
         """Attach one non-blocking research subscriber before collection starts."""
@@ -1742,6 +1892,9 @@ class BtcForwardCollector:
         capacity_available = asyncio.Event()
         capacity_available.set()
         ingress_lock = asyncio.Lock()
+        if self._ingress_lock is not None:
+            raise RuntimeError("collector is already running")
+        self._ingress_lock = ingress_lock
 
         async def admit_with_backpressure(operation: Callable[[], Any]) -> Any:
             while True:
@@ -2063,6 +2216,52 @@ class BtcForwardCollector:
                             )
                         )
 
+            async def supervise_polymarket_windows() -> None:
+                active: dict[asyncio.Task[None], PolymarketSubscriptionWindow] = {}
+                receive_task: asyncio.Task[PolymarketSubscriptionWindow] | None = None
+                stop_task = asyncio.create_task(stop_event.wait())
+                try:
+                    while not stop_event.is_set():
+                        if receive_task is None:
+                            receive_task = asyncio.create_task(
+                                self._polymarket_window_queue.get(),
+                                name="polymarket-window-registration",
+                            )
+                        done, _ = await asyncio.wait(
+                            {stop_task, receive_task, *active},
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                        if stop_task in done:
+                            return
+                        if receive_task in done:
+                            window = receive_task.result()
+                            receive_task = None
+                            worker = asyncio.create_task(
+                                _collect_polymarket_during_window(
+                                    token_group=window.token_ids,
+                                    window=window,
+                                    stop_event=stop_event,
+                                    on_payload=on_polymarket(window.token_ids),
+                                    on_error=on_polymarket_error(window.token_ids),
+                                ),
+                                name=f"polymarket-window-{'-'.join(window.token_ids)}",
+                            )
+                            active[worker] = window
+                        for worker in tuple(active):
+                            if worker not in done:
+                                continue
+                            window = active.pop(worker)
+                            await worker
+                            self._retire_polymarket_subscription_window(window)
+                finally:
+                    tasks = [stop_task, *active]
+                    if receive_task is not None:
+                        tasks.append(receive_task)
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+
             if self.okx_swap_contract_value is None and any(
                 item.get("instId") == "BTC-USDT-SWAP" for item in normalized_okx_subscriptions
             ):
@@ -2081,17 +2280,8 @@ class BtcForwardCollector:
                 ),
                 supervise_depth_refreshes(),
             ]
-            if self.polymarket_subscription_windows:
-                collectors.extend(
-                    _collect_polymarket_during_window(
-                        token_group=item.token_ids,
-                        window=item,
-                        stop_event=stop_event,
-                        on_payload=on_polymarket(item.token_ids),
-                        on_error=on_polymarket_error(item.token_ids),
-                    )
-                    for item in self.polymarket_subscription_windows
-                )
+            if self._scheduled_polymarket_mode:
+                collectors.append(supervise_polymarket_windows())
             else:
                 collectors.extend(
                     JsonWebSocketCollector(
@@ -2220,6 +2410,7 @@ class BtcForwardCollector:
                     primary_exception = exc
                     raise
             finally:
+                self._ingress_lock = None
                 shutdown_deadline = (
                     asyncio.get_running_loop().time() + self.shutdown_flush_timeout_seconds
                 )
@@ -2865,12 +3056,10 @@ async def _collect_polymarket_during_window(
     """Connect for one official CLOB snapshot window while the parent feeds stay alive."""
 
     if datetime.now(UTC) >= window.end:
-        await stop_event.wait()
         return
     if await _wait_until_or_stop(deadline=window.start, stop_event=stop_event):
         return
     if datetime.now(UTC) >= window.end:
-        await stop_event.wait()
         return
 
     subscription_stop = asyncio.Event()
@@ -2893,8 +3082,6 @@ async def _collect_polymarket_during_window(
             raise RuntimeError("scheduled Polymarket collector exited unexpectedly")
         subscription_stop.set()
         await worker
-        if not stop_event.is_set():
-            await stop_event.wait()
     finally:
         subscription_stop.set()
         if not deadline.done():

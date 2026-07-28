@@ -380,3 +380,96 @@ def test_research_paper_restart_never_reuses_a_market_cycle(tmp_path) -> None:
 
     assert restarted.decide(now_ts_ns=T0_NS + 15_000_000_000) == "placement_cycle_used"
     assert restarted.records[0].status == "recovery_canceled"
+
+
+def test_paper_runtime_surfaces_prediction_failure_until_a_successful_decision() -> None:
+    class PredictorFailureEngine:
+        def __init__(self) -> None:
+            self.market = _market()
+            self.fail = True
+            self.result = "book_unavailable"
+
+        def decide(self, *, now_ts_ns: int) -> str:
+            assert now_ts_ns >= T0_NS
+            if self.fail:
+                raise ValueError("causal Binance history contains a kline gap")
+            return self.result
+
+    runtime = object.__new__(ResearchPaperRuntime)
+    runtime.engine = PredictorFailureEngine()
+    runtime.project = SimpleNamespace(
+        maker=SimpleNamespace(
+            entry_end_seconds=180.0,
+            max_work_seconds=15.0,
+            signal_cadence_seconds=5.0,
+        )
+    )
+    runtime._next_decision_ns = T0_NS + 5_000_000_000
+    runtime._prediction_errors = 0
+    runtime._recoverable_errors = {}
+    runtime._last_prediction_error = None
+    runtime._last_decision_result = "not_started"
+
+    runtime._run_due_decision(T0 + timedelta(seconds=5))
+
+    assert runtime._prediction_errors == 1
+    assert runtime._recoverable_errors == {
+        "prediction": "ValueError: causal Binance history contains a kline gap"
+    }
+    assert runtime._last_prediction_error == {
+        "market_slug": _market().slug,
+        "observed_at": (T0 + timedelta(seconds=5)).isoformat(),
+        "message": "ValueError: causal Binance history contains a kline gap",
+    }
+
+    runtime.engine.fail = False
+    runtime._run_due_decision(T0 + timedelta(seconds=10))
+
+    assert runtime._last_decision_result == "book_unavailable"
+    assert "prediction" in runtime._recoverable_errors
+
+    runtime.engine.result = "unsafe_prediction"
+    runtime._run_due_decision(T0 + timedelta(seconds=15))
+
+    assert runtime._last_decision_result == "unsafe_prediction"
+    assert "prediction" not in runtime._recoverable_errors
+
+
+def test_paper_runtime_retires_old_market_books_when_catalog_advances() -> None:
+    previous = _market()
+    current_t0 = previous.t1
+    current = MarketWindow(
+        family=BTC_15M_MARKET_FAMILY,
+        slug=BTC_15M_MARKET_FAMILY.slug_for(current_t0),
+        condition_id="0x" + "cd" * 32,
+        up_token_id="3",
+        down_token_id="4",
+        t0=current_t0,
+        t1=current_t0 + timedelta(minutes=15),
+        rule_epoch=previous.rule_epoch,
+        rule_hash="b" * 64,
+    )
+    runtime = object.__new__(ResearchPaperRuntime)
+    runtime._markets = {previous.slug: previous}
+    runtime._rules = {previous.slug: {UP: _rules(UP), DOWN: _rules(DOWN)}}
+    runtime._next_rule_retry = {previous.slug: T0}
+    runtime._rule_tasks = {}
+    runtime._recoverable_errors = {f"rules:{previous.slug}": "temporary failure"}
+    runtime._active_slug = previous.slug
+    runtime._next_decision_ns = T0_NS + 5_000_000_000
+    runtime._recent_events = defaultdict(lambda: deque(maxlen=20_000))
+    runtime._recent_events[previous.up_token_id].append(_book(UP, bid="0.40", ask="0.42", second=5))
+    runtime._recent_events["BTCUSDT"].append(_closed_binance_kline(second=0))
+    scheduled: list[str] = []
+    runtime._schedule_rule_fetch = lambda market, *, now: scheduled.append(market.slug)
+
+    runtime.register_markets(current, None)
+
+    assert tuple(runtime._markets) == (current.slug,)
+    assert previous.slug not in runtime._rules
+    assert previous.up_token_id not in runtime._recent_events
+    assert "BTCUSDT" in runtime._recent_events
+    assert runtime._recoverable_errors == {}
+    assert runtime._active_slug is None
+    assert runtime._next_decision_ns is None
+    assert scheduled == [current.slug]

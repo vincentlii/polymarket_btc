@@ -83,7 +83,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--follow-current",
         action="store_true",
-        help="Continuously discover and collect the current BTC window, rotating at each boundary.",
+        help=(
+            "Continuously discover BTC windows while keeping shared BTC feeds connected and "
+            "rotating only durable storage at each boundary."
+        ),
     )
     parser.add_argument(
         "--family",
@@ -156,7 +159,7 @@ def build_collector(
     args: argparse.Namespace, *, config: BtcProjectConfig | None = None
 ) -> BtcForwardCollector:
     if args.follow_current:
-        raise ValueError("--follow-current creates one collector per discovered market window")
+        raise ValueError("--follow-current is managed by the continuous window orchestrator")
     config = config or load_btc_project_config(args.config)
     token_ids = _token_ids(args)
     flush_size, flush_interval_seconds, _rotation_poll_seconds = _collection_settings(args, config)
@@ -333,109 +336,136 @@ async def collect_current_market_windows(
         raise ValueError("opening_handoff_delay_seconds must be finite and > 0")
     client = gamma_client or GammaMarketClient()
     factory = collector_factory or _build_window_collector
-    while not stop_event.is_set():
-        current_time = _as_utc(now())
-        slug = current_market_slug(family, current_time)
-        lookahead_slug = next_market_slug(family, current_time)
-        try:
-            catalog = await client.discover_catalog(
-                family=family,
-                rule_epoch=rule_epoch,
-                closed=False,
-                slugs=(slug, lookahead_slug),
-            )
-        except httpx.HTTPError as exc:
-            print(f"Gamma discovery failed for {slug}: {exc}; retrying.")
-            await _wait_or_stop(stop_event, rotation_poll_seconds)
-            continue
-        market = catalog.get(slug)
-        if market is None:
-            print(f"Gamma has not published current market {slug}; retrying.")
-            await _wait_or_stop(stop_event, rotation_poll_seconds)
-            continue
-        if market.t1 <= current_time:
-            await _wait_or_stop(stop_event, rotation_poll_seconds)
-            continue
-        lookahead = catalog.get(lookahead_slug)
-        if lookahead is not None and lookahead.t0 != market.t1:
-            raise ValueError("Gamma lookahead market does not start at the current window end")
-        catalog_path = _write_single_market_catalog(
-            directory=catalog_directory,
-            family=family,
-            market=market,
-        )
-        token_groups = ((market.up_token_id, market.down_token_id),)
-        if lookahead is not None:
-            _write_single_market_catalog(
+    collector: BtcForwardCollector | None = None
+    worker: asyncio.Task[None] | None = None
+    collector_stop = asyncio.Event()
+    try:
+        while not stop_event.is_set():
+            current_time = _as_utc(now())
+            slug = current_market_slug(family, current_time)
+            lookahead_slug = next_market_slug(family, current_time)
+            try:
+                catalog = await client.discover_catalog(
+                    family=family,
+                    rule_epoch=rule_epoch,
+                    closed=False,
+                    slugs=(slug, lookahead_slug),
+                )
+            except httpx.HTTPError as exc:
+                print(f"Gamma discovery failed for {slug}: {exc}; retrying.")
+                await _wait_or_stop(stop_event, rotation_poll_seconds)
+                continue
+            market = catalog.get(slug)
+            if market is None:
+                print(f"Gamma has not published current market {slug}; retrying.")
+                await _wait_or_stop(stop_event, rotation_poll_seconds)
+                continue
+            if market.t1 <= current_time:
+                await _wait_or_stop(stop_event, rotation_poll_seconds)
+                continue
+            lookahead = catalog.get(lookahead_slug)
+            if lookahead is not None and lookahead.t0 != market.t1:
+                raise ValueError("Gamma lookahead market does not start at the current window end")
+            catalog_path = _write_single_market_catalog(
                 directory=catalog_directory,
                 family=family,
-                market=lookahead,
+                market=market,
             )
-            token_groups = (
-                *token_groups,
-                (lookahead.up_token_id, lookahead.down_token_id),
+            token_groups = ((market.up_token_id, market.down_token_id),)
+            if lookahead is not None:
+                _write_single_market_catalog(
+                    directory=catalog_directory,
+                    family=family,
+                    market=lookahead,
+                )
+                token_groups = (
+                    *token_groups,
+                    (lookahead.up_token_id, lookahead.down_token_id),
+                )
+            markets = (market,) if lookahead is None else (market, lookahead)
+            subscription_windows = tuple(
+                PolymarketSubscriptionWindow(
+                    token_ids=(item.up_token_id, item.down_token_id),
+                    start=item.t0 - timedelta(seconds=polymarket_capture_lead_seconds),
+                    end=item.t0 + timedelta(seconds=opening_handoff_delay_seconds),
+                )
+                for item in markets
             )
-        markets = (market,) if lookahead is None else (market, lookahead)
-        subscription_windows = tuple(
-            PolymarketSubscriptionWindow(
-                token_ids=(item.up_token_id, item.down_token_id),
-                start=item.t0 - timedelta(seconds=polymarket_capture_lead_seconds),
-                end=item.t0 + timedelta(seconds=opening_handoff_delay_seconds),
+            if collector is None:
+                collector = factory(
+                    raw_data_root,
+                    token_groups,
+                    WindowCollectorSettings(
+                        flush_size=flush_size,
+                        flush_interval_seconds=flush_interval_seconds,
+                        shutdown_flush_timeout_seconds=shutdown_flush_timeout_seconds,
+                        max_pending_events=max_pending_events,
+                        max_pending_bytes=max_pending_bytes,
+                        binance_spot_depth_snapshot_limit=(binance_spot_depth_snapshot_limit),
+                        binance_futures_depth_snapshot_limit=(binance_futures_depth_snapshot_limit),
+                        binance_depth_snapshot_retry_initial_seconds=(
+                            binance_depth_snapshot_retry_initial_seconds
+                        ),
+                        binance_depth_snapshot_retry_max_seconds=(
+                            binance_depth_snapshot_retry_max_seconds
+                        ),
+                        polymarket_source_timestamp_regression_tolerance_seconds=(
+                            polymarket_source_timestamp_regression_tolerance_seconds
+                        ),
+                        polymarket_subscription_windows=subscription_windows,
+                        ingest_version=ingest_version,
+                        epoch_id_offset=int(market.t0.timestamp()),
+                    ),
+                )
+                if on_market_active is not None:
+                    on_market_active(market, lookahead, collector)
+                worker = asyncio.create_task(
+                    collector.collect_forever(
+                        stop_event=collector_stop,
+                        binance_streams=binance_streams,
+                        binance_futures_market_streams=binance_futures_market_streams,
+                        binance_futures_public_streams=binance_futures_public_streams,
+                    ),
+                    name="btc-forward-continuous",
+                )
+            else:
+                for window in subscription_windows:
+                    collector.register_polymarket_subscription_window(window)
+                if on_market_active is not None:
+                    on_market_active(market, lookahead, collector)
+            assert worker is not None
+            print(
+                f"Running continuous BTC feeds for {market.slug}"
+                f"{' + ' + lookahead.slug if lookahead is not None else ''} "
+                f"through {market.t1.isoformat()} with bounded CLOB capture using "
+                f"{catalog_path}."
             )
-            for item in markets
-        )
-        collector_stop = asyncio.Event()
-        collector = factory(
-            raw_data_root,
-            token_groups,
-            WindowCollectorSettings(
-                flush_size=flush_size,
-                flush_interval_seconds=flush_interval_seconds,
-                shutdown_flush_timeout_seconds=shutdown_flush_timeout_seconds,
-                max_pending_events=max_pending_events,
-                max_pending_bytes=max_pending_bytes,
-                binance_spot_depth_snapshot_limit=(binance_spot_depth_snapshot_limit),
-                binance_futures_depth_snapshot_limit=(binance_futures_depth_snapshot_limit),
-                binance_depth_snapshot_retry_initial_seconds=(
-                    binance_depth_snapshot_retry_initial_seconds
-                ),
-                binance_depth_snapshot_retry_max_seconds=(binance_depth_snapshot_retry_max_seconds),
-                polymarket_source_timestamp_regression_tolerance_seconds=(
-                    polymarket_source_timestamp_regression_tolerance_seconds
-                ),
-                polymarket_subscription_windows=subscription_windows,
-                ingest_version=ingest_version,
-                epoch_id_offset=int(market.t0.timestamp()),
-            ),
-        )
-        if on_market_active is not None:
-            on_market_active(market, lookahead, collector)
-        worker = asyncio.create_task(
-            collector.collect_forever(
-                stop_event=collector_stop,
-                binance_streams=binance_streams,
-                binance_futures_market_streams=binance_futures_market_streams,
-                binance_futures_public_streams=binance_futures_public_streams,
-            ),
-            name=f"btc-forward-{market.slug}",
-        )
-        handoff_delay = opening_handoff_delay_seconds if lookahead is not None else 0.0
-        print(
-            f"Running continuous BTC feeds for {market.slug}"
-            f"{' + ' + lookahead.slug if lookahead is not None else ''} "
-            f"until {(market.t1 + timedelta(seconds=handoff_delay)).isoformat()} "
-            f"with bounded CLOB capture using {catalog_path}."
-        )
-        try:
+            current_subscription = subscription_windows[0]
+            await _wait_for_collector_deadline(
+                stop_event=stop_event,
+                worker=worker,
+                deadline=current_subscription.end,
+                now=now,
+            )
+            if stop_event.is_set():
+                break
+            if not await collector.wait_polymarket_subscription_window(
+                current_subscription,
+                stop_event=stop_event,
+                timeout_seconds=shutdown_flush_timeout_seconds,
+            ):
+                break
+            await collector.rotate_storage_session(epoch_id_offset=int(market.t1.timestamp()))
             await _wait_for_market_rotation(
                 stop_event=stop_event,
                 worker=worker,
                 market=market,
-                handoff_delay_seconds=handoff_delay,
+                handoff_delay_seconds=0.0,
                 now=now,
             )
-        finally:
-            collector_stop.set()
+    finally:
+        collector_stop.set()
+        if worker is not None:
             await worker
 
 
@@ -554,7 +584,22 @@ async def _wait_for_market_rotation(
     now: Callable[[], datetime],
 ) -> None:
     handoff_end = market.t1 + timedelta(seconds=handoff_delay_seconds)
-    seconds_until_end = max(0.0, (handoff_end - _as_utc(now())).total_seconds())
+    await _wait_for_collector_deadline(
+        stop_event=stop_event,
+        worker=worker,
+        deadline=handoff_end,
+        now=now,
+    )
+
+
+async def _wait_for_collector_deadline(
+    *,
+    stop_event: asyncio.Event,
+    worker: asyncio.Task[None],
+    deadline: datetime,
+    now: Callable[[], datetime],
+) -> None:
+    seconds_until_end = max(0.0, (_as_utc(deadline) - _as_utc(now())).total_seconds())
     stopper = asyncio.create_task(stop_event.wait())
     try:
         done, _ = await asyncio.wait(
@@ -566,7 +611,7 @@ async def _wait_for_market_rotation(
             await worker
             if not stop_event.is_set():
                 raise RuntimeError(
-                    f"collector stopped before {market.slug} reached its handoff end"
+                    f"collector stopped before the scheduled deadline {deadline.isoformat()}"
                 )
     finally:
         stopper.cancel()
