@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 from hashlib import sha256
 import json
 from math import isfinite
@@ -10,6 +11,8 @@ from typing import Literal
 
 from btc_short_horizon.live.gateway import LiveOrderRequest, PaperOrderGateway
 from btc_short_horizon.strategy import OrderPlan, SideBook
+from nautilus_trader.model.enums import LiquiditySide
+from prediction_market_extensions.adapters.polymarket.parsing import calculate_commission
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,15 +21,17 @@ class PaperExecutionConfig:
 
     insert_latency_ms: float
     cancel_latency_ms: float
+    taker_latency_ms: float
     trade_volume_multiplier: float
 
     def __post_init__(self) -> None:
-        for name in ("insert_latency_ms", "cancel_latency_ms"):
+        for name in ("insert_latency_ms", "cancel_latency_ms", "taker_latency_ms"):
             value = getattr(self, name)
-            if not isfinite(value) or value < 0.0:
+            if isinstance(value, bool) or not isfinite(value) or value < 0.0:
                 raise ValueError(f"{name} must be finite and >= 0")
         if (
-            not isfinite(self.trade_volume_multiplier)
+            isinstance(self.trade_volume_multiplier, bool)
+            or not isfinite(self.trade_volume_multiplier)
             or not 0.0 < self.trade_volume_multiplier <= 1.0
         ):
             raise ValueError("trade_volume_multiplier must be in (0, 1]")
@@ -41,6 +46,9 @@ class PaperMarketRules:
     neg_risk: bool
     maker_fee_rate_bps: int
     observed_at_ns: int
+    taker_fee_rate: float = 0.0
+    taker_fee_exponent: int = 1
+    taker_only: bool = True
 
     def __post_init__(self) -> None:
         if not self.condition_id or not self.token_id or not self.tick_size:
@@ -61,6 +69,16 @@ class PaperMarketRules:
             or self.observed_at_ns < 0
         ):
             raise ValueError("observed_at_ns must be a non-negative integer")
+        if (
+            isinstance(self.taker_fee_rate, bool)
+            or not isfinite(self.taker_fee_rate)
+            or not 0.0 <= self.taker_fee_rate < 1.0
+        ):
+            raise ValueError("taker_fee_rate must be finite and in [0, 1)")
+        if isinstance(self.taker_fee_exponent, bool) or self.taker_fee_exponent != 1:
+            raise ValueError("Research Paper supports only the documented fee exponent 1")
+        if self.taker_only is not True:
+            raise ValueError("Research Paper requires taker-only fees")
 
     @property
     def rules_sha256(self) -> str:
@@ -71,6 +89,9 @@ class PaperMarketRules:
             "neg_risk": self.neg_risk,
             "tick_size": self.tick_size,
             "token_id": self.token_id,
+            "taker_fee_rate": self.taker_fee_rate,
+            "taker_fee_exponent": self.taker_fee_exponent,
+            "taker_only": self.taker_only,
         }
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         return sha256(encoded).hexdigest()
@@ -82,7 +103,10 @@ class PaperOrderLayerState:
     price: float
     size: float
     queue_ahead: float
+    initial_queue_ahead: float
     filled_size: float = 0.0
+    raw_eligible_sell_volume: float = 0.0
+    stressed_eligible_sell_volume: float = 0.0
 
     @property
     def remaining_size(self) -> float:
@@ -93,6 +117,7 @@ class PaperOrderLayerState:
 class PaperPlacement:
     placement_id: str
     plan: OrderPlan
+    rules: PaperMarketRules
     submitted_ts_ns: int
     active_ts_ns: int
     layers: tuple[PaperOrderLayerState, ...]
@@ -101,13 +126,39 @@ class PaperPlacement:
     cancel_requested_ts_ns: int | None = None
     cancel_ack_ts_ns: int | None = None
     cancel_race_filled_size: float = 0.0
+    terminal_reason: str | None = None
+    terminal_ts_ns: int | None = None
+    taker_filled_size: float = 0.0
+    taker_filled_notional: float = 0.0
+    taker_fees: float = 0.0
+    execution_route: str = "maker"
+    fak_requested_ts_ns: int | None = None
+    fak_active_ts_ns: int | None = None
+    fak_selected_probability: float | None = None
+    fak_minimum_net_edge: float = 0.0
+    fak_slippage_buffer: float = 0.0
+    fak_model_uncertainty_buffer: float = 0.0
+    fak_limit_price: float | None = None
+    fak_net_edge_per_share: float | None = None
 
     @property
     def filled_size(self) -> float:
-        return sum(layer.filled_size for layer in self.layers)
+        return sum(layer.filled_size for layer in self.layers) + self.taker_filled_size
 
     @property
     def filled_notional(self) -> float:
+        return (
+            sum(layer.filled_size * layer.price for layer in self.layers)
+            + self.taker_filled_notional
+            + self.taker_fees
+        )
+
+    @property
+    def maker_filled_size(self) -> float:
+        return sum(layer.filled_size for layer in self.layers)
+
+    @property
+    def maker_filled_notional(self) -> float:
         return sum(layer.filled_size * layer.price for layer in self.layers)
 
     @property
@@ -174,11 +225,13 @@ class PaperExecutionSimulator:
                     price=layer.price,
                     size=layer.size,
                     queue_ahead=layer.visible_size,
+                    initial_queue_ahead=layer.visible_size,
                 )
             )
         placement = PaperPlacement(
             placement_id=placement_id,
             plan=plan,
+            rules=rules,
             submitted_ts_ns=now_ts_ns,
             active_ts_ns=now_ts_ns + round(self.config.insert_latency_ms * 1_000_000),
             layers=tuple(layer_states),
@@ -197,7 +250,11 @@ class PaperExecutionSimulator:
                 else:
                     placement.status = "working"
             if placement.status == "working" and now_ts_ns >= placement.plan.expires_ts_ns:
-                self.request_cancel(placement, now_ts_ns=now_ts_ns)
+                self.request_cancel(
+                    placement,
+                    now_ts_ns=now_ts_ns,
+                    reason="max_work_age",
+                )
             if (
                 placement.status == "cancel_pending"
                 and placement.cancel_ack_ts_ns is not None
@@ -206,13 +263,82 @@ class PaperExecutionSimulator:
                 for layer in placement.layers:
                     self.gateway.cancel_order(layer.order_id)
                 placement.status = "partially_filled" if placement.filled_size else "canceled"
+                placement.terminal_ts_ns = now_ts_ns
+            if (
+                placement.status == "fak_pending"
+                and placement.fak_active_ts_ns is not None
+                and now_ts_ns >= placement.fak_active_ts_ns
+            ):
+                book = books.get(placement.plan.token_id)
+                if book is None:
+                    placement.status = "canceled"
+                    placement.terminal_reason = "fak_book_unavailable"
+                    placement.terminal_ts_ns = now_ts_ns
+                else:
+                    self._execute_fak(placement, book=book, now_ts_ns=now_ts_ns)
 
-    def request_cancel(self, placement: PaperPlacement, *, now_ts_ns: int) -> None:
+    def request_cancel(
+        self,
+        placement: PaperPlacement,
+        *,
+        now_ts_ns: int,
+        reason: str = "risk_cancel",
+    ) -> None:
         if placement.status not in {"working", "insert_pending"}:
             return
         placement.status = "cancel_pending"
         placement.cancel_requested_ts_ns = now_ts_ns
         placement.cancel_ack_ts_ns = now_ts_ns + round(self.config.cancel_latency_ms * 1_000_000)
+        placement.terminal_reason = reason
+
+    def request_fak(
+        self,
+        placement: PaperPlacement,
+        *,
+        now_ts_ns: int,
+        selected_probability: float,
+        minimum_net_edge: float,
+        slippage_buffer: float,
+        model_uncertainty_buffer: float,
+    ) -> bool:
+        if placement.status != "canceled" or placement.maker_filled_size > 0.0:
+            return False
+        for name, value in (
+            ("selected_probability", selected_probability),
+            ("minimum_net_edge", minimum_net_edge),
+            ("slippage_buffer", slippage_buffer),
+            ("model_uncertainty_buffer", model_uncertainty_buffer),
+        ):
+            if not isfinite(value) or value < 0.0:
+                raise ValueError(f"{name} must be finite and >= 0")
+        if not 0.0 < selected_probability < 1.0:
+            raise ValueError("selected_probability must be in (0, 1)")
+        if minimum_net_edge + slippage_buffer + model_uncertainty_buffer >= 1.0:
+            raise ValueError("FAK edge and safety buffers must sum to less than 1")
+        placement.status = "fak_pending"
+        placement.execution_route = "maker_then_fak"
+        placement.fak_requested_ts_ns = now_ts_ns
+        placement.fak_active_ts_ns = now_ts_ns + round(self.config.taker_latency_ms * 1_000_000)
+        placement.fak_selected_probability = selected_probability
+        placement.fak_minimum_net_edge = minimum_net_edge
+        placement.fak_slippage_buffer = slippage_buffer
+        placement.fak_model_uncertainty_buffer = model_uncertainty_buffer
+        placement.terminal_reason = None
+        placement.terminal_ts_ns = None
+        return True
+
+    def abort_fak(
+        self,
+        placement: PaperPlacement,
+        *,
+        now_ts_ns: int,
+        reason: str,
+    ) -> None:
+        if placement.status != "fak_pending":
+            return
+        placement.status = "canceled"
+        placement.terminal_reason = reason
+        placement.terminal_ts_ns = now_ts_ns
 
     def on_trade(
         self,
@@ -237,6 +363,8 @@ class PaperExecutionSimulator:
             for layer in sorted(placement.layers, key=lambda item: item.price, reverse=True):
                 if volume <= 0.0 or price > layer.price or layer.remaining_size <= 0.0:
                     continue
+                layer.raw_eligible_sell_volume += volume / self.config.trade_volume_multiplier
+                layer.stressed_eligible_sell_volume += volume
                 queue_consumed = min(volume, layer.queue_ahead)
                 layer.queue_ahead -= queue_consumed
                 volume -= queue_consumed
@@ -249,15 +377,83 @@ class PaperExecutionSimulator:
                     placement.cancel_race_filled_size += filled
             if placement.filled_size >= placement.plan.total_size - 1e-12:
                 placement.status = "filled"
+                placement.terminal_reason = "filled"
+                placement.terminal_ts_ns = available_ts_ns
                 continue
             if placement.filled_size > 0.0 and placement.status == "working":
-                self.request_cancel(placement, now_ts_ns=available_ts_ns)
+                self.request_cancel(
+                    placement,
+                    now_ts_ns=available_ts_ns,
+                    reason="partial_fill",
+                )
 
     def _reject(self, placement: PaperPlacement, reason: str) -> None:
         for layer in placement.layers:
             self.gateway.cancel_order(layer.order_id)
         placement.status = "rejected"
         placement.rejection_reason = reason
+        placement.terminal_reason = reason
+        placement.terminal_ts_ns = placement.active_ts_ns
+
+    def _execute_fak(
+        self,
+        placement: PaperPlacement,
+        *,
+        book: SideBook,
+        now_ts_ns: int,
+    ) -> None:
+        selected_probability = placement.fak_selected_probability
+        if selected_probability is None:
+            raise RuntimeError("FAK probability is unavailable")
+        remaining = placement.plan.total_size - placement.maker_filled_size
+        filled = 0.0
+        notional = 0.0
+        fees = 0.0
+        last_price: float | None = None
+        weighted_net_edge = 0.0
+        for level in sorted(book.asks, key=lambda item: item.price):
+            if remaining <= 1e-12:
+                break
+            quantity = min(remaining, level.size)
+            if quantity <= 0.0:
+                continue
+            fee = calculate_commission(
+                quantity=Decimal(str(quantity)),
+                price=Decimal(str(level.price)),
+                fee_rate=Decimal(str(placement.rules.taker_fee_rate)),
+                liquidity_side=LiquiditySide.TAKER,
+            )
+            fee_per_share = fee / quantity
+            net_edge = (
+                selected_probability
+                - level.price
+                - fee_per_share
+                - placement.fak_slippage_buffer
+                - placement.fak_model_uncertainty_buffer
+            )
+            if net_edge + 1e-12 < placement.fak_minimum_net_edge:
+                break
+            filled += quantity
+            notional += quantity * level.price
+            fees += fee
+            weighted_net_edge += quantity * net_edge
+            remaining -= quantity
+            last_price = level.price
+        placement.taker_filled_size = filled
+        placement.taker_filled_notional = notional
+        placement.taker_fees = fees
+        placement.fak_limit_price = last_price
+        placement.fak_net_edge_per_share = None if filled <= 0.0 else weighted_net_edge / filled
+        placement.terminal_ts_ns = now_ts_ns
+        if filled <= 0.0:
+            placement.status = "canceled"
+            placement.terminal_reason = "fak_net_edge_insufficient"
+        elif placement.filled_size >= placement.plan.total_size - 1e-12:
+            placement.status = "filled"
+            placement.terminal_reason = "fak_filled"
+        else:
+            placement.status = "partially_filled"
+            placement.terminal_reason = "fak_partial_depth"
 
 
 __all__ = [

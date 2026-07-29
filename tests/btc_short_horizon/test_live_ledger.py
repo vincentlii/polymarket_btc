@@ -138,8 +138,8 @@ def test_ledger_performance_projection_uses_only_observed_account_values() -> No
     assert performance.order_count == 1
     assert performance.fill_count == 1
     assert len(performance.equity_curve) == 2
-    assert performance.recent_trades[0].market_slug == "btc-updown-15m-1784634300"
-    assert performance.recent_trades[0].order_latency_ms is None
+    assert performance.recent_orders[0].market_slug == "btc-updown-15m-1784634300"
+    assert performance.recent_orders[0].order_latency_ms is None
 
 
 def test_ledger_store_rejects_an_older_snapshot_replacing_latest(tmp_path) -> None:

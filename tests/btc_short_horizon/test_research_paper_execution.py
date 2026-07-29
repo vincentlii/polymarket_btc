@@ -68,6 +68,7 @@ def _simulator() -> PaperExecutionSimulator:
         config=PaperExecutionConfig(
             insert_latency_ms=50.0,
             cancel_latency_ms=100.0,
+            taker_latency_ms=50.0,
             trade_volume_multiplier=0.5,
         ),
     )
@@ -166,3 +167,46 @@ def test_paper_market_rules_reject_stale_or_mismatched_order_inputs() -> None:
 
     with pytest.raises(ValueError, match="tick size"):
         simulator.submit(plan=_plan(), rules=stale, book=_book(), now_ts_ns=NOW_NS)
+
+
+def test_fak_waits_for_cancel_ack_and_charges_taker_fee() -> None:
+    simulator = _simulator()
+    rules = PaperMarketRules(
+        condition_id=CONDITION_ID,
+        token_id=UP_TOKEN,
+        tick_size="0.01",
+        minimum_order_size=1.0,
+        neg_risk=False,
+        maker_fee_rate_bps=0,
+        observed_at_ns=NOW_NS - 1,
+        taker_fee_rate=0.07,
+    )
+    placement = simulator.submit(plan=_plan(), rules=rules, book=_book(), now_ts_ns=NOW_NS)
+    simulator.advance(now_ts_ns=NOW_NS + 50_000_000, books={UP_TOKEN: _book()})
+    simulator.request_cancel(placement, now_ts_ns=NOW_NS + 60_000_000, reason="fak_upgrade")
+
+    assert not simulator.request_fak(
+        placement,
+        now_ts_ns=NOW_NS + 60_000_000,
+        selected_probability=0.60,
+        minimum_net_edge=0.03,
+        slippage_buffer=0.005,
+        model_uncertainty_buffer=0.03,
+    )
+
+    simulator.advance(now_ts_ns=NOW_NS + 160_000_000, books={UP_TOKEN: _book()})
+    assert simulator.request_fak(
+        placement,
+        now_ts_ns=NOW_NS + 160_000_000,
+        selected_probability=0.60,
+        minimum_net_edge=0.03,
+        slippage_buffer=0.005,
+        model_uncertainty_buffer=0.03,
+    )
+    simulator.advance(now_ts_ns=NOW_NS + 210_000_000, books={UP_TOKEN: _book()})
+
+    assert placement.status == "filled"
+    assert placement.execution_route == "maker_then_fak"
+    assert placement.taker_filled_size == pytest.approx(2.0)
+    assert placement.taker_fees == pytest.approx(0.0341)
+    assert placement.terminal_reason == "fak_filled"

@@ -61,6 +61,70 @@ class ExecutionScenario:
 
 
 @dataclass(frozen=True, slots=True)
+class PaperExecutionVariantConfig:
+    variant_id: str
+    label: str
+    mode: str
+    maker_work_seconds: float
+    primary: bool
+    minimum_taker_net_edge: float
+    slippage_buffer: float
+    model_uncertainty_buffer: float
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.variant_id, str)
+            or not self.variant_id
+            or not self.variant_id[0].isascii()
+            or not self.variant_id[0].isalnum()
+            or any(
+                not character.isascii() or not (character.isalnum() or character in {"_", "-"})
+                for character in self.variant_id
+            )
+        ):
+            raise ValueError("paper execution variant ID must be a simple ASCII identifier")
+        if not isinstance(self.label, str) or not self.label.strip():
+            raise ValueError("paper execution variant label must not be empty")
+        if self.mode not in {"maker", "maker_then_fak"}:
+            raise ValueError("paper execution mode must be maker or maker_then_fak")
+        for name, value in (
+            ("maker_work_seconds", self.maker_work_seconds),
+            ("minimum_taker_net_edge", self.minimum_taker_net_edge),
+            ("slippage_buffer", self.slippage_buffer),
+            ("model_uncertainty_buffer", self.model_uncertainty_buffer),
+        ):
+            if isinstance(value, bool) or not isfinite(value) or value < 0.0:
+                raise ValueError(f"paper execution {name} must be finite and >= 0")
+        if self.maker_work_seconds <= 0.0:
+            raise ValueError("paper execution maker_work_seconds must be > 0")
+        if not isinstance(self.primary, bool):
+            raise ValueError("paper execution primary must be bool")
+        if self.mode == "maker" and any(
+            value > 0.0
+            for value in (
+                self.minimum_taker_net_edge,
+                self.slippage_buffer,
+                self.model_uncertainty_buffer,
+            )
+        ):
+            raise ValueError("maker-only paper variants cannot configure taker buffers")
+        if self.mode == "maker_then_fak" and any(
+            value <= 0.0
+            for value in (
+                self.minimum_taker_net_edge,
+                self.slippage_buffer,
+                self.model_uncertainty_buffer,
+            )
+        ):
+            raise ValueError("maker-then-FAK variants require positive taker safety buffers")
+        if (
+            self.minimum_taker_net_edge + self.slippage_buffer + self.model_uncertainty_buffer
+            >= 1.0
+        ):
+            raise ValueError("paper execution taker buffers must sum to less than 1")
+
+
+@dataclass(frozen=True, slots=True)
 class BtcProjectConfig:
     paths: ProjectPaths
     primary_family: BtcMarketFamily
@@ -68,6 +132,7 @@ class BtcProjectConfig:
     research_timing: ResearchTimingConfig
     collection: ForwardCollectionConfig
     maker: MakerStrategyConfig
+    paper_execution_variants: tuple[PaperExecutionVariantConfig, ...]
     data_sources: tuple[str, ...]
     scenarios: tuple[ExecutionScenario, ...]
 
@@ -148,6 +213,16 @@ def load_btc_project_config(path: Path) -> BtcProjectConfig:
         raise ValueError("maker signal cadence must match research model cadence")
     if collection.opening_handoff_delay_seconds < timing.entry_end_seconds:
         raise ValueError("opening handoff must cover the complete research entry window")
+    paper_variants = tuple(
+        _paper_execution_variant(item) for item in _mapping_list(raw, "paper_execution_variants")
+    )
+    if not paper_variants:
+        raise ValueError("paper_execution_variants must not be empty")
+    variant_ids = {variant.variant_id for variant in paper_variants}
+    if len(variant_ids) != len(paper_variants):
+        raise ValueError("paper execution variant IDs must be unique")
+    if sum(variant.primary for variant in paper_variants) != 1:
+        raise ValueError("exactly one paper execution variant must be primary")
     sources = _data_sources(root, raw)
     scenarios = tuple(_scenario(item) for item in _mapping_list(raw, "execution_scenarios"))
     if not scenarios:
@@ -164,7 +239,9 @@ def load_btc_project_config(path: Path) -> BtcProjectConfig:
         for scenario in scenarios
     )
     required_handoff_seconds = (
-        maker.entry_end_seconds + maker.max_work_seconds + maximum_cancel_race_seconds
+        maker.entry_end_seconds
+        + max(variant.maker_work_seconds for variant in paper_variants)
+        + maximum_cancel_race_seconds
     )
     if collection.opening_handoff_delay_seconds < required_handoff_seconds:
         raise ValueError(
@@ -177,8 +254,25 @@ def load_btc_project_config(path: Path) -> BtcProjectConfig:
         research_timing=timing,
         collection=collection,
         maker=maker,
+        paper_execution_variants=paper_variants,
         data_sources=sources,
         scenarios=scenarios,
+    )
+
+
+def _paper_execution_variant(section: Mapping[str, object]) -> PaperExecutionVariantConfig:
+    primary = section.get("primary")
+    if not isinstance(primary, bool):
+        raise ValueError("paper execution variant primary must be bool")
+    return PaperExecutionVariantConfig(
+        variant_id=_text(section, "id"),
+        label=_text(section, "label"),
+        mode=_text(section, "mode"),
+        maker_work_seconds=_positive_float(section, "maker_work_seconds"),
+        primary=primary,
+        minimum_taker_net_edge=_nonnegative_float(section, "minimum_taker_net_edge"),
+        slippage_buffer=_nonnegative_float(section, "slippage_buffer"),
+        model_uncertainty_buffer=_nonnegative_float(section, "model_uncertainty_buffer"),
     )
 
 

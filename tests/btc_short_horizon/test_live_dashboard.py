@@ -104,6 +104,10 @@ def test_dashboard_html_labels_research_paper_as_simulated_not_account_truth() -
 
     assert "Research Paper 模拟账本新鲜" in html
     assert "Simulated ledger" in html
+    assert "三种成交策略对比" in html
+    assert "variant_summaries" in html
+    assert "recent_orders" in html
+    assert "recent_trades" not in html
     assert "research_paper:'Research Paper'" in html
 
 

@@ -50,7 +50,7 @@ def test_forward_collector_cli_builds_btc_only_collector_from_explicit_token_ids
     assert collector.flush_size == 25
     assert collector.flush_interval_seconds == 60.0
     assert collector.shutdown_flush_timeout_seconds == 30.0
-    assert collector.ingest_version == "btc-short-horizon-v13"
+    assert collector.ingest_version == "btc-short-horizon-v14"
     assert collector.polymarket_source_timestamp_regression_tolerance_seconds == 1.0
     assert collector.max_pending_events == 100_000
     assert collector.max_pending_bytes == 67_108_864

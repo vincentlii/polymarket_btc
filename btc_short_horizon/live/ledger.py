@@ -15,8 +15,8 @@ from uuid import uuid4
 
 from btc_short_horizon.live.dashboard_state import (
     EquityPoint,
+    OrderPerformance,
     PerformanceSnapshot,
-    TradePerformance,
 )
 from btc_short_horizon.live.reconciliation import DailyLedgerSnapshot, LedgerTradeCoverage
 from btc_short_horizon.live.wal import exclusive_file_lock
@@ -388,11 +388,13 @@ def ledger_performance_snapshot(
     recent = tuple(sorted(closed.values(), key=lambda item: item.closed_at_ns, reverse=True))
     wins = sum(item.realized_pnl > 0.0 for item in recent)
     trade_rows = tuple(
-        TradePerformance(
+        OrderPerformance(
+            variant_id="live",
             order_id=f"ledger:{item.market_id}:{item.token_id}",
             market_slug=item.market_slug,
             side=item.side,
-            status="resolved",
+            execution_status="filled",
+            settlement_status="resolved",
             placed_at=datetime.fromtimestamp(item.closed_at_ns / 1_000_000_000, tz=UTC),
             shares=item.shares,
             filled_shares=item.shares,
@@ -418,7 +420,7 @@ def ledger_performance_snapshot(
         order_count=current.submitted_order_count,
         fill_count=current.confirmed_fill_count,
         equity_curve=points,
-        recent_trades=trade_rows,
+        recent_orders=trade_rows,
     )
 
 

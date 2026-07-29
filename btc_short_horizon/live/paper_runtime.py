@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict, deque
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from math import isfinite
 from pathlib import Path
@@ -19,7 +20,11 @@ from btc_short_horizon.data.forward import AdmittedEventBuffer
 from btc_short_horizon.data.gamma import GammaMarketClient
 from btc_short_horizon.live.dashboard_state import DashboardSnapshotStore
 from btc_short_horizon.live.paper_execution import PaperExecutionConfig, PaperMarketRules
-from btc_short_horizon.live.research_paper import PaperLedgerStore, ResearchPaperEngine
+from btc_short_horizon.live.research_paper import (
+    PaperLedgerStore,
+    ResearchPaperEngine,
+    ResearchPaperPortfolio,
+)
 from btc_short_horizon.live.runtime import RuntimeStatus, RuntimeStatusStore
 from btc_short_horizon.models import ModelArtifactStore
 from btc_short_horizon.research.binance_history import fetch_binance_spot_kline_history
@@ -86,9 +91,10 @@ class PublicPaperRulesClient:
         fee_details = payload.get("fd")
         if not isinstance(fee_details, Mapping):
             raise ValueError("CLOB market rules require fee details")
-        _nonnegative_number(fee_details.get("r"), "fee rate")
-        _nonnegative_integer(fee_details.get("e"), "fee exponent")
-        if fee_details.get("to") is not True:
+        taker_fee_rate = _nonnegative_number(fee_details.get("r"), "fee rate")
+        taker_fee_exponent = _nonnegative_integer(fee_details.get("e"), "fee exponent")
+        taker_only = fee_details.get("to")
+        if taker_only is not True:
             raise ValueError("Research Paper requires a verified taker-only fee schedule")
         tick_size = _decimal_text(payload.get("mts"), "minimum tick size")
         minimum_order_size = _positive_number(payload.get("mos"), "minimum order size")
@@ -107,6 +113,9 @@ class PublicPaperRulesClient:
                 neg_risk=neg_risk,
                 maker_fee_rate_bps=0,
                 observed_at_ns=observed_at_ns,
+                taker_fee_rate=taker_fee_rate,
+                taker_fee_exponent=taker_fee_exponent,
+                taker_only=taker_only,
             )
             for token_id in expected
         }
@@ -162,18 +171,32 @@ class ResearchPaperRuntime:
         predictor = ModelPaperPredictor(project=project, model_directory=model_directory)
         scenario = project.require_scenario("p99_half_volume_book_first").execution
         latency = scenario.latency_model
-        self.engine = ResearchPaperEngine(
-            predictor=predictor,
-            model_id=predictor.model_id,
-            maker_config=project.maker,
-            execution_config=PaperExecutionConfig(
-                insert_latency_ms=latency.base_latency_ms + latency.insert_latency_ms,
-                cancel_latency_ms=latency.base_latency_ms + latency.cancel_latency_ms,
-                trade_volume_multiplier=scenario.trade_execution_size_multiplier,
-            ),
-            ledger_store=PaperLedgerStore(runtime_root),
-            starting_balance=starting_balance,
+        execution_config = PaperExecutionConfig(
+            insert_latency_ms=latency.base_latency_ms + latency.insert_latency_ms,
+            cancel_latency_ms=latency.base_latency_ms + latency.cancel_latency_ms,
+            taker_latency_ms=latency.base_latency_ms + latency.insert_latency_ms,
+            trade_volume_multiplier=scenario.trade_execution_size_multiplier,
         )
+        engines = tuple(
+            ResearchPaperEngine(
+                predictor=predictor,
+                model_id=predictor.model_id,
+                maker_config=replace(
+                    project.maker,
+                    max_work_seconds=(
+                        variant.maker_work_seconds
+                        if variant.mode == "maker"
+                        else project.maker.max_work_seconds
+                    ),
+                ),
+                execution_config=execution_config,
+                variant=variant,
+                ledger_store=PaperLedgerStore(runtime_root, variant.variant_id),
+                starting_balance=starting_balance,
+            )
+            for variant in project.paper_execution_variants
+        )
+        self.engine = ResearchPaperPortfolio(engines)
         self.project = project
         self.runtime_root = runtime_root
         self.rule_epoch = rule_epoch
@@ -280,10 +303,11 @@ class ResearchPaperRuntime:
             raise RuntimeError("Binance bootstrap anchor disappeared")
         end = datetime.fromtimestamp(anchor_open_ms / 1_000, tz=UTC)
         start = end - timedelta(seconds=self.project.research_timing.max_feature_lookback_seconds)
-        self.engine.kline_history = await fetch_binance_spot_kline_history(
+        history = await fetch_binance_spot_kline_history(
             start_time=start,
             end_time=end,
         )
+        self.engine.set_kline_history(history)
         if self.event_buffer.overflowed:
             raise RuntimeError("admitted_event_buffer_overflow")
         for event in deferred:
@@ -378,7 +402,12 @@ class ResearchPaperRuntime:
         if now_ns < self._next_decision_ns:
             return
         end_ns = int(self.engine.market.t0.timestamp() * 1_000_000_000) + round(
-            (self.project.maker.entry_end_seconds + self.project.maker.max_work_seconds)
+            (
+                self.project.maker.entry_end_seconds
+                + max(
+                    variant.maker_work_seconds for variant in self.project.paper_execution_variants
+                )
+            )
             * 1_000_000_000
         )
         if self._next_decision_ns > end_ns:
@@ -453,6 +482,20 @@ class ResearchPaperRuntime:
             "order_count": len(self.engine.records),
             "fill_count": sum(item.filled_shares > 0.0 for item in self.engine.records),
             "resolved_count": sum(item.realized_pnl is not None for item in self.engine.records),
+            "execution_variants": [
+                {
+                    "id": engine.variant.variant_id,
+                    "mode": engine.variant.mode,
+                    "primary": engine.variant.primary,
+                    "last_decision_result": self.engine.last_decisions.get(
+                        engine.variant.variant_id,
+                        "not_started",
+                    ),
+                    "order_count": len(engine.records),
+                    "fill_count": sum(item.filled_shares > 0.0 for item in engine.records),
+                }
+                for engine in self.engine.engines
+            ],
             "event_buffer_pending": self.event_buffer.pending_events,
             "event_buffer_overflowed": self.event_buffer.overflowed,
             "event_buffer_dropped": self.event_buffer.dropped_events,

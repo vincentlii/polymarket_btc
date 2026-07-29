@@ -51,6 +51,9 @@ async def test_public_paper_rules_use_one_clob_snapshot_and_require_taker_only_f
     assert rules["1"].tick_size == "0.01"
     assert rules["1"].minimum_order_size == 5.0
     assert rules["1"].maker_fee_rate_bps == 0
+    assert rules["1"].taker_fee_rate == 0.07
+    assert rules["1"].taker_fee_exponent == 1
+    assert rules["1"].taker_only is True
 
 
 @pytest.mark.asyncio
@@ -94,7 +97,8 @@ def test_paper_runtime_keeps_deciding_through_order_work_horizon() -> None:
             entry_end_seconds=180.0,
             max_work_seconds=15.0,
             signal_cadence_seconds=5.0,
-        )
+        ),
+        paper_execution_variants=(SimpleNamespace(maker_work_seconds=15.0),),
     )
     runtime._next_decision_ns = int(T0.timestamp() * 1_000_000_000) + 185_000_000_000
     runtime._last_decision_result = "not_started"

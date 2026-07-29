@@ -36,10 +36,10 @@ from btc_short_horizon.live.dashboard_state import (
     GateState,
     HealthIndicator,
     HealthState,
+    OrderPerformance,
     PerformanceSnapshot,
     StrategyCycle,
     StrategyStage,
-    TradePerformance,
 )
 from btc_short_horizon.live.deployment import (
     DeploymentPreflightConfig,
@@ -257,7 +257,7 @@ __all__ = [
     "SubmitResult",
     "TradingSafetyConfig",
     "TerminalVenueOrderStatus",
-    "TradePerformance",
+    "OrderPerformance",
     "UserChannelConfig",
     "UserChannelHealth",
     "VenueOpenOrder",

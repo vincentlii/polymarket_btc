@@ -37,13 +37,13 @@ max_pending_events = 100000
 max_pending_bytes = 67108864
 rotation_poll_seconds = 2.0
 polymarket_capture_lead_seconds = 90.0
-opening_handoff_delay_seconds = 200.0
+opening_handoff_delay_seconds = 215.0
 binance_spot_depth_snapshot_limit = 1000
 binance_futures_depth_snapshot_limit = 1000
 binance_depth_snapshot_retry_initial_seconds = 0.5
 binance_depth_snapshot_retry_max_seconds = 30.0
 polymarket_source_timestamp_regression_tolerance_seconds = 1.0
-ingest_version = "btc-short-horizon-v13"
+ingest_version = "btc-short-horizon-v14"
 
 [maker]
 structure = "single"
@@ -60,6 +60,36 @@ stale_after_seconds = 1.0
 cancel_probability_drop = 0.03
 max_visible_depth_fraction = 0.05
 price_level_tick_offsets = [0]
+
+[[paper_execution_variants]]
+id = "maker_15s"
+label = "Maker 15s"
+mode = "maker"
+maker_work_seconds = 15.0
+primary = true
+minimum_taker_net_edge = 0.0
+slippage_buffer = 0.0
+model_uncertainty_buffer = 0.0
+
+[[paper_execution_variants]]
+id = "maker_30s"
+label = "Maker 30s"
+mode = "maker"
+maker_work_seconds = 30.0
+primary = false
+minimum_taker_net_edge = 0.0
+slippage_buffer = 0.0
+model_uncertainty_buffer = 0.0
+
+[[paper_execution_variants]]
+id = "maker_5s_then_fak"
+label = "Maker 5s -> FAK"
+mode = "maker_then_fak"
+maker_work_seconds = 5.0
+primary = false
+minimum_taker_net_edge = 0.03
+slippage_buffer = 0.005
+model_uncertainty_buffer = 0.03
 
 [[execution_scenarios]]
 name = "zero"

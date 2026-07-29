@@ -83,7 +83,7 @@ def _args(
                 "study_type": "opening_proxy_one_shot_shadow",
                 "mode": "shadow",
                 "market_slug": SLUG,
-                "ingest_version": "btc-short-horizon-v13",
+                "ingest_version": "btc-short-horizon-v14",
                 "model": {
                     "model_id": "opening-model-v1",
                     "model_sha256": model_hash,

@@ -9,13 +9,14 @@ from btc_short_horizon.live.dashboard_state import (
     DashboardAlert,
     DashboardSnapshotStore,
     EquityPoint,
+    ExecutionVariantPerformance,
     GateState,
     HealthIndicator,
     HealthState,
+    OrderPerformance,
     PerformanceSnapshot,
     StrategyCycle,
     StrategyStage,
-    TradePerformance,
 )
 
 
@@ -59,12 +60,29 @@ def dashboard_snapshot() -> BotDashboardSnapshot:
                 EquityPoint(NOW - timedelta(hours=1), 1_010.0),
                 EquityPoint(NOW, 1_024.5),
             ),
-            recent_trades=(
-                TradePerformance(
+            primary_variant_id="maker_15s",
+            variant_summaries=(
+                ExecutionVariantPerformance(
+                    variant_id="maker_15s",
+                    label="Maker 15s",
+                    policy="maker",
+                    primary=True,
+                    starting_balance=1_000.0,
+                    equity=1_024.5,
+                    realized_pnl=20.0,
+                    order_count=24,
+                    fill_count=11,
+                    taker_fees=0.0,
+                ),
+            ),
+            recent_orders=(
+                OrderPerformance(
+                    variant_id="maker_15s",
                     order_id="paper-24",
                     market_slug="btc-updown-15m-1784203200",
                     side="up",
-                    status="resolved",
+                    execution_status="filled",
+                    settlement_status="resolved",
                     placed_at=NOW - timedelta(minutes=20),
                     shares=10.0,
                     filled_shares=10.0,
@@ -115,11 +133,13 @@ def test_dashboard_snapshot_round_trips_through_atomic_store(tmp_path) -> None:
 
 def test_dashboard_snapshot_rejects_impossible_trade_fill() -> None:
     with pytest.raises(ValueError, match="filled_shares must not exceed shares"):
-        TradePerformance(
+        OrderPerformance(
+            variant_id="maker_15s",
             order_id="paper-1",
             market_slug="btc-updown-15m-1784203200",
             side="up",
-            status="filled",
+            execution_status="filled",
+            settlement_status="pending",
             placed_at=NOW,
             shares=1.0,
             filled_shares=2.0,

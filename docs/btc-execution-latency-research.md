@@ -248,6 +248,11 @@ sports 和其他合格类别当前分别使用 20%、15% 和 25% 分成。正式
 8. 撤单请求、撤单响应、cancel-before/after-fill race 与 heartbeat failure 都是
    独立状态边界。任何未知提交、User channel gap、terminal trade failure、规则
    变化或对账失败都会进入只撤单/停机状态，而不是继续接收新 placement cycle。
+9. Research Paper 的 maker-to-FAK 只用于比较成交策略。它必须等待 maker cancel
+   ack，且 maker fill 必须为零；随后使用当时 ask depth 执行一次 FAK，并在每个价位
+   计入官方曲线 taker fee、滑点与模型不确定性缓冲。FAK 可部分立即成交，剩余量
+   取消，不得追单或自动重试。[Create Order](https://docs.polymarket.com/trading/orders/create)、
+   [Fees](https://docs.polymarket.com/trading/fees)
 
 这个实现缩短了正常请求链，但不宣称已经得到真实 VPS P99。订单 build/sign、两次
 WAL `fsync`、socket/HTTP、venue ack、User WebSocket 与 cancel ack 仍需在 Shadow
