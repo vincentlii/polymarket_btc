@@ -122,6 +122,7 @@ def fit_opening_mispricing_model(
     early_stopping_vectors: np.ndarray | None = None,
     early_stopping_labels: np.ndarray | None = None,
     early_stopping_weights: np.ndarray | None = None,
+    calibration_independent_sample_count: int | None = None,
 ) -> FittedOpeningMispricingModel:
     """Fit only on leakage-free opening snapshots supplied by the research pipeline."""
 
@@ -138,5 +139,6 @@ def fit_opening_mispricing_model(
             early_stopping_vectors=early_stopping_vectors,
             early_stopping_labels=early_stopping_labels,
             early_stopping_weights=early_stopping_weights,
+            calibration_independent_sample_count=calibration_independent_sample_count,
         )
     )

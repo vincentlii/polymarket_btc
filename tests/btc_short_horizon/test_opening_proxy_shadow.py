@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import argparse
+import asyncio
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -12,8 +16,12 @@ from btc_short_horizon.models import (
     ModelArtifactMetadata,
 )
 from btc_short_horizon.research.binance_history import BinanceKlineHistory
-from btc_short_horizon.research.opening_evidence import OpeningMarketObservation
+from btc_short_horizon.research.opening_evidence import (
+    ForwardBookEventLoad,
+    OpeningMarketObservation,
+)
 from btc_short_horizon.research.opening_proxy import opening_proxy_feature_schema
+import scripts.btc_opening_proxy_shadow as shadow
 from scripts.btc_opening_proxy_shadow import (
     _shadow_regime_coverage,
     build_shadow_predictions,
@@ -80,7 +88,7 @@ def _model() -> tuple[FittedDirectionModel, ModelArtifactMetadata]:
         training_end_ns=2,
         calibration_start_ns=3,
         calibration_end_ns=4,
-        data_hash="data-hash",
+        data_hash="d" * 64,
         code_revision="revision",
         config=model.config_dict,
     )
@@ -148,3 +156,59 @@ def test_shadow_bootstrap_window_stays_inside_four_rest_pages() -> None:
     assert bootstrap_start == start - timedelta(hours=1)
     assert bootstrap_end == start + timedelta(seconds=182)
     assert bootstrap_end - bootstrap_start < timedelta(seconds=4_000)
+
+
+def test_shadow_rejects_mismatched_up_down_timestamp_tolerances(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    start = datetime(2026, 1, 1, 2, tzinfo=UTC)
+    market = _market(start)
+    model, metadata = _model()
+    expected_tolerances: list[object] = []
+
+    monkeypatch.setattr(
+        shadow,
+        "read_market_catalog",
+        lambda _path: SimpleNamespace(require=lambda _slug: market),
+    )
+    monkeypatch.setattr(
+        shadow.ModelArtifactStore,
+        "load",
+        lambda **_kwargs: (model, metadata),
+    )
+    monkeypatch.setattr(shadow, "validate_opening_proxy_protocol", lambda *_args, **_kwargs: None)
+
+    def load_book(**kwargs: object) -> ForwardBookEventLoad:
+        expected_tolerances.append(
+            kwargs.get("expected_source_timestamp_regression_tolerance_seconds")
+        )
+        token_id = str(kwargs["token_id"])
+        tolerance = 0.25 if token_id == market.up_token_id else 0.5
+        return ForwardBookEventLoad(
+            token_id=token_id,
+            events=(),
+            raw_part_count=1,
+            raw_row_count=1,
+            duplicate_row_count=0,
+            awaiting_snapshot_count=0,
+            polymarket_source_timestamp_regression_tolerance_seconds=tolerance,
+        )
+
+    monkeypatch.setattr(shadow, "load_forward_polymarket_book_events", load_book)
+    args = argparse.Namespace(
+        config=Path("configs/btc_short_horizon/baseline.toml"),
+        market_catalog=tmp_path / "catalog.parquet",
+        market_slug=market.slug,
+        model_directory=tmp_path / "model",
+        output_directory=tmp_path / "output",
+        raw_data_root=tmp_path / "raw",
+        book_lookback_seconds=300,
+        availability_delay_seconds=1.0,
+        as_of=start + timedelta(minutes=5),
+    )
+
+    with pytest.raises(ValueError, match="different Polymarket timestamp tolerances"):
+        asyncio.run(shadow.run_async(args))
+
+    assert expected_tolerances == [1.0, 1.0]

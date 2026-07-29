@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isclose, isfinite
 from pathlib import Path
 import tomllib
 from typing import Mapping
 
 from prediction_market_extensions.backtesting._execution_config import (
     ExecutionModelConfig,
+    SameTimestampPriority,
     StaticLatencyConfig,
 )
 
@@ -37,8 +39,17 @@ class ResearchTimingConfig:
 class ForwardCollectionConfig:
     flush_size: int
     flush_interval_seconds: float
+    shutdown_flush_timeout_seconds: float
+    max_pending_events: int
+    max_pending_bytes: int
     rotation_poll_seconds: float
+    polymarket_capture_lead_seconds: float
     opening_handoff_delay_seconds: float
+    binance_spot_depth_snapshot_limit: int
+    binance_futures_depth_snapshot_limit: int
+    binance_depth_snapshot_retry_initial_seconds: float
+    binance_depth_snapshot_retry_max_seconds: float
+    polymarket_source_timestamp_regression_tolerance_seconds: float
     ingest_version: str
 
 
@@ -46,6 +57,71 @@ class ForwardCollectionConfig:
 class ExecutionScenario:
     name: str
     execution: ExecutionModelConfig
+    formal_grid_component: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PaperExecutionVariantConfig:
+    variant_id: str
+    label: str
+    mode: str
+    maker_work_seconds: float
+    primary: bool
+    minimum_taker_net_edge: float
+    slippage_buffer: float
+    model_uncertainty_buffer: float
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.variant_id, str)
+            or not self.variant_id
+            or not self.variant_id[0].isascii()
+            or not self.variant_id[0].isalnum()
+            or any(
+                not character.isascii() or not (character.isalnum() or character in {"_", "-"})
+                for character in self.variant_id
+            )
+        ):
+            raise ValueError("paper execution variant ID must be a simple ASCII identifier")
+        if not isinstance(self.label, str) or not self.label.strip():
+            raise ValueError("paper execution variant label must not be empty")
+        if self.mode not in {"maker", "maker_then_fak"}:
+            raise ValueError("paper execution mode must be maker or maker_then_fak")
+        for name, value in (
+            ("maker_work_seconds", self.maker_work_seconds),
+            ("minimum_taker_net_edge", self.minimum_taker_net_edge),
+            ("slippage_buffer", self.slippage_buffer),
+            ("model_uncertainty_buffer", self.model_uncertainty_buffer),
+        ):
+            if isinstance(value, bool) or not isfinite(value) or value < 0.0:
+                raise ValueError(f"paper execution {name} must be finite and >= 0")
+        if self.maker_work_seconds <= 0.0:
+            raise ValueError("paper execution maker_work_seconds must be > 0")
+        if not isinstance(self.primary, bool):
+            raise ValueError("paper execution primary must be bool")
+        if self.mode == "maker" and any(
+            value > 0.0
+            for value in (
+                self.minimum_taker_net_edge,
+                self.slippage_buffer,
+                self.model_uncertainty_buffer,
+            )
+        ):
+            raise ValueError("maker-only paper variants cannot configure taker buffers")
+        if self.mode == "maker_then_fak" and any(
+            value <= 0.0
+            for value in (
+                self.minimum_taker_net_edge,
+                self.slippage_buffer,
+                self.model_uncertainty_buffer,
+            )
+        ):
+            raise ValueError("maker-then-FAK variants require positive taker safety buffers")
+        if (
+            self.minimum_taker_net_edge + self.slippage_buffer + self.model_uncertainty_buffer
+            >= 1.0
+        ):
+            raise ValueError("paper execution taker buffers must sum to less than 1")
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +132,7 @@ class BtcProjectConfig:
     research_timing: ResearchTimingConfig
     collection: ForwardCollectionConfig
     maker: MakerStrategyConfig
+    paper_execution_variants: tuple[PaperExecutionVariantConfig, ...]
     data_sources: tuple[str, ...]
     scenarios: tuple[ExecutionScenario, ...]
 
@@ -106,13 +183,19 @@ def load_btc_project_config(path: Path) -> BtcProjectConfig:
         max_shares=_positive_float(maker_section, "max_shares"),
         safety_buffer=_positive_float(maker_section, "safety_buffer"),
         minimum_edge=_nonnegative_float(maker_section, "minimum_edge"),
-        maker_fee_per_share=_nonnegative_float(maker_section, "maker_fee_per_share"),
         entry_start_seconds=_positive_float(maker_section, "entry_start_seconds"),
         entry_end_seconds=_positive_float(maker_section, "entry_end_seconds"),
-        edge_persistence_seconds=_nonnegative_float(maker_section, "edge_persistence_seconds"),
+        confirmation_signals=_positive_int(maker_section, "confirmation_signals"),
+        signal_cadence_seconds=_positive_float(maker_section, "signal_cadence_seconds"),
+        signal_cadence_tolerance_seconds=_nonnegative_float(
+            maker_section, "signal_cadence_tolerance_seconds"
+        ),
         max_work_seconds=_positive_float(maker_section, "max_work_seconds"),
         stale_after_seconds=_positive_float(maker_section, "stale_after_seconds"),
         cancel_probability_drop=_positive_float(maker_section, "cancel_probability_drop"),
+        max_visible_depth_fraction=_probability_excluding_zero(
+            maker_section, "max_visible_depth_fraction"
+        ),
         price_level_tick_offsets=tuple(
             _nonnegative_int_list(maker_section, "price_level_tick_offsets")
         ),
@@ -121,14 +204,49 @@ def load_btc_project_config(path: Path) -> BtcProjectConfig:
         timing.entry_start_seconds
     ) or maker.entry_end_seconds != float(timing.entry_end_seconds):
         raise ValueError("maker entry window must match research entry window")
+    if not isclose(
+        maker.signal_cadence_seconds * 1_000,
+        timing.model_cadence_ms,
+        rel_tol=0.0,
+        abs_tol=1e-9,
+    ):
+        raise ValueError("maker signal cadence must match research model cadence")
     if collection.opening_handoff_delay_seconds < timing.entry_end_seconds:
         raise ValueError("opening handoff must cover the complete research entry window")
+    paper_variants = tuple(
+        _paper_execution_variant(item) for item in _mapping_list(raw, "paper_execution_variants")
+    )
+    if not paper_variants:
+        raise ValueError("paper_execution_variants must not be empty")
+    variant_ids = {variant.variant_id for variant in paper_variants}
+    if len(variant_ids) != len(paper_variants):
+        raise ValueError("paper execution variant IDs must be unique")
+    if sum(variant.primary for variant in paper_variants) != 1:
+        raise ValueError("exactly one paper execution variant must be primary")
     sources = _data_sources(root, raw)
     scenarios = tuple(_scenario(item) for item in _mapping_list(raw, "execution_scenarios"))
     if not scenarios:
         raise ValueError("execution_scenarios must not be empty")
     if len({scenario.name for scenario in scenarios}) != len(scenarios):
         raise ValueError("execution scenario names must be unique")
+    _validate_formal_scenario_grid(scenarios)
+    maximum_cancel_race_seconds = max(
+        (
+            scenario.execution.latency_model.base_latency_ms
+            + scenario.execution.latency_model.cancel_latency_ms
+        )
+        / 1_000
+        for scenario in scenarios
+    )
+    required_handoff_seconds = (
+        maker.entry_end_seconds
+        + max(variant.maker_work_seconds for variant in paper_variants)
+        + maximum_cancel_race_seconds
+    )
+    if collection.opening_handoff_delay_seconds < required_handoff_seconds:
+        raise ValueError(
+            "opening handoff must cover the entry window, order lifecycle, and cancel latency"
+        )
     return BtcProjectConfig(
         paths=paths,
         primary_family=primary_family,
@@ -136,8 +254,25 @@ def load_btc_project_config(path: Path) -> BtcProjectConfig:
         research_timing=timing,
         collection=collection,
         maker=maker,
+        paper_execution_variants=paper_variants,
         data_sources=sources,
         scenarios=scenarios,
+    )
+
+
+def _paper_execution_variant(section: Mapping[str, object]) -> PaperExecutionVariantConfig:
+    primary = section.get("primary")
+    if not isinstance(primary, bool):
+        raise ValueError("paper execution variant primary must be bool")
+    return PaperExecutionVariantConfig(
+        variant_id=_text(section, "id"),
+        label=_text(section, "label"),
+        mode=_text(section, "mode"),
+        maker_work_seconds=_positive_float(section, "maker_work_seconds"),
+        primary=primary,
+        minimum_taker_net_edge=_nonnegative_float(section, "minimum_taker_net_edge"),
+        slippage_buffer=_nonnegative_float(section, "slippage_buffer"),
+        model_uncertainty_buffer=_nonnegative_float(section, "model_uncertainty_buffer"),
     )
 
 
@@ -149,28 +284,119 @@ def _scenario(section: Mapping[str, object]) -> ExecutionScenario:
         update_latency_ms=_nonnegative_float(section, "update_latency_ms"),
         cancel_latency_ms=_nonnegative_float(section, "cancel_latency_ms"),
     )
+    formal_grid_component = _bool(section, "formal_grid_component")
+    execution = ExecutionModelConfig(
+        queue_position=_bool(section, "queue_position"),
+        latency_model=latency,
+        maker_rebates_enabled=_bool(section, "maker_rebates_enabled"),
+        trade_execution_size_multiplier=_probability_excluding_zero(
+            section, "trade_execution_size_multiplier"
+        ),
+        same_timestamp_priority=SameTimestampPriority(_text(section, "same_timestamp_priority")),
+    )
+    if formal_grid_component:
+        if not execution.queue_position:
+            raise ValueError("a conclusion-eligible scenario requires queue_position=true")
+        if execution.maker_rebates_enabled:
+            raise ValueError("a conclusion-eligible scenario must disable maker rebates")
+        if latency.cancel_latency_ms <= 0.0 or latency.insert_latency_ms <= 0.0:
+            raise ValueError(
+                "a conclusion-eligible scenario requires positive insert and cancel latency"
+            )
     return ExecutionScenario(
         name=name,
-        execution=ExecutionModelConfig(
-            queue_position=_bool(section, "queue_position"),
-            latency_model=latency,
-            prob_fill_on_limit=_probability(section, "prob_fill_on_limit"),
-            min_synthetic_book_size=_positive_float(section, "min_synthetic_book_size"),
-            synthetic_book_depth_multiplier=_positive_float(
-                section, "synthetic_book_depth_multiplier"
-            ),
-        ),
+        execution=execution,
+        formal_grid_component=formal_grid_component,
     )
+
+
+def _validate_formal_scenario_grid(scenarios: tuple[ExecutionScenario, ...]) -> None:
+    formal = tuple(scenario for scenario in scenarios if scenario.formal_grid_component)
+    if not formal:
+        return
+    multipliers = {scenario.execution.trade_execution_size_multiplier for scenario in formal}
+    if multipliers != {0.5, 1.0}:
+        raise ValueError(
+            "conclusion-eligible scenarios must contain exactly the 0.5 and 1.0 trade-volume grid"
+        )
+    required_priorities = set(SameTimestampPriority)
+    for multiplier in multipliers:
+        priorities = {
+            scenario.execution.same_timestamp_priority
+            for scenario in formal
+            if scenario.execution.trade_execution_size_multiplier == multiplier
+        }
+        if priorities != required_priorities:
+            raise ValueError(
+                "each conclusion-eligible trade-volume setting must cover both tie orderings"
+            )
+    if len(formal) != 4:
+        raise ValueError("conclusion-eligible execution grid must contain exactly four scenarios")
+    latency_signatures = {
+        (
+            scenario.execution.latency_model.base_latency_ms,
+            scenario.execution.latency_model.insert_latency_ms,
+            scenario.execution.latency_model.update_latency_ms,
+            scenario.execution.latency_model.cancel_latency_ms,
+        )
+        for scenario in formal
+    }
+    if len(latency_signatures) != 1:
+        raise ValueError(
+            "conclusion-eligible scenario comparisons must use one identical latency profile"
+        )
 
 
 def _forward_collection(section: Mapping[str, object]) -> ForwardCollectionConfig:
-    return ForwardCollectionConfig(
+    config = ForwardCollectionConfig(
         flush_size=_positive_int(section, "flush_size"),
         flush_interval_seconds=_positive_float(section, "flush_interval_seconds"),
+        shutdown_flush_timeout_seconds=_positive_float(
+            section,
+            "shutdown_flush_timeout_seconds",
+        ),
+        max_pending_events=_positive_int(section, "max_pending_events"),
+        max_pending_bytes=_positive_int(section, "max_pending_bytes"),
         rotation_poll_seconds=_positive_float(section, "rotation_poll_seconds"),
+        polymarket_capture_lead_seconds=_positive_float(section, "polymarket_capture_lead_seconds"),
         opening_handoff_delay_seconds=_positive_float(section, "opening_handoff_delay_seconds"),
+        binance_spot_depth_snapshot_limit=_positive_int(
+            section,
+            "binance_spot_depth_snapshot_limit",
+        ),
+        binance_futures_depth_snapshot_limit=_positive_int(
+            section,
+            "binance_futures_depth_snapshot_limit",
+        ),
+        binance_depth_snapshot_retry_initial_seconds=_positive_float(
+            section,
+            "binance_depth_snapshot_retry_initial_seconds",
+        ),
+        binance_depth_snapshot_retry_max_seconds=_positive_float(
+            section,
+            "binance_depth_snapshot_retry_max_seconds",
+        ),
+        polymarket_source_timestamp_regression_tolerance_seconds=_nonnegative_float(
+            section,
+            "polymarket_source_timestamp_regression_tolerance_seconds",
+        ),
         ingest_version=_text(section, "ingest_version"),
     )
+    if config.max_pending_events < config.flush_size:
+        raise ValueError("collection.max_pending_events must be >= flush_size")
+    if config.binance_spot_depth_snapshot_limit > 5_000:
+        raise ValueError("collection.binance_spot_depth_snapshot_limit must be <= 5000")
+    if config.binance_futures_depth_snapshot_limit > 1_000:
+        raise ValueError("collection.binance_futures_depth_snapshot_limit must be <= 1000")
+    if (
+        config.binance_depth_snapshot_retry_max_seconds
+        < config.binance_depth_snapshot_retry_initial_seconds
+    ):
+        raise ValueError(
+            "collection.binance_depth_snapshot_retry_max_seconds must be >= "
+            "binance_depth_snapshot_retry_initial_seconds"
+        )
+    return config
 
 
 def _family(section: Mapping[str, object]) -> BtcMarketFamily:
@@ -259,12 +485,15 @@ def _positive_float(section: Mapping[str, object], name: str) -> float:
 
 
 def _nonnegative_float(section: Mapping[str, object], name: str) -> float:
+    raw_value = section.get(name)
+    if isinstance(raw_value, bool):
+        raise ValueError(f"{name} must be numeric")
     try:
-        value = float(section.get(name))
+        value = float(raw_value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{name} must be numeric") from exc
-    if value < 0.0:
-        raise ValueError(f"{name} must be >= 0")
+    if not isfinite(value) or value < 0.0:
+        raise ValueError(f"{name} must be finite and >= 0")
     return value
 
 
@@ -272,6 +501,13 @@ def _probability(section: Mapping[str, object], name: str) -> float:
     value = _nonnegative_float(section, name)
     if value > 1.0:
         raise ValueError(f"{name} must be <= 1")
+    return value
+
+
+def _probability_excluding_zero(section: Mapping[str, object], name: str) -> float:
+    value = _probability(section, name)
+    if value == 0.0:
+        raise ValueError(f"{name} must be > 0")
     return value
 
 

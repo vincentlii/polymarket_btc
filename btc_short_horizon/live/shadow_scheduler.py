@@ -71,7 +71,9 @@ def scan_shadow_windows(
             if current_time < eligible_at:
                 continue
             output_directory = output_root / f"{market.slug}-{suffix}"
-            if (output_directory / "metrics.json").exists():
+            if (output_directory / "metrics.json").exists() or (
+                output_directory / "skip.json"
+            ).exists():
                 continue
             if output_directory.exists():
                 incomplete.append(output_directory)

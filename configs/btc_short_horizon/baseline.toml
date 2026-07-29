@@ -32,53 +32,133 @@ max_feature_lookback_seconds = 3600
 [collection]
 flush_size = 50000
 flush_interval_seconds = 60.0
+shutdown_flush_timeout_seconds = 30.0
+max_pending_events = 100000
+max_pending_bytes = 67108864
 rotation_poll_seconds = 2.0
-opening_handoff_delay_seconds = 180.0
-ingest_version = "btc-short-horizon-v6"
+polymarket_capture_lead_seconds = 90.0
+opening_handoff_delay_seconds = 215.0
+binance_spot_depth_snapshot_limit = 1000
+binance_futures_depth_snapshot_limit = 1000
+binance_depth_snapshot_retry_initial_seconds = 0.5
+binance_depth_snapshot_retry_max_seconds = 30.0
+polymarket_source_timestamp_regression_tolerance_seconds = 1.0
+ingest_version = "btc-short-horizon-v14"
 
 [maker]
 structure = "single"
-max_shares = 1.0
+max_shares = 5.0
 safety_buffer = 0.01
 minimum_edge = 0.10
-maker_fee_per_share = 0.0
 entry_start_seconds = 3.0
 entry_end_seconds = 180.0
-edge_persistence_seconds = 5.0
+confirmation_signals = 2
+signal_cadence_seconds = 5.0
+signal_cadence_tolerance_seconds = 0.25
 max_work_seconds = 15.0
 stale_after_seconds = 1.0
 cancel_probability_drop = 0.03
-price_level_tick_offsets = [0, 1, 2]
+max_visible_depth_fraction = 0.05
+price_level_tick_offsets = [0]
+
+[[paper_execution_variants]]
+id = "maker_15s"
+label = "Maker 15s"
+mode = "maker"
+maker_work_seconds = 15.0
+primary = true
+minimum_taker_net_edge = 0.0
+slippage_buffer = 0.0
+model_uncertainty_buffer = 0.0
+
+[[paper_execution_variants]]
+id = "maker_30s"
+label = "Maker 30s"
+mode = "maker"
+maker_work_seconds = 30.0
+primary = false
+minimum_taker_net_edge = 0.0
+slippage_buffer = 0.0
+model_uncertainty_buffer = 0.0
+
+[[paper_execution_variants]]
+id = "maker_5s_then_fak"
+label = "Maker 5s -> FAK"
+mode = "maker_then_fak"
+maker_work_seconds = 5.0
+primary = false
+minimum_taker_net_edge = 0.03
+slippage_buffer = 0.005
+model_uncertainty_buffer = 0.03
 
 [[execution_scenarios]]
 name = "zero"
+formal_grid_component = false
 queue_position = true
+maker_rebates_enabled = false
+trade_execution_size_multiplier = 1.0
+same_timestamp_priority = "book_before_trade"
 base_latency_ms = 0.0
 insert_latency_ms = 0.0
 update_latency_ms = 0.0
 cancel_latency_ms = 0.0
-prob_fill_on_limit = 0.25
-min_synthetic_book_size = 10.0
-synthetic_book_depth_multiplier = 1.0
 
 [[execution_scenarios]]
 name = "p95"
+formal_grid_component = false
 queue_position = true
+maker_rebates_enabled = false
+trade_execution_size_multiplier = 1.0
+same_timestamp_priority = "book_before_trade"
 base_latency_ms = 75.0
 insert_latency_ms = 20.0
 update_latency_ms = 10.0
 cancel_latency_ms = 40.0
-prob_fill_on_limit = 0.25
-min_synthetic_book_size = 10.0
-synthetic_book_depth_multiplier = 1.0
 
 [[execution_scenarios]]
-name = "p99_pessimistic"
+name = "p99_half_volume_book_first"
+formal_grid_component = true
 queue_position = true
+maker_rebates_enabled = false
+trade_execution_size_multiplier = 0.5
+same_timestamp_priority = "book_before_trade"
 base_latency_ms = 150.0
 insert_latency_ms = 50.0
 update_latency_ms = 25.0
 cancel_latency_ms = 100.0
-prob_fill_on_limit = 0.10
-min_synthetic_book_size = 10.0
-synthetic_book_depth_multiplier = 1.0
+
+[[execution_scenarios]]
+name = "p99_half_volume_trade_first"
+formal_grid_component = true
+queue_position = true
+maker_rebates_enabled = false
+trade_execution_size_multiplier = 0.5
+same_timestamp_priority = "trade_before_book"
+base_latency_ms = 150.0
+insert_latency_ms = 50.0
+update_latency_ms = 25.0
+cancel_latency_ms = 100.0
+
+[[execution_scenarios]]
+name = "p99_full_volume_book_first"
+formal_grid_component = true
+queue_position = true
+maker_rebates_enabled = false
+trade_execution_size_multiplier = 1.0
+same_timestamp_priority = "book_before_trade"
+base_latency_ms = 150.0
+insert_latency_ms = 50.0
+update_latency_ms = 25.0
+cancel_latency_ms = 100.0
+
+[[execution_scenarios]]
+name = "p99_full_volume_trade_first"
+formal_grid_component = true
+queue_position = true
+maker_rebates_enabled = false
+trade_execution_size_multiplier = 1.0
+same_timestamp_priority = "trade_before_book"
+base_latency_ms = 150.0
+insert_latency_ms = 50.0
+update_latency_ms = 25.0
+cancel_latency_ms = 100.0

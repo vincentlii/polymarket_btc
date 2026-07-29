@@ -27,6 +27,13 @@ class BtcOpeningMispricingSignal(Data):
     latency_healthy: bool = True
 
 
+@customdataclass
+class BtcReplayBoundary(Data):
+    """Causal clock marker used to carry hold-to-resolution replays to their end."""
+
+    market_slug: str = ""
+
+
 def to_opening_mispricing_signal(
     prediction: OpeningMispricingPrediction,
 ) -> BtcOpeningMispricingSignal:
@@ -52,7 +59,11 @@ def to_opening_mispricing_signal(
 def validate_opening_mispricing_signal(signal: BtcOpeningMispricingSignal) -> None:
     if not signal.market_slug or not signal.model_version or not signal.feature_schema_hash:
         raise ValueError("market_slug, model_version, and feature_schema_hash are required")
-    if signal.market_window_start_ts_ns < 0 or signal.ts_init < signal.market_window_start_ts_ns:
+    if (
+        signal.market_window_start_ts_ns < 0
+        or signal.ts_event < signal.market_window_start_ts_ns
+        or signal.ts_init < signal.ts_event
+    ):
         raise ValueError("signal timestamps must be ordered and non-negative")
     for name in ("p_up", "p_boundary_up", "p_market_mid_up"):
         value = float(getattr(signal, name))
@@ -88,7 +99,12 @@ def opening_signal_entry_rejection_reason(
 ) -> str | None:
     """Reject unsafe input before a one-cycle passive order can be planned."""
 
-    if stale_after_seconds <= 0.0 or not isfinite(stale_after_seconds):
+    validate_opening_mispricing_signal(signal)
+    if (
+        isinstance(stale_after_seconds, bool)
+        or stale_after_seconds <= 0.0
+        or not isfinite(stale_after_seconds)
+    ):
         raise ValueError("stale_after_seconds must be finite and > 0")
     if signal.has_data_gap:
         return "data_gap"

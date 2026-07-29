@@ -4,6 +4,7 @@
 # Environment
 .env
 deploy/.env
+deploy/secrets/
 .uv-cache/
 
 # Python

@@ -21,7 +21,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-live = ["py-clob-client-v2>=0.1"]
+live = ["py-clob-client-v2==1.0.2"]
 native = ["maturin>=1.12,<2"]
 dev = [
     "ipykernel>=6.29",

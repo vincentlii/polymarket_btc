@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -67,6 +68,21 @@ def test_opening_proxy_protocol_rejects_an_early_30_second_artifact() -> None:
             {"opening_proxy_protocol": early_30},
             expected=expected,
         )
+
+
+def test_opening_proxy_protocol_records_actual_cadence_regime_boundaries() -> None:
+    protocol = opening_proxy_protocol(
+        entry_start_seconds=3,
+        entry_end_seconds=180,
+        snapshot_seconds=10,
+    )
+
+    assert protocol["version"] == 2
+    assert protocol["regimes"] == [
+        {"name": "early_3s_to_30s", "start_seconds": 10, "end_seconds": 30},
+        {"name": "price_discovery_35s_to_90s", "start_seconds": 40, "end_seconds": 90},
+        {"name": "mid_early_95s_to_180s", "start_seconds": 100, "end_seconds": 180},
+    ]
 
 
 def _market(start: datetime) -> MarketWindow:
@@ -175,6 +191,24 @@ def test_opening_proxy_excludes_a_market_with_a_lookback_gap() -> None:
 
     with pytest.raises(ValueError, match="no resolved markets"):
         build_opening_proxy_dataset(markets=(_market(start),), klines=gapped)
+
+
+def test_opening_proxy_rejects_duplicate_markets_and_mixed_rule_epochs() -> None:
+    start = datetime(2026, 1, 1, 2, tzinfo=UTC)
+    market = _market(start)
+    with pytest.raises(ValueError, match="unique"):
+        build_opening_proxy_dataset(markets=(market, market), klines=_history(start))
+    with pytest.raises(ValueError, match="rule epochs"):
+        build_opening_proxy_dataset(
+            markets=(
+                market,
+                replace(
+                    _market(start + timedelta(minutes=15)),
+                    rule_epoch="rule-v2",
+                ),
+            ),
+            klines=_history(start),
+        )
 
 
 def test_minute_proxy_schema_only_uses_resolvable_windows() -> None:
@@ -341,3 +375,40 @@ def test_materialized_proxy_loader_applies_a_deterministic_market_stride(
         "market-2",
     ]
     assert dataset.sample_weights == pytest.approx([0.5] * 4)
+
+    with pytest.raises(ValueError, match="study catalog"):
+        proxy_script.load_materialized_opening_proxy_dataset(
+            path=path,
+            interval_seconds=1,
+            snapshot_seconds=5,
+            entry_start_seconds=3,
+            entry_end_seconds=10,
+            market_stride=2,
+            expected_market_group_ids=("market-0", "wrong-market"),
+        )
+
+
+def test_materialized_proxy_loader_rejects_fractional_integer_fields(tmp_path: Path) -> None:
+    schema = opening_proxy_feature_schema(1)
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    row = {name: 0.0 for name in schema.names}
+    row.update(
+        {
+            "sample_id": f"market@{int((start + timedelta(seconds=5)).timestamp() * _SECOND)}",
+            "feature_ts": start + timedelta(seconds=5),
+            "label_available_ts": start + timedelta(minutes=16),
+            "label": 0.5,
+            "elapsed_seconds": 5.0,
+        }
+    )
+    path = tmp_path / "fractional.parquet"
+    pd.DataFrame([row]).to_parquet(path, index=False)
+
+    with pytest.raises(ValueError, match="label.*integers"):
+        proxy_script.load_materialized_opening_proxy_dataset(
+            path=path,
+            interval_seconds=1,
+            snapshot_seconds=5,
+            entry_start_seconds=5,
+            entry_end_seconds=5,
+        )

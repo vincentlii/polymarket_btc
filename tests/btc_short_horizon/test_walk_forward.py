@@ -121,3 +121,26 @@ def test_walk_forward_keeps_an_entire_market_group_on_one_side_of_every_boundary
             if 38 in indices or 39 in indices
         ]
         assert len(memberships) == 1
+
+
+def test_walk_forward_rejects_overlapping_oof_windows_and_boolean_labels() -> None:
+    with pytest.raises(ValueError, match="overlapping OOF"):
+        WalkForwardConfig(
+            test_duration=timedelta(hours=2),
+            step_duration=timedelta(hours=1),
+        )
+    time = datetime(2026, 1, 1, tzinfo=UTC)
+    with pytest.raises(ValueError, match="binary"):
+        ResearchSample(
+            sample_id="sample",
+            feature_ts=time,
+            label_available_ts=time + timedelta(minutes=15),
+            label=True,
+        )
+    with pytest.raises(ValueError, match="trimmed"):
+        ResearchSample(
+            sample_id=" sample ",
+            feature_ts=time,
+            label_available_ts=time + timedelta(minutes=15),
+            label=1,
+        )

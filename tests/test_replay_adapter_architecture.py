@@ -20,6 +20,8 @@ from prediction_market_extensions.adapters.prediction_market import (
     ReplayAdapterKey,
     ReplayEngineProfile,
     ReplayLoadRequest,
+    ReplayWindow,
+    replay_records_sha256,
 )
 from prediction_market_extensions._runtime_log import capture_loader_events
 from prediction_market_extensions.backtesting import _prediction_market_backtest as backtest_module
@@ -68,11 +70,22 @@ class FakeAdapter(HistoricalReplayAdapter):
             oms_type=OmsType.NETTING,
             account_type=AccountType.CASH,
             base_currency=USD,
-            fee_model_factory=lambda: object(),
+            fee_model_factory=lambda **_: object(),
         )
 
     async def load_replay(self, replay: FakeReplay, *, request: ReplayLoadRequest):
         raise AssertionError("load_replay is not needed for this architecture test.")
+
+
+class _DigestRecord:
+    def __init__(self, value: int) -> None:
+        self.value = value
+        self.ts_event = value
+        self.ts_init = value
+
+    @staticmethod
+    def to_dict(record: _DigestRecord) -> dict[str, int]:
+        return {"value": record.value}
 
 
 class _EngineStub:
@@ -120,6 +133,43 @@ def test_new_adapter_registers_without_core_executor_changes(monkeypatch) -> Non
         assert engine.venues[0]["account_type"] == AccountType.CASH
     finally:
         unregister_market_data_support(("demo", "book", "fake"))
+
+
+def test_loaded_replay_verifies_audited_record_digest_before_engine_use() -> None:
+    adapter = replay_adapters.PolymarketPMXTBookReplayAdapter()
+    record = _DigestRecord(1)
+    digest = replay_records_sha256((record,))
+    loaded = adapter._build_loaded_replay(
+        replay=FakeReplay("market"),
+        instrument=SimpleNamespace(id="instrument"),
+        records=(record,),
+        count=1,
+        count_key="book_events",
+        market_key="slug",
+        market_id="market",
+        prices=(),
+        outcome="",
+        realized_outcome=None,
+        metadata={"expected_records_sha256": digest},
+        requested_window=ReplayWindow(start_ns=0, end_ns=2),
+    )
+
+    assert loaded.metadata["loaded_records_sha256"] == digest
+    with pytest.raises(ValueError, match="mismatch"):
+        adapter._build_loaded_replay(
+            replay=FakeReplay("market"),
+            instrument=SimpleNamespace(id="instrument"),
+            records=(record,),
+            count=1,
+            count_key="book_events",
+            market_key="slug",
+            market_id="market",
+            prices=(),
+            outcome="",
+            realized_outcome=None,
+            metadata={"expected_records_sha256": "0" * 64},
+            requested_window=ReplayWindow(start_ns=0, end_ns=2),
+        )
 
 
 def test_trade_days_for_window_uses_shared_native_window_planner() -> None:

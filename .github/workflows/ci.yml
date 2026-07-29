@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+  pull_request:
 
 jobs:
   repo-gate:
@@ -13,8 +14,10 @@ jobs:
         with:
           python-version: "3.13"
       - uses: astral-sh/setup-uv@v5
-      - run: uv venv --python 3.13
-      - run: uv pip install "nautilus_trader[polymarket,visualization]==1.226.0" aiohttp bokeh duckdb textual nbformat nbclient ipykernel pytest ruff py-clob-client python-dotenv
+      - run: uv sync --locked --all-extras
+      - run: uv lock --check
+      - run: cargo fmt --all -- --check
+      - run: cargo test --workspace --locked
       - run: make native-develop
       - run: uv run ruff check .
       - run: uv run ruff format --check .

@@ -100,6 +100,14 @@ h1 { margin:9px 0 12px; max-width:720px; font-size:clamp(2rem,4.2vw,3.65rem); li
 .mini-stat:last-child { border-right:0; }
 .mini-stat span { display:block; color:var(--quiet); font-size:.65rem; }
 .mini-stat strong { display:block; margin-top:5px; font-size:.85rem; font-weight:550; }
+.variant-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; padding:16px 20px 20px; }
+.variant-card { padding:15px; border:1px solid var(--line-soft); border-radius:10px; background:var(--surface-2); }
+.variant-card.primary { border-color:#536346; box-shadow:inset 0 2px 0 var(--accent); }
+.variant-title { display:flex; justify-content:space-between; gap:10px; color:var(--text); font-size:.82rem; }
+.variant-policy { margin-top:5px; color:var(--quiet); font-size:.66rem; }
+.variant-values { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:14px; }
+.variant-values span { display:block; color:var(--quiet); font-size:.62rem; }
+.variant-values strong { display:block; margin-top:4px; font-size:.82rem; font-weight:550; }
 .lifecycle-body { padding:18px 20px 20px; }
 .stage-track { display:grid; grid-template-columns:repeat(5,1fr); gap:4px; margin:2px 0 22px; }
 .stage { position:relative; padding-top:13px; color:var(--quiet); font-size:.62rem; text-align:center; }
@@ -143,7 +151,7 @@ tbody tr:hover { background:rgba(255,255,255,.018); }
 footer { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:20px 2px 0; color:var(--quiet); font-size:.65rem; }
 @keyframes settle { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
 @media (prefers-reduced-motion:reduce) { * { animation:none !important; transition:none !important; } }
-@media (max-width:930px) { .metric-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .main-grid { grid-template-columns:1fr; } .health-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media (max-width:930px) { .metric-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .main-grid { grid-template-columns:1fr; } .health-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .variant-grid { grid-template-columns:1fr; } }
 @media (max-width:640px) { main { width:min(100% - 24px,1240px); padding-top:14px; } .topbar,.hero { align-items:flex-start; flex-direction:column; display:flex; } .top-meta { justify-content:flex-start; } .hero { gap:16px; padding:26px 0 22px; } .freshness { text-align:left; } .metric-grid { grid-template-columns:1fr 1fr; } .metric { min-height:104px; padding:15px; } .main-grid { gap:10px; } .panel-head { padding:16px; } .chart-wrap { padding-left:10px; padding-right:10px; } .mini-stats { grid-template-columns:1fr 1fr; } .mini-stat:nth-child(2) { border-right:0; } .mini-stat:nth-child(-n+2) { border-bottom:1px solid var(--line-soft); } .health-grid { grid-template-columns:1fr; } .cycle-row { grid-template-columns:96px minmax(0,1fr); } footer { align-items:flex-start; flex-direction:column; } }
 </style>
 </head>
@@ -195,13 +203,18 @@ footer { display:flex; align-items:center; justify-content:space-between; gap:20
   </section>
 
   <section class="panel section">
+    <div class="panel-head"><div><div class="section-kicker">EXECUTION RACE</div><h2>三种成交策略对比</h2></div><div class="panel-meta">同一信号 · 独立模拟账本</div></div>
+    <div id="variant-grid" class="variant-grid"><div class="table-empty">等待策略数据</div></div>
+  </section>
+
+  <section class="panel section">
     <div class="panel-head"><div><div class="section-kicker">SYSTEM</div><h2>Bot 健康与延迟</h2></div><div id="quality-summary" class="panel-meta">未收到数据质量摘要</div></div>
     <div id="health-grid" class="health-grid"></div>
   </section>
 
   <section class="panel section">
     <div class="panel-head"><div><div class="section-kicker">ORDERS</div><h2>最近订单与逐单盈亏</h2></div><div class="panel-meta">按下单时间倒序 · 只读</div></div>
-    <div class="table-wrap"><table><thead><tr><th>时间</th><th>市场</th><th>方向</th><th>状态</th><th>成交</th><th>Fair / Market</th><th>PnL</th><th>下单 RTT</th></tr></thead><tbody id="trade-rows"><tr><td colspan="8" class="table-empty">尚无订单记录</td></tr></tbody></table></div>
+    <div class="table-wrap"><table><thead><tr><th>时间</th><th>策略</th><th>市场</th><th>方向</th><th>执行 / 结算</th><th>成交</th><th>Fair / Market</th><th>PnL</th><th>下单 RTT</th></tr></thead><tbody id="trade-rows"><tr><td colspan="9" class="table-empty">尚无订单记录</td></tr></tbody></table></div>
   </section>
 
   <footer><span>只读看板 · 无下单、撤单或停机权限</span><span id="snapshot-source">Runtime status only</span></footer>
@@ -212,10 +225,10 @@ const stageOrder = ['research','challenge','shadow','canary','live'];
 const stageLabels = {research:'研究',challenge:'挑战',shadow:'影子',canary:'小额',live:'实盘'};
 const gateLabels = {pending:'待开始',running:'进行中',go:'GO',no_go:'NO-GO',blocked:'已阻断'};
 const stateLabels = {ok:'正常',warning:'注意',error:'异常',unknown:'未上报'};
-const runtimeServiceLabels = {forward_collector:'前瞻数据采集',opening_shadow:'开盘 Shadow'};
-const runtimeModeLabels = {forward_collection:'实时采集',post_window_shadow:'开盘后 Shadow'};
+const runtimeServiceLabels = {forward_collector:'前瞻数据采集',opening_shadow:'开盘 Shadow',research_paper:'Research Paper'};
+const runtimeModeLabels = {forward_collection:'实时采集',post_window_shadow:'开盘后 Shadow',paper:'实时模拟'};
 const tradeSideLabels = {up:'看涨',down:'看跌'};
-const tradeStatusLabels = {planned:'计划中',submitted:'已提交',working:'挂单中',partially_filled:'部分成交',filled:'已成交',cancelled:'已撤单',rejected:'已拒绝',resolved:'已结算'};
+const tradeStatusLabels = {insert_pending:'等待生效',working:'挂单中',cancel_pending:'撤单中',fak_pending:'FAK 提交中',partially_filled:'部分成交',filled:'已成交',canceled:'已撤单',recovery_canceled:'重启撤单',rejected:'已拒绝',pending:'待结算',resolved:'已结算',void:'作废'};
 
 function finite(value) { return typeof value === 'number' && Number.isFinite(value); }
 function money(value,currency='USDC',signed=false) { if(!finite(value)) return '—'; const prefix=signed&&value>0?'+':''; return `${prefix}${value.toFixed(2)} ${currency}`; }
@@ -247,14 +260,21 @@ function renderSummary(snapshot) {
   byId('stat-available').textContent=money(performance&&performance.available_balance,currency);
   byId('stat-exposure').textContent=money(performance&&performance.open_exposure,currency);
   renderEquity(performance&&performance.equity_curve,currency);
-  renderTrades(performance&&performance.recent_trades,currency);
+  renderVariants(performance&&performance.variant_summaries,currency);
+  renderOrders(performance&&performance.recent_orders,currency);
+}
+
+function renderVariants(variants,currency) {
+  const grid=byId('variant-grid'); grid.replaceChildren();
+  if(!(variants||[]).length) { const empty=document.createElement('div'); empty.className='table-empty'; empty.textContent='当前快照没有并行执行策略。'; grid.append(empty); return; }
+  for(const item of variants) { const card=document.createElement('article'); card.className=`variant-card ${item.primary?'primary':''}`; const title=document.createElement('div'); title.className='variant-title'; const name=document.createElement('strong'); name.textContent=item.label; const badge=document.createElement('span'); badge.textContent=item.primary?'主策略':'对照'; title.append(name,badge); const policy=document.createElement('div'); policy.className='variant-policy'; policy.textContent=readableIdentifier(item.policy); const values=document.createElement('div'); values.className='variant-values'; for(const [label,value,tone] of [['PnL',money(item.realized_pnl,currency,true),pnlTone(item.realized_pnl)],['成交率',percent(item.fill_rate),'neutral'],['订单 / 成交',`${item.order_count||0} / ${item.fill_count||0}`,'neutral'],['Taker fee',money(item.taker_fees,currency),'neutral']]) { const cell=document.createElement('div'); const caption=document.createElement('span'); caption.textContent=label; const strong=document.createElement('strong'); strong.textContent=value; strong.className=tone; cell.append(caption,strong); values.append(cell); } card.append(title,policy,values); grid.append(card); }
 }
 
 function svgNode(name,attributes={}) { const node=document.createElementNS('http://www.w3.org/2000/svg',name); for(const [key,value] of Object.entries(attributes)) node.setAttribute(key,String(value)); return node; }
 function renderEquity(rawPoints,currency) {
   const points=(rawPoints||[]).filter(item=>item&&finite(item.equity)&&item.timestamp);
   const empty=byId('chart-empty'),wrap=byId('chart-wrap'),svg=byId('equity-chart'); svg.replaceChildren();
-  if(points.length<2) { empty.hidden=false; wrap.hidden=true; byId('curve-range').textContent='等待真实记录'; return; }
+  if(points.length<2) { empty.hidden=false; wrap.hidden=true; byId('curve-range').textContent='等待结算记录'; return; }
   empty.hidden=true; wrap.hidden=false;
   const values=points.map(item=>item.equity), min=Math.min(...values), max=Math.max(...values), span=Math.max(max-min,Math.max(max,1)*.005);
   const left=35,right=775,top=20,bottom=192;
@@ -286,6 +306,8 @@ function renderLifecycle(strategy) {
 
 function healthFromRuntime(payload) {
   const items=(payload.statuses||[]).map(item=>({key:`runtime-${item.service}`,label:runtimeServiceLabel(item.service),state:item.health&&item.health.healthy?'ok':'error',detail:`${runtimeModeLabel(item.mode)} · ${item.state==='running'?'运行中':readableIdentifier(item.state)}`,updated_at:item.updated_at,latency_ms:null,age_seconds:item.health&&item.health.age_seconds}));
+  const projection=payload.snapshot_health, hasLive=(payload.statuses||[]).some(item=>item.service==='live_operations'), isPaper=payload.snapshot&&payload.snapshot.run_mode==='research_paper';
+  if(payload.snapshot||hasLive) items.push({key:'performance-projection',label:isPaper?'模拟资金与盈亏快照':'账户与盈亏快照',state:projection&&projection.healthy?'ok':'error',detail:projection&&projection.healthy?(isPaper?'Research Paper 模拟账本新鲜':'真实账户账本投影新鲜'):`投影不可用 · ${readableIdentifier(projection&&projection.reason||'missing_snapshot')}`,updated_at:payload.snapshot&&payload.snapshot.generated_at||payload.generated_at,latency_ms:null,age_seconds:projection&&projection.age_seconds});
   const shadow=payload.shadow, coverage=shadow&&shadow.coverage;
   if(shadow) items.push({key:'shadow-evidence',label:'Shadow 证据',state:'ok',detail:`${shadow.market_slug} · 合格 ${coverage&&coverage.quality_eligible||0}/${coverage&&coverage.predictions||0} · 未提交订单`,updated_at:payload.generated_at,latency_ms:null,age_seconds:null});
   const collector=(payload.statuses||[]).find(item=>item.service==='forward_collector');
@@ -303,10 +325,10 @@ function renderHealth(payload,snapshot) {
   byId('quality-summary').textContent=quality?`接受 ${quality.accepted_events||0} · Gap ${quality.gap_events||0} · Stale ${quality.stale_events||0}`:'未收到数据质量摘要';
 }
 
-function renderTrades(trades,currency) {
-  const body=byId('trade-rows'); body.replaceChildren(); const records=[...(trades||[])].sort((a,b)=>String(b.placed_at).localeCompare(String(a.placed_at)));
-  if(records.length===0) { const row=document.createElement('tr'),cell=document.createElement('td'); cell.colSpan=8; cell.className='table-empty'; cell.textContent='尚无订单记录；Shadow 信号不会伪装成成交。'; row.append(cell); body.append(row); return; }
-  for(const item of records) { const row=document.createElement('tr'); const pnl=finite(item.realized_pnl)?item.realized_pnl:item.unrealized_pnl; const values=[localTime(item.placed_at),item.market_slug,tradeSideLabel(item.side),tradeStatusLabel(item.status),`${finite(item.entry_price)?item.entry_price.toFixed(3):'—'} × ${finite(item.filled_shares)?item.filled_shares.toFixed(2):'—'}`,`${probability(item.p_fair)} / ${probability(item.market_price)}`,money(pnl,currency,true),latency(item.order_latency_ms)]; values.forEach((value,index)=>{ const cell=document.createElement('td'); if(index===1){cell.className='market-cell';cell.title=String(value);} if(index===2){const badge=document.createElement('span');badge.className='side';badge.textContent=String(value);cell.append(badge);}else{cell.textContent=String(value);} if(index===6) cell.classList.add(pnlTone(pnl)); row.append(cell); }); body.append(row); }
+function renderOrders(orders,currency) {
+  const body=byId('trade-rows'); body.replaceChildren(); const records=[...(orders||[])].sort((a,b)=>String(b.placed_at).localeCompare(String(a.placed_at)));
+  if(records.length===0) { const row=document.createElement('tr'),cell=document.createElement('td'); cell.colSpan=9; cell.className='table-empty'; cell.textContent='尚无订单记录；Shadow 信号不会伪装成成交。'; row.append(cell); body.append(row); return; }
+  for(const item of records) { const row=document.createElement('tr'); const pnl=item.filled_shares>0?(finite(item.realized_pnl)?item.realized_pnl:item.unrealized_pnl):null; const status=`${tradeStatusLabel(item.execution_status)} / ${tradeStatusLabel(item.settlement_status)}`; const values=[localTime(item.placed_at),readableIdentifier(item.variant_id),item.market_slug,tradeSideLabel(item.side),status,`${finite(item.entry_price)?item.entry_price.toFixed(3):'—'} × ${finite(item.filled_shares)?item.filled_shares.toFixed(2):'—'}`,`${probability(item.p_fair)} / ${probability(item.market_price)}`,money(pnl,currency,true),latency(item.order_latency_ms)]; values.forEach((value,index)=>{ const cell=document.createElement('td'); if(index===2){cell.className='market-cell';cell.title=String(value);} if(index===3){const badge=document.createElement('span');badge.className='side';badge.textContent=String(value);cell.append(badge);}else{cell.textContent=String(value);} if(index===7) cell.classList.add(pnlTone(pnl)); row.append(cell); }); if(item.terminal_reason) row.title=`终止原因：${readableIdentifier(item.terminal_reason)}`; body.append(row); }
 }
 
 function renderAlerts(payload,snapshot) {
@@ -315,12 +337,12 @@ function renderAlerts(payload,snapshot) {
 }
 
 function render(payload) {
-  const snapshot=payload.snapshot||null; const snapshotHealth=(snapshot&&snapshot.health)||[]; const overallState=!payload.health||!payload.health.healthy||(payload.errors||[]).length>0||snapshotHealth.some(item=>item.state==='error')?'error':payload.stop_request||snapshotHealth.some(item=>item.state==='warning'||item.state==='unknown')?'warning':'ok';
+  const snapshot=payload.snapshot||null; const snapshotHealth=(snapshot&&snapshot.health)||[]; const staleProjection=snapshot&&(!payload.snapshot_health||!payload.snapshot_health.healthy); const runtimeFailure=(payload.statuses||[]).some(item=>!item.health||!item.health.healthy); const overallState=!payload.health||!payload.health.healthy||runtimeFailure||(payload.errors||[]).length>0||staleProjection||snapshotHealth.some(item=>item.state==='error')?'error':payload.stop_request||snapshotHealth.some(item=>item.state==='warning'||item.state==='unknown')?'warning':'ok';
   const overall=byId('overall'); overall.className=`pill ${overallState}`; overall.replaceChildren(); const dot=document.createElement('span'); dot.className='dot'; const label=document.createElement('span'); label.textContent=overallState==='ok'?'Bot 运行正常':overallState==='warning'?'需要关注':'运行异常'; overall.append(dot,label);
   const mode=byId('run-mode'); mode.textContent=snapshot?String(snapshot.run_mode).replaceAll('_',' ').toUpperCase():payload.shadow?'POST-WINDOW SHADOW':'NO PERFORMANCE SNAPSHOT'; mode.className=`pill ${snapshot||payload.shadow?'ok':''}`;
   const collector=(payload.statuses||[]).find(item=>item.service==='forward_collector'); const market=collector&&collector.details&&(collector.details.active_market||collector.details.scheduled_market); byId('active-market').textContent=market?`当前市场 · ${market}`:'当前市场尚未上报';
   byId('freshness-title').textContent=payload.health&&payload.health.healthy?'运行状态新鲜':'运行状态不可用'; byId('freshness-time').textContent=`刷新 ${localTime(payload.generated_at)} · ${ageText(payload.health&&payload.health.age_seconds)}`;
-  byId('snapshot-source').textContent=snapshot?`Snapshot ${localTime(snapshot.generated_at)}`:payload.shadow?'Shadow evidence · no account PnL':'Runtime status only';
+  byId('snapshot-source').textContent=snapshot?`${snapshot.run_mode==='research_paper'?'Simulated ledger':'Account snapshot'} ${localTime(snapshot.generated_at)}${staleProjection?' · STALE':''}`:payload.shadow?'Shadow evidence · no account PnL':'Runtime status only';
   renderAlerts(payload,snapshot); renderSummary(snapshot); renderLifecycle(snapshot&&snapshot.strategy); renderHealth(payload,snapshot);
 }
 

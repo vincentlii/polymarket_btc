@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from http.client import HTTPConnection
 import json
@@ -98,6 +99,18 @@ def test_dashboard_payload_reports_service_health_and_stop_request(tmp_path) -> 
     ]
 
 
+def test_dashboard_html_labels_research_paper_as_simulated_not_account_truth() -> None:
+    html = dashboard_html()
+
+    assert "Research Paper 模拟账本新鲜" in html
+    assert "Simulated ledger" in html
+    assert "三种成交策略对比" in html
+    assert "variant_summaries" in html
+    assert "recent_orders" in html
+    assert "recent_trades" not in html
+    assert "research_paper:'Research Paper'" in html
+
+
 def test_dashboard_payload_fails_closed_when_status_is_stale(tmp_path) -> None:
     RuntimeStatusStore(tmp_path).write(
         RuntimeStatus(
@@ -113,6 +126,39 @@ def test_dashboard_payload_fails_closed_when_status_is_stale(tmp_path) -> None:
     payload = build_dashboard_payload(DashboardConfig(runtime_root=tmp_path), now=_now())
 
     assert payload["health"] == {"healthy": False, "reason": "stale_status", "age_seconds": 31.0}
+
+
+def test_dashboard_uses_service_declared_publish_interval_for_freshness(tmp_path) -> None:
+    RuntimeStatusStore(tmp_path).write(
+        RuntimeStatus(
+            service="forward_collector",
+            mode="forward_collection",
+            state="running",
+            healthy=True,
+            started_at=_now() - timedelta(minutes=2),
+            updated_at=_now(),
+        )
+    )
+    RuntimeStatusStore(tmp_path).write(
+        RuntimeStatus(
+            service="opening_shadow",
+            mode="post_window_shadow",
+            state="running",
+            healthy=True,
+            started_at=_now() - timedelta(minutes=2),
+            updated_at=_now() - timedelta(seconds=61),
+            details={"expected_status_interval_seconds": 60.0},
+        )
+    )
+
+    payload = build_dashboard_payload(DashboardConfig(runtime_root=tmp_path), now=_now())
+    by_service = {item["service"]: item for item in payload["statuses"]}
+
+    assert by_service["opening_shadow"]["health"] == {
+        "healthy": True,
+        "reason": "ok",
+        "age_seconds": 61.0,
+    }
 
 
 def test_dashboard_payload_includes_validated_performance_and_lifecycle_snapshot(tmp_path) -> None:
@@ -133,6 +179,36 @@ def test_dashboard_payload_includes_validated_performance_and_lifecycle_snapshot
     assert payload["snapshot"]["performance"]["equity"] == 1_024.5
     assert payload["snapshot"]["strategy"]["stage"] == "challenge"
     assert payload["snapshot"]["health"][1]["latency_ms"] == 182.0
+    assert payload["snapshot_health"] == {
+        "healthy": True,
+        "reason": "ok",
+        "age_seconds": 0.0,
+    }
+
+
+def test_dashboard_marks_stale_performance_projection_without_hiding_values(tmp_path) -> None:
+    RuntimeStatusStore(tmp_path).write(
+        RuntimeStatus(
+            service="forward_collector",
+            mode="forward_collection",
+            state="running",
+            healthy=True,
+            started_at=_now() - timedelta(minutes=2),
+            updated_at=_now(),
+        )
+    )
+    DashboardSnapshotStore(tmp_path).write(
+        replace(_dashboard_snapshot(), generated_at=_now() - timedelta(seconds=31))
+    )
+
+    payload = build_dashboard_payload(DashboardConfig(runtime_root=tmp_path), now=_now())
+
+    assert payload["snapshot"] is not None
+    assert payload["snapshot_health"] == {
+        "healthy": False,
+        "reason": "stale_snapshot",
+        "age_seconds": 31.0,
+    }
 
 
 def test_dashboard_projects_shadow_evidence_without_fabricating_performance(tmp_path) -> None:
@@ -215,6 +291,7 @@ def test_dashboard_page_prioritizes_health_performance_and_lifecycle_without_raw
     assert "资金曲线" in page
     assert "最近订单与逐单盈亏" in page
     assert "策略生命周期" in page
+    assert "performance-projection" in page
     assert "JSON.stringify(value,null,2)" not in page
 
 

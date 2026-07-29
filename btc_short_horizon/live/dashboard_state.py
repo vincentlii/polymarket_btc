@@ -13,7 +13,7 @@ from pathlib import Path
 from uuid import uuid4
 
 
-_DASHBOARD_SCHEMA_VERSION = 1
+_DASHBOARD_SCHEMA_VERSION = 2
 
 
 class HealthState(StrEnum):
@@ -104,11 +104,13 @@ class EquityPoint:
 
 
 @dataclass(frozen=True, slots=True)
-class TradePerformance:
+class OrderPerformance:
+    variant_id: str
     order_id: str
     market_slug: str
     side: str
-    status: str
+    execution_status: str
+    settlement_status: str
     placed_at: datetime
     shares: float
     filled_shares: float
@@ -118,13 +120,23 @@ class TradePerformance:
     realized_pnl: float | None = None
     unrealized_pnl: float | None = None
     order_latency_ms: float | None = None
+    terminal_reason: str | None = None
+    execution_route: str = "maker"
+    taker_fees: float = 0.0
+    initial_queue_ahead: float = 0.0
+    remaining_queue_ahead: float = 0.0
 
     def __post_init__(self) -> None:
+        _require_identifier(self.variant_id, "variant_id")
         _require_text(self.order_id, "order_id")
         _require_text(self.market_slug, "market_slug")
         if self.side not in {"up", "down"}:
             raise ValueError("side must be 'up' or 'down'")
-        _require_text(self.status, "status")
+        _require_text(self.execution_status, "execution_status")
+        _require_text(self.settlement_status, "settlement_status")
+        _require_text(self.execution_route, "execution_route")
+        if self.terminal_reason is not None:
+            _require_text(self.terminal_reason, "terminal_reason")
         object.__setattr__(self, "placed_at", _as_utc(self.placed_at, "placed_at"))
         _nonnegative(self.shares, "shares")
         _nonnegative(self.filled_shares, "filled_shares")
@@ -140,13 +152,18 @@ class TradePerformance:
         _optional_finite(self.realized_pnl, "realized_pnl")
         _optional_finite(self.unrealized_pnl, "unrealized_pnl")
         _optional_nonnegative(self.order_latency_ms, "order_latency_ms")
+        _nonnegative(self.taker_fees, "taker_fees")
+        _nonnegative(self.initial_queue_ahead, "initial_queue_ahead")
+        _nonnegative(self.remaining_queue_ahead, "remaining_queue_ahead")
 
     def to_json(self) -> dict[str, object]:
         return {
+            "variant_id": self.variant_id,
             "order_id": self.order_id,
             "market_slug": self.market_slug,
             "side": self.side,
-            "status": self.status,
+            "execution_status": self.execution_status,
+            "settlement_status": self.settlement_status,
             "placed_at": self.placed_at.isoformat(),
             "shares": self.shares,
             "filled_shares": self.filled_shares,
@@ -156,16 +173,23 @@ class TradePerformance:
             "realized_pnl": self.realized_pnl,
             "unrealized_pnl": self.unrealized_pnl,
             "order_latency_ms": self.order_latency_ms,
+            "terminal_reason": self.terminal_reason,
+            "execution_route": self.execution_route,
+            "taker_fees": self.taker_fees,
+            "initial_queue_ahead": self.initial_queue_ahead,
+            "remaining_queue_ahead": self.remaining_queue_ahead,
         }
 
     @classmethod
-    def from_json(cls, raw: object) -> TradePerformance:
-        value = _mapping(raw, "trade performance")
+    def from_json(cls, raw: object) -> OrderPerformance:
+        value = _mapping(raw, "order performance")
         return cls(
+            variant_id=_text(value.get("variant_id"), "variant_id"),
             order_id=_text(value.get("order_id"), "order_id"),
             market_slug=_text(value.get("market_slug"), "market_slug"),
             side=_text(value.get("side"), "side"),
-            status=_text(value.get("status"), "status"),
+            execution_status=_text(value.get("execution_status"), "execution_status"),
+            settlement_status=_text(value.get("settlement_status"), "settlement_status"),
             placed_at=_timestamp(value.get("placed_at"), "placed_at"),
             shares=_float(value.get("shares"), "shares"),
             filled_shares=_float(value.get("filled_shares"), "filled_shares"),
@@ -175,6 +199,78 @@ class TradePerformance:
             realized_pnl=_optional_float(value.get("realized_pnl"), "realized_pnl"),
             unrealized_pnl=_optional_float(value.get("unrealized_pnl"), "unrealized_pnl"),
             order_latency_ms=_optional_float(value.get("order_latency_ms"), "order_latency_ms"),
+            terminal_reason=_optional_text(value.get("terminal_reason"), "terminal_reason"),
+            execution_route=_text(value.get("execution_route"), "execution_route"),
+            taker_fees=_float(value.get("taker_fees", 0.0), "taker_fees"),
+            initial_queue_ahead=_float(
+                value.get("initial_queue_ahead", 0.0), "initial_queue_ahead"
+            ),
+            remaining_queue_ahead=_float(
+                value.get("remaining_queue_ahead", 0.0), "remaining_queue_ahead"
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionVariantPerformance:
+    variant_id: str
+    label: str
+    policy: str
+    primary: bool
+    starting_balance: float
+    equity: float
+    realized_pnl: float
+    order_count: int
+    fill_count: int
+    taker_fees: float
+
+    def __post_init__(self) -> None:
+        _require_identifier(self.variant_id, "variant_id")
+        _require_text(self.label, "variant label")
+        _require_identifier(self.policy, "variant policy")
+        if not isinstance(self.primary, bool):
+            raise ValueError("variant primary must be bool")
+        _nonnegative(self.starting_balance, "starting_balance")
+        _nonnegative(self.equity, "equity")
+        _finite(self.realized_pnl, "realized_pnl")
+        _nonnegative(self.taker_fees, "taker_fees")
+        for name, value in (("order_count", self.order_count), ("fill_count", self.fill_count)):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+
+    @property
+    def fill_rate(self) -> float | None:
+        return None if self.order_count == 0 else self.fill_count / self.order_count
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "variant_id": self.variant_id,
+            "label": self.label,
+            "policy": self.policy,
+            "primary": self.primary,
+            "starting_balance": self.starting_balance,
+            "equity": self.equity,
+            "realized_pnl": self.realized_pnl,
+            "order_count": self.order_count,
+            "fill_count": self.fill_count,
+            "fill_rate": self.fill_rate,
+            "taker_fees": self.taker_fees,
+        }
+
+    @classmethod
+    def from_json(cls, raw: object) -> ExecutionVariantPerformance:
+        value = _mapping(raw, "execution variant performance")
+        return cls(
+            variant_id=_text(value.get("variant_id"), "variant_id"),
+            label=_text(value.get("label"), "variant label"),
+            policy=_text(value.get("policy"), "variant policy"),
+            primary=value.get("primary"),
+            starting_balance=_float(value.get("starting_balance"), "starting_balance"),
+            equity=_float(value.get("equity"), "equity"),
+            realized_pnl=_float(value.get("realized_pnl"), "realized_pnl"),
+            order_count=_integer(value.get("order_count"), "order_count"),
+            fill_count=_integer(value.get("fill_count"), "fill_count"),
+            taker_fees=_float(value.get("taker_fees", 0.0), "taker_fees"),
         )
 
 
@@ -193,7 +289,9 @@ class PerformanceSnapshot:
     order_count: int = 0
     fill_count: int = 0
     equity_curve: tuple[EquityPoint, ...] = ()
-    recent_trades: tuple[TradePerformance, ...] = ()
+    primary_variant_id: str | None = None
+    variant_summaries: tuple[ExecutionVariantPerformance, ...] = ()
+    recent_orders: tuple[OrderPerformance, ...] = ()
 
     def __post_init__(self) -> None:
         _require_identifier(self.currency, "currency")
@@ -219,11 +317,19 @@ class PerformanceSnapshot:
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"{name} must be a non-negative integer")
         points = tuple(self.equity_curve)
-        trades = tuple(self.recent_trades)
+        if self.primary_variant_id is not None:
+            _require_identifier(self.primary_variant_id, "primary_variant_id")
+        summaries = tuple(self.variant_summaries)
+        orders = tuple(self.recent_orders)
+        if summaries:
+            primary_ids = {item.variant_id for item in summaries if item.primary}
+            if primary_ids != {self.primary_variant_id}:
+                raise ValueError("variant summaries must identify the configured primary variant")
         if any(right.timestamp < left.timestamp for left, right in zip(points, points[1:])):
             raise ValueError("equity_curve must be ordered by timestamp")
         object.__setattr__(self, "equity_curve", points)
-        object.__setattr__(self, "recent_trades", trades)
+        object.__setattr__(self, "variant_summaries", summaries)
+        object.__setattr__(self, "recent_orders", orders)
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -240,7 +346,9 @@ class PerformanceSnapshot:
             "order_count": self.order_count,
             "fill_count": self.fill_count,
             "equity_curve": [point.to_json() for point in self.equity_curve],
-            "recent_trades": [trade.to_json() for trade in self.recent_trades],
+            "primary_variant_id": self.primary_variant_id,
+            "variant_summaries": [item.to_json() for item in self.variant_summaries],
+            "recent_orders": [order.to_json() for order in self.recent_orders],
         }
 
     @classmethod
@@ -263,9 +371,16 @@ class PerformanceSnapshot:
                 EquityPoint.from_json(item)
                 for item in _sequence(value.get("equity_curve", ()), "equity_curve")
             ),
-            recent_trades=tuple(
-                TradePerformance.from_json(item)
-                for item in _sequence(value.get("recent_trades", ()), "recent_trades")
+            primary_variant_id=_optional_text(
+                value.get("primary_variant_id"), "primary_variant_id"
+            ),
+            variant_summaries=tuple(
+                ExecutionVariantPerformance.from_json(item)
+                for item in _sequence(value.get("variant_summaries", ()), "variant_summaries")
+            ),
+            recent_orders=tuple(
+                OrderPerformance.from_json(item)
+                for item in _sequence(value.get("recent_orders", ()), "recent_orders")
             ),
         )
 

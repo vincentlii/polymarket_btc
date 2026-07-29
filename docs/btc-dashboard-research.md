@@ -10,6 +10,12 @@
 
 主页面保持一屏可读，不把原始 JSON、完整日志、模型特征和 L2 深度图塞入首页。Grafana 官方建议看板围绕明确问题、按“整体到细节”的顺序组织，并降低认知负担；Google SRE 同样强调监控与告警链路应简单、可理解，而不是要求人持续盯屏。[Grafana dashboard best practices](https://grafana.com/docs/grafana/latest/visualizations/dashboards/build-dashboards/best-practices/)、[Google SRE: Monitoring Distributed Systems](https://sre.google/sre-book/monitoring-distributed-systems/)
 
+当前 VPS 阶段允许 `Research Paper` 写入一套严格标为“模拟”的绩效投影：
+虚拟余额、模拟成交、逐市场盈亏和资金曲线均来自独立 Paper ledger，不得显示为
+真实账户或实盘成交。首页必须同时显示其固定假设（P99 latency、完整可见 queue、
+50% seller-initiated trade volume）以及 `Research Proxy / Maker Gate No-Go`；这样可
+观察策略与运行链路，但不会把 L2 heuristic 误包装成可实现利润。
+
 ## 第一手产品与规范中可直接借鉴的做法
 
 | 官方来源 | 可直接借鉴 | 本项目的定制推断 |
@@ -104,6 +110,11 @@ Research → Challenge → Shadow → Canary → Live
 
 首页只展示最近 8–10 个市场级交易：时间、市场、方向、状态、成本、净 PnL。点击后打开交易抽屉；完整列表进入“交易”页。
 
+在 `research_paper` 模式中，状态使用 `simulated_*` 或明确的 Paper 生命周期；
+未成交但已结算的订单不计入胜负交易，partial fill 只按实际模拟成交份额计 PnL，
+working notional 按各层真实挂单价冻结，而不是按模型 `p_fair` 估算。看板聚合任一
+runtime service 的失败：Paper 失败会显示故障，但不会把仍健康的原始采集器停掉。
+
 ### 视图二：交易
 
 #### 主表粒度
@@ -166,6 +177,7 @@ Polymarket User channel 官方分别定义 placement/update/cancellation 与 tra
 展示可验证事实，不合成不透明分数：
 
 - 24h expected / observed / eligible market windows；
+- 因 ingest epoch 切换或缺少因果观察而跳过的 Shadow window 数量与明确原因；
 - 36 个 opening decision 的完整覆盖率；
 - stale、gap、duplicate、out-of-order、invalid payload 数；
 - 每个 required source 的最新 `available_ts`；
@@ -248,6 +260,10 @@ Grafana 官方建议避免不必要刷新、堆叠误导与无目标图表；Fre
 - 运维状态、活动订单：5 秒刷新；WebSocket 原始 heartbeat 继续按协议独立运行。
 - PnL、权益、交易表：15–30 秒刷新；结算后事件驱动更新。
 - 生命周期与模型治理：5 分钟或事件驱动刷新。
+- 服务新鲜度不能统一套用一个固定秒数。生产者必须声明
+  `expected_status_interval_seconds`；看板只对该服务使用带余量的阈值，未声明的
+  collector/Paper 继续使用严格默认值，避免 60 秒 Shadow 调度器被 30 秒阈值周期性
+  误报为故障。
 - 深色与浅色均可，但主色保持中性；绿色只用于正常，橙色用于降级，红色只用于需要行动的故障/亏损。
 - 金额统一 USDC，概率统一百分比或 0–1 其中一种，延迟统一毫秒。
 - 所有数值显示 `as_of`、口径和数据状态：`observed / reconstructed / proxy`。
@@ -263,3 +279,10 @@ Grafana建议刷新频率应匹配数据变化速度，并为 panel 添加说明
 4. 所有运行阶段共用同一 UI；缺失能力显示 `N/A by mode`，不维护多套看板。
 
 这一顺序优先满足“打开后几秒内知道是否正常、是否赚钱、是否该行动”，同时为后续 Shadow、Canary 和 Live 逐步补齐真实数据留出稳定接口。
+
+Research Paper 的首页额外显示三张紧凑执行策略卡：15 秒 maker、30 秒 maker、
+5 秒 maker 后转 FAK。三者共享同一因果信号和行情，但资金、订单、成交与 PnL
+账本完全隔离；主资金曲线仍只采用标记为 primary 的策略。订单表必须显示策略、
+执行状态与结算状态，未成交订单的 PnL 显示 `—`，不能把“已结算但未成交”显示成
+一笔收益为零的交易。终止原因、queue ahead、可消费卖盘量、执行路径和 taker fee
+保留在投影中供逐单诊断。

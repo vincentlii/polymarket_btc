@@ -11,6 +11,7 @@ from typing import Any
 
 from btc_short_horizon.backtest.signals import (
     BtcOpeningMispricingSignal,
+    BtcReplayBoundary,
     to_opening_mispricing_signal,
 )
 
@@ -43,6 +44,7 @@ __all__ = [
     "BtcOpeningMispricingStrategy",
     "BtcJointReplayConfig",
     "BtcOpeningMispricingSignal",
+    "BtcReplayBoundary",
     "build_btc_joint_backtest",
     "collect_btc_order_events",
     "to_opening_mispricing_signal",

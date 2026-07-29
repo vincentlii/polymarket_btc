@@ -49,7 +49,9 @@ class ForwardFeatureStateEvent:
     collector_receive_ts_ns: int | None
     available_ts_ns: int
     sequence_or_hash: str
+    collector_session_id: str
     epoch_id: int
+    admission_sequence: int = 0
     value: _FeatureValue | None = None
     gap_before: bool = False
     tick_size_changed: bool = False
@@ -59,10 +61,12 @@ class ForwardFeatureStateEvent:
             raise ValueError("raw/state source and state instrument are required")
         if min(self.source_ts_ns, self.available_ts_ns, self.epoch_id) < 0:
             raise ValueError("feature state event timestamps and epoch must be non-negative")
+        if self.admission_sequence < 0:
+            raise ValueError("admission_sequence must be non-negative")
         if self.collector_receive_ts_ns is not None and self.collector_receive_ts_ns < 0:
             raise ValueError("collector_receive_ts_ns must be non-negative when provided")
-        if not self.sequence_or_hash:
-            raise ValueError("sequence_or_hash is required")
+        if not self.sequence_or_hash or not self.collector_session_id:
+            raise ValueError("sequence_or_hash and collector_session_id are required")
         if self.value is None and not (self.gap_before or self.tick_size_changed):
             raise ValueError("an empty feature state event must carry a gap or tick boundary")
         if self.value is not None and (
@@ -102,6 +106,7 @@ def build_forward_opening_feature_observations(
     end_time: datetime,
     decision_ts_ns: Sequence[int],
     ingest_version: str,
+    polymarket_source_timestamp_regression_tolerance_seconds: float | None = None,
     required_venue_sources: tuple[str, ...] = _SUPPORTED_VENUE_SOURCES,
 ) -> ForwardOpeningFeatureBuild:
     """Build causal opening features from CLOB, Chainlink, and core Binance evidence."""
@@ -130,6 +135,9 @@ def build_forward_opening_feature_observations(
         start_time=start_time,
         end_time=end_time,
         ingest_version=ingest_version,
+        polymarket_source_timestamp_regression_tolerance_seconds=(
+            polymarket_source_timestamp_regression_tolerance_seconds
+        ),
     )
     chainlink_events, chainlink_summary = _load_chainlink_feature_events(
         raw_data_root=raw_data_root,
@@ -205,6 +213,7 @@ def _load_clob_feature_events(
     start_time: datetime,
     end_time: datetime,
     ingest_version: str,
+    polymarket_source_timestamp_regression_tolerance_seconds: float | None,
 ) -> tuple[tuple[ForwardFeatureStateEvent, ...], ForwardFeatureSourceSummary]:
     up = load_forward_polymarket_book_events(
         raw_data_root=raw_data_root,
@@ -212,6 +221,9 @@ def _load_clob_feature_events(
         start_time=start_time,
         end_time=end_time,
         ingest_version=ingest_version,
+        expected_source_timestamp_regression_tolerance_seconds=(
+            polymarket_source_timestamp_regression_tolerance_seconds
+        ),
     )
     down = load_forward_polymarket_book_events(
         raw_data_root=raw_data_root,
@@ -219,7 +231,15 @@ def _load_clob_feature_events(
         start_time=start_time,
         end_time=end_time,
         ingest_version=ingest_version,
+        expected_source_timestamp_regression_tolerance_seconds=(
+            polymarket_source_timestamp_regression_tolerance_seconds
+        ),
     )
+    if (
+        up.polymarket_source_timestamp_regression_tolerance_seconds
+        != down.polymarket_source_timestamp_regression_tolerance_seconds
+    ):
+        raise RawPayloadError("Up/Down raw manifests use different Polymarket timestamp tolerances")
     events = tuple(
         ForwardFeatureStateEvent(
             raw_source="polymarket_clob",
@@ -229,9 +249,12 @@ def _load_clob_feature_events(
             collector_receive_ts_ns=state_event.collector_receive_ts_ns,
             available_ts_ns=state_event.available_ts_ns,
             sequence_or_hash=(
-                f"{state_event.token_id}:{state_event.epoch_id}:{state_event.source_ts_ns}"
+                f"{state_event.token_id}:{state_event.collector_session_id}:"
+                f"{state_event.epoch_id}:{state_event.source_ts_ns}"
             ),
+            collector_session_id=state_event.collector_session_id,
             epoch_id=state_event.epoch_id,
+            admission_sequence=state_event.admission_sequence,
             value=state_event.book,
             gap_before=state_event.reset_book,
             tick_size_changed=state_event.tick_size_changed,
@@ -311,10 +334,32 @@ def _chainlink_state_events(
     raw_events: Sequence[ForwardRawEvent],
 ) -> tuple[tuple[ForwardFeatureStateEvent, ...], int]:
     events: list[ForwardFeatureStateEvent] = []
-    current_epoch: int | None = None
+    current_epoch: tuple[str, int] | None = None
+    completed_epochs: set[tuple[str, int]] = set()
     gap_count = 0
     for raw in raw_events:
-        gap_before = _epoch_gap(raw=raw, current_epoch=current_epoch)
+        if raw.event_type == "continuity_gap":
+            if _continuity_gap_stream_id(raw) != "price":
+                continue
+            _gap_before, current_epoch = _advance_epoch(
+                raw=raw,
+                current_epoch=current_epoch,
+                completed_epochs=completed_epochs,
+            )
+            gap_count += 1
+            events.append(
+                _gap_event(
+                    raw,
+                    state_source=_CHAINLINK_STATE_SOURCE,
+                    state_instrument=_CHAINLINK_INSTRUMENT,
+                )
+            )
+            continue
+        gap_before, current_epoch = _advance_epoch(
+            raw=raw,
+            current_epoch=current_epoch,
+            completed_epochs=completed_epochs,
+        )
         if gap_before:
             gap_count += 1
             events.append(
@@ -324,7 +369,6 @@ def _chainlink_state_events(
                     state_instrument=_CHAINLINK_INSTRUMENT,
                 )
             )
-        current_epoch = raw.epoch_id
         if raw.event_type != "crypto_prices_chainlink":
             continue
         try:
@@ -354,20 +398,35 @@ def _binance_state_events(
     raw_events: Sequence[ForwardRawEvent], *, source: str
 ) -> tuple[tuple[ForwardFeatureStateEvent, ...], int]:
     events: list[ForwardFeatureStateEvent] = []
-    current_epochs: dict[str, int] = {}
+    current_epochs: dict[str, tuple[str, int]] = {}
+    completed_epochs: dict[str, set[tuple[str, int]]] = {}
     gap_count = 0
     for raw in raw_events:
+        if raw.event_type == "continuity_gap":
+            stream_id = _continuity_gap_stream_id(raw)
+            if stream_id not in {"trade", "book_ticker"}:
+                continue
+            _gap_before, current_epoch = _advance_epoch(
+                raw=raw,
+                current_epoch=current_epochs.get(stream_id),
+                completed_epochs=completed_epochs.setdefault(stream_id, set()),
+            )
+            current_epochs[stream_id] = current_epoch
+            gap_count += 1
+            events.append(_gap_event(raw, state_source=source, state_instrument=_BTCUSDT))
+            continue
         stream_id = _binance_feature_stream_id(raw.event_type)
         if stream_id is None:
             continue
-        gap_before = _epoch_gap(
+        gap_before, current_epoch = _advance_epoch(
             raw=raw,
             current_epoch=current_epochs.get(stream_id),
+            completed_epochs=completed_epochs.setdefault(stream_id, set()),
         )
         if gap_before:
             gap_count += 1
             events.append(_gap_event(raw, state_source=source, state_instrument=_BTCUSDT))
-        current_epochs[stream_id] = raw.epoch_id
+        current_epochs[stream_id] = current_epoch
         message = _binance_message(raw)
         if raw.event_type in {"trade", "aggtrade"}:
             try:
@@ -435,13 +494,36 @@ def _binance_feature_stream_id(event_type: str) -> str | None:
     return None
 
 
-def _epoch_gap(*, raw: ForwardRawEvent, current_epoch: int | None) -> bool:
-    if current_epoch is not None and raw.epoch_id < current_epoch:
+def _continuity_gap_stream_id(raw: ForwardRawEvent) -> str:
+    if raw.payload.get("event_type") != "continuity_gap":
+        raise RawPayloadError(f"continuity gap payload mismatch at {raw.path}:{raw.row_index}")
+    stream_id = raw.payload.get("stream_id")
+    reason = raw.payload.get("reason")
+    if (
+        not isinstance(stream_id, str)
+        or not stream_id.strip()
+        or not isinstance(reason, str)
+        or not reason.strip()
+    ):
+        raise RawPayloadError(f"invalid continuity gap at {raw.path}:{raw.row_index}")
+    return stream_id
+
+
+def _advance_epoch(
+    *,
+    raw: ForwardRawEvent,
+    current_epoch: tuple[str, int] | None,
+    completed_epochs: set[tuple[str, int]],
+) -> tuple[bool, tuple[str, int]]:
+    epoch = (raw.collector_session_id, raw.epoch_id)
+    if current_epoch is None or epoch == current_epoch:
+        return False, epoch
+    completed_epochs.add(current_epoch)
+    if epoch in completed_epochs:
         raise RawPayloadError(
-            "raw epoch regressed in causal feature order at "
-            f"{raw.path}:{raw.row_index}: {raw.epoch_id} < {current_epoch}"
+            f"raw epoch reappeared in causal feature order at {raw.path}:{raw.row_index}: {epoch}"
         )
-    return current_epoch is not None and raw.epoch_id != current_epoch
+    return True, epoch
 
 
 def _gap_event(
@@ -455,7 +537,9 @@ def _gap_event(
         collector_receive_ts_ns=raw.collector_receive_ts_ns,
         available_ts_ns=raw.available_ts_ns,
         sequence_or_hash=f"{raw.sequence_or_hash}:gap",
+        collector_session_id=raw.collector_session_id,
         epoch_id=raw.epoch_id,
+        admission_sequence=raw.admission_sequence,
         gap_before=True,
     )
 
@@ -475,7 +559,9 @@ def _value_event(
         collector_receive_ts_ns=raw.collector_receive_ts_ns,
         available_ts_ns=raw.available_ts_ns,
         sequence_or_hash=raw.sequence_or_hash,
+        collector_session_id=raw.collector_session_id,
         epoch_id=raw.epoch_id,
+        admission_sequence=raw.admission_sequence,
         value=value,
     )
 
@@ -495,13 +581,17 @@ def _raw_normalization_error(raw: ForwardRawEvent, exc: Exception) -> RawPayload
     return RawPayloadError(f"invalid {raw.source} payload at {raw.path}:{raw.row_index}: {exc}")
 
 
-def _feature_event_sort_key(event: ForwardFeatureStateEvent) -> tuple[int, int, int, int, str, str]:
+def _feature_event_sort_key(
+    event: ForwardFeatureStateEvent,
+) -> tuple[int, int, str, str, int, int, int, str]:
     return (
         event.available_ts_ns,
         event.collector_receive_ts_ns or event.available_ts_ns,
-        event.source_ts_ns,
-        0 if event.gap_before else 1,
         event.raw_source,
+        event.collector_session_id,
+        event.admission_sequence,
+        0 if event.gap_before else 1,
+        event.source_ts_ns,
         event.sequence_or_hash,
     )
 

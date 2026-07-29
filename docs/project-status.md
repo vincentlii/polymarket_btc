@@ -16,20 +16,109 @@ and reporting plumbing without importing archived BTC strategy logic.
   account equity/PnL, an equity curve, recent market-level trades, connection
   and order-latency health, active alerts, and the Research-to-Live lifecycle.
   Missing projections stay visibly empty; research Proxy and Shadow output are
-  never rendered as real profit. An optional post-window Shadow scheduler
-  writes one SHA-versioned causal pass per completed window. This is
-  collection/observability plumbing only; Docker build verification still
-  requires a Docker Engine, and it does not authorize Paper, Canary, or live
-  orders.
+  never rendered as real profit. A credential-free real-time Research Paper
+  runtime now consumes only collector-admitted events and publishes an
+  explicitly simulated virtual ledger, per-market orders/PnL and equity curve.
+  It uses a zero-network `PaperOrderGateway`, P99 insert/cancel latency, full
+  visible queue ahead and 50% seller-initiated trade volume. It cannot authorize
+  Canary or live orders. An optional post-window Shadow scheduler still writes
+  one SHA-versioned causal pass per completed window.
 - Data boundary: 15m is the only trading family; 5m is collection-only.
 - Forward collection: `btc_forward_collector.py --follow-current` now discovers
-  current and next exact Gamma slugs, persists separate rule-hash catalogs, and
-  pre-subscribes both token pairs before the next opening window. It retains the
-  old pair through `t0+180s` so the entire research window has one connection.
+  current and next exact Gamma slugs and persists separate rule-hash catalogs.
+  In ingest v13, each isolated token pair connects only during `t0-90s` through
+  `t0+200s`; every interval requests a fresh official full-book snapshot.
+  Binance and Chainlink now remain on the same live transport across market
+  boundaries; raw prepared/committed sessions rotate independently after the
+  current `t0+200s` CLOB handoff and a complete flush. This removes the previously observed deterministic 8--13s
+  `kline_1s` gap every 15 minutes without creating an unbounded inventory.
+  Planned CLOB sleep is excluded from required-feed health. This targets the
+  measured dominant disk source
+  while covering the complete 3-180s decision window, a final order's 15-second
+  work period and P99 cancel race.
+  Shadow now records a terminal, explicit skip for pre-epoch windows with no
+  causal observations instead of retrying them forever. Its container health
+  and dashboard freshness thresholds cover the declared 60-second scheduler
+  cadence instead of intermittently reporting a 30-second stale failure.
 - Evidence boundary: no profitability or deployability claim exists until real
-  data passes the documented holdout and pessimistic queue/latency gates.
-- Three-minute fair-probability proxy: the reproducible exact `stride=1` run
-  used all 7,295 resolved markets and 262,620 causal five-second snapshots.
+  data passes the documented holdout and the complete queue-enabled P99
+  trade-volume/timestamp-order robustness grid.
+- Research Paper hardening: a bounded non-blocking admitted-event seam cannot
+  backpressure durable collection; overflow fails Paper only. The runtime pins
+  public CLOB token/tick/min-size/neg-risk/zero-maker-fee rules, preserves one
+  placement cycle across restart, continuously revalues working orders, permits
+  cancel-race fills, rejects insufficient virtual balance and settles only from
+  explicit Gamma outcomes. Unfilled resolved orders do not distort win rate.
+  Active prediction failures now make Paper unhealthy with the exact market,
+  timestamp and reason until a later decision succeeds; a cumulative error
+  counter can no longer coexist with a misleading healthy status.
+- Model/research hardening: model inputs and probabilities now reject coercion,
+  non-finite values, invalid shapes, and inconsistent lineage. Walk-forward
+  tests are non-overlapping and group-safe; LightGBM early stopping, calibration,
+  OOF, and holdout remain disjoint. Isotonic counts unique markets. Candidate
+  and price-threshold selection use contiguous UTC-day block bootstrap with
+  multiple-comparison control. Model artifacts publish atomically and bind
+  schema/config/source/code hashes. Price-proxy persistence resets on an
+  intervening failed signal, and stress tests discard prices at or above one
+  instead of fabricating an executable price.
+- Replay/execution hardening: the BTC runner now consumes current dual-token L2
+  books, requires exchange-valid post-only prices and minimum sizes, caps each
+  layer to 5% of displayed same-side depth, and confirms two exact five-second
+  signals. Formal evidence is a four-component P99 grid covering full/half
+  execution-trade volume and both same-timestamp book/trade orderings; each
+  component keeps queue modelling on and rebates off, and no component is a
+  standalone strategy conclusion. Real Nautilus fixtures cover post-only
+  insert races, partial fills during cancel latency, synchronous multi-layer
+  rejection, and the GTC maximum-work timer. Event-level fills reconcile to
+  Nautilus order summaries and carry 1/3/10/30/60-second markouts plus source
+  book age. Placement and working orders now fail closed when either execution
+  L2 book is missing, future-dated, invalid, or older than the configured
+  freshness limit. Formal ledgers require explicit finite settlement fields and
+  the complete exact-horizon markout grid. Run artifacts publish as an immutable
+  whole-directory transaction
+  and preserve the union of heterogeneous lifecycle fields in Parquet. Signal
+  and coverage manifests replace operator-entered provenance hashes; PMXT
+  coverage now binds canonical per-token replay-record SHA-256 values which the
+  loader recomputes before engine start.
+- Live execution hardening: the CLOB V2 gateway is pinned to the exact official
+  SDK release and official origin, accepts only explicit credentials, validates
+  signer/funder/signature type, and prepares post-only GTC orders without a
+  REST read-before-write. It computes the venue order hash locally, persists
+  the expected identity before POST, requires the response ID to match, and
+  handles mixed batch results per order. The hash-chained, locked, `fsync` WAL
+  rejects secret-bearing payloads and supports crash recovery from open orders
+  or `GET /order/{hash}` terminal evidence. Unknown submissions, reconciliation
+  failures, User WebSocket gaps/subscription changes, heartbeat failures, and
+  failed terminal trades close the trading gate and trigger cancel-all instead
+  of retrying. User order/trade updates are independently idempotent, and only
+  confirmed fills advance canary counts. A bounded operations supervisor now
+  schedules heartbeat, exact daily account-ledger refresh, authenticated REST
+  reconciliation, User-channel gap admission, runtime status and real dashboard
+  publication. Immutable WAL segments support safe halted-state checkpoint and
+  rotation without resetting the global hash/sequence chain; restart restores
+  market-cycle guards and canary counts from the latest verified checkpoint.
+  Operator recovery is durable and cannot override unresolved venue evidence.
+  This is a fail-closed control plane, not a trading decision runner or VPS
+  approval.
+- Deployment hardening: the target-host preflight binds the exact release Git
+  revision and rule epoch, verifies non-symlink durable mounts, capacity, NTP,
+  official geoblock, CLOB clock offset and CLOB/Gamma/Binance latency, and
+  persists a content-addressed receipt. Compose services run read-only as an
+  unprivileged user with all capabilities dropped, `no-new-privileges`, bounded
+  PIDs and explicit pre-created bind mounts. Live secrets support strict
+  mutually exclusive `POLY_*_FILE` injection and are excluded from Git and the
+  image context. The dashboard health endpoint fails when the real ledger
+  projection is missing, future-dated or stale.
+- Runtime durability: `btc_runtime_archive.py` creates release/rule-bound
+  content-addressed snapshots for model, WAL, exact ledger and report roots,
+  uploads through the existing immutable local/rclone transport, full-download
+  verifies every object, restores only into an isolated no-overwrite tree and
+  records a freshness-audited restore drill. Source overlaps, symlinks,
+  partial/secret-like files, hash changes and conflicting targets fail closed.
+  Critical runtime evidence has an explicit retain-local policy; only the much
+  larger raw sessions use verified-receipt local reclamation.
+- Current three-minute fair-probability proxy: the reproducible protocol v2 exact
+  `stride=1` run used all 7,295 resolved markets and 262,620 causal five-second snapshots.
   Paired daily-block candidate selection retained `logistic-c0.1` because
   neither LightGBM candidate improved both log loss and Brier with positive
   95% confidence lower bounds. Its 1,345-market holdout achieved log
@@ -39,14 +128,20 @@ and reporting plumbing without importing archived BTC strategy logic.
   run the full 90/21/14/28-day protocol, and no causally available Polymarket
   implied-probability baseline exists for this period. Gamma coverage is also
   one market short of the requested 7,296. Confidence-band sample and
-  calibration checks now pass. Artifacts are in
-  `output/btc_short_horizon/research/opening-proxy-1s-postopen180-gated-20260428-20260713-v5/`.
-- Sparse Polymarket price-history proxy: frozen development thresholds produced
-  1,098 holdout entries at 2.56c/share (95% CI 0.38c to 4.75c) with price age
-  capped at 15 seconds. Adding another 1c entry cost leaves 935 entries at
-  1.67c/share, but its 95% CI crosses zero (-0.59c to 4.17c). One-minute price
-  history is not BBO, queue, fill, fee, rebate, or latency evidence, so this
-  result prioritizes Shadow only and cannot authorize maker deployment.
+  calibration checks passed. The clean artifact was generated at revision
+  `87e14c28b84632e5fdeb3bf349f6685a94b8b1eb` under
+  `output/btc_short_horizon/research/opening-proxy-protocol-v2-clean-20260428-20260713/`.
+  It is acceptable for research Shadow only; the failed direction gate blocks
+  Canary and Live promotion.
+- Current sparse Polymarket price-history proxy: frozen development thresholds,
+  a 1c entry-price buffer and a 15-second maximum price age produced 945 holdout
+  entries at 2.53c/share (95% CI 0.70c to 4.39c). Adding another 1c cost and
+  reapplying the frozen rules leaves 782 entries at 2.65c/share (95% CI 0.07c
+  to 5.23c). The 3--30 second regime is positive; 35--90 seconds is negative and
+  95--180 seconds crosses zero. This clean rerun includes corrected persistence,
+  non-tradeable-price, family-wise selection and cache-schema rules. One-minute
+  price history is still not BBO, queue, fill, fee, rebate, or latency evidence,
+  so it cannot authorize maker deployment.
 - Legacy pre-open/revalidation strategy, historical script, runner, generic
   feature state, and their tests were removed. The only BTC 15m strategy path
   is Opening Mispricing with 36 decisions at `t0+5/10/.../180s`, two
@@ -58,11 +153,31 @@ and reporting plumbing without importing archived BTC strategy logic.
   Empty PMXT coverage is therefore a hard data failure, not a replay result.
 - Forward raw collection writes canonical JSON and readers fail closed on
   malformed payloads. Version v5 made closed Binance Spot `kline_1s` the
-  lightweight default. Current v6 pre-subscribes the next CLOB pair and
-  namespaces epochs by market start; readers select one ingest version exactly.
+  lightweight default. Version v6 pre-subscribed the next CLOB pair. Version
+  v7 added the collector-session, immutable JSON, atomic multi-token CLOB, and
+  bounded-buffer contracts. Version v8 persists every continuity loss as an
+  immediate causal raw event, invalidates stale books offline even when no
+  later message arrives, separates the official Spot/Futures depth bridge
+  rules, and forces OKX/Polymarket resubscription after invalid state. Ingress
+  across simultaneous feeds is admission-atomic under backpressure. The shared
+  shutdown deadline covers producer quiescence and durable flush, while the CLI
+  event loop also exits boundedly if a task resists cancellation. Readers are
+  manifest-first: they verify hashes, identities, row/time statistics, reject
+  orphan or missing parts and mixed ingest versions, and replay the persisted
+  Polymarket timestamp tolerance. Every v8+ row also carries a session-monotonic
+  admission sequence, so identical timestamps preserve live order across parts;
+  source events and their gap boundaries reserve capacity and commit together.
   Follow catalogs preserve their first pre-open `collected_at` timestamp and
   reject same-path metadata conflicts instead of overwriting provenance.
-- The v6 collector completed a fresh 180-second audit on
+  Version v9 introduced a durable prepared/committed session inventory, process-level
+  single-writer lease, interrupted-session recovery, and content-addressed
+  object backup with full-download verification. Readers now detect deletion of
+  both a part and its adjacent manifest; archive is dry-run by default and
+  remote-only evidence must be restored before research. Version v13 separates
+  public-feed transport lifetime from storage-session lifetime: session
+  rotation after CLOB handoff no longer reconnects Binance/Chainlink, while dynamic CLOB windows
+  still start from a fresh official snapshot and retire after handoff.
+- The historical v6 collector completed a fresh 180-second audit on
   `btc-updown-15m-1784214900`. The dual-token Shadow reconstructed all 36
   decisions with zero submitted orders. The enhanced multi-venue audit observed
   all 36 decisions; 32 were quality-eligible and four correctly failed closed
@@ -70,7 +185,8 @@ and reporting plumbing without importing archived BTC strategy logic.
   enhanced audit explicitly opted into the current Binance Futures `/public`
   route for trade and Book Ticker. The deploy default remains Spot closed
   `kline_1s` only, and the runtime reports the look-ahead market as active after
-  handoff.
+  handoff. This historical run does not validate the current v13 collection;
+  fresh v13 evidence is required before promotion.
 - The runtime model path uses the same feature schema as training and bootstraps
   at most four Binance REST pages. A full three-minute shadow needs 3,782 closed
   one-second bars instead of downloading another historical archive.
@@ -80,6 +196,32 @@ and reporting plumbing without importing archived BTC strategy logic.
 
 See [BTC Short-Horizon Architecture](btc-short-horizon-architecture.md) for
 the input/output contract and operational commands.
+
+## Pre-VPS Final Audit (2026-07-22)
+
+- Local implementation is complete for the first deployment scope: current
+  forward collection, post-window causal Shadow, read-only dashboard, target
+  preflight, runtime control, immutable evidence, backup and isolated restore.
+- Model evidence is internally reproducible and protocol v2 clean, but the
+  formal direction gate remains No-Go: 1,345 holdout markets are below 2,500,
+  the full 90/21/14/28 walk-forward protocol cannot fit the available history,
+  the causal Polymarket implied-probability baseline is missing, and Gamma is
+  one market short.
+- Price evidence can prioritize 3--30 second Shadow research, but the maker gate
+  remains No-Go until fresh synchronized L2/TradeTick replay passes pessimistic
+  queue, P99 insert/cancel latency, same-timestamp ordering, fee and capacity
+  stress. No production decision runner connects model output to live placement.
+- Existing local raw roots contain historical v2--v8 epochs and an open legacy
+  session. They remain immutable research provenance and must not be copied to
+  the first VPS or repaired in place. The VPS starts from empty data/output
+  roots and collects only current v13 evidence.
+- Target-only evidence cannot be manufactured locally: actual-IP geoblock and
+  legal eligibility, NTP and endpoint latency, Linux Docker build, fresh v13
+  collection, off-VPS full verification/restore and long-running recovery
+  must all pass on the purchased host.
+- The approved VPS scope is collector, credential-free Research Paper, optional
+  post-window Shadow and loopback dashboard. Canary and real orders remain
+  disabled until their independent promotion gates pass.
 
 ## Roadmap
 
@@ -103,10 +245,25 @@ the input/output contract and operational commands.
 
 ## Known Issues
 
+- The interrupted first Research Paper hotfix deployment left the forward
+  services stopped from 2026-07-26 19:18:54 UTC until 2026-07-27 15:29:45 UTC.
+  The restart created a new collector session, so durability provenance remains
+  honest, but every market overlapping that interval must be excluded from
+  continuous forward evidence and cannot be backfilled as live-parity data.
+- Runtime and raw-data backup tools are implemented. The selected operational
+  path is periodic transfer to a local staging root and content-addressed
+  `--transport local` snapshots on a removable drive, with full-download
+  verification and isolated restore drill. Until the first verified off-VPS
+  snapshot exists, the VPS remains a single point of data loss.
+- The operations supervisor is intentionally not exposed as a real-order
+  Compose service. There is no production decision runner connecting the
+  opening model to live placement, and the direction/maker evidence gates are
+  still No-Go. Research Paper is a credential-free heuristic projection, not a
+  production decision runner and not Maker-Go evidence.
 - A single fresh 36-decision Shadow window proves runtime compatibility, not
   statistical stability. Promotion still requires accumulated forward windows,
   target holdout counts, synchronized executable L2/TradeTick evidence, and the
-  pessimistic queue/P99 latency maker gate.
+  complete queue-enabled P99 execution robustness gate.
 - The forward raw parts written on 2026-07-13 contain malformed `payload_json`
   because their JSON field delimiter was incorrect. They must not be used for
   feature generation, market evidence, model fitting, or replay. The reader
@@ -126,6 +283,11 @@ the input/output contract and operational commands.
   `/market/stream` while depth and Book Ticker use `/public/stream`. The old
   single endpoint produced no perpetual `aggTrade` rows. Version v4 uses both
   official connections; v3 raw remains immutable.
+- Forward data through `btc-short-horizon-v6` predates the explicit
+  collector-session column and hard queued/in-flight buffer contract. It
+  remains immutable provenance and can be audited only with its matching
+  schema; current readers select one ingest version and apply its matching
+  row contract without mixing epochs.
 - Kalshi is not currently exposed as a public runnable backtest path. The repo
   still contains Kalshi instrument, trade/candlestick loader, fee-model, and
   research helper components, but the built-in replay adapter registry only
@@ -134,6 +296,26 @@ the input/output contract and operational commands.
   data, a Kalshi replay adapter, and a public runner are added.
 
 ## Recently Fixed
+
+- [x] Research Paper bootstrap now waits for the first collector-admitted closed
+  Binance kline, anchors the bounded REST history immediately before that bar,
+  and causally replays the events deferred during the fetch. This removes the
+  deterministic 3--5 second REST/WebSocket startup gap without weakening gap
+  rejection; missing anchors and event-buffer overflow remain fail-closed.
+- [x] The first Research Paper VPS start exposed two real-wire mismatches that
+  idealized fixtures had missed. Collector-admitted Binance kline decimal
+  fields are now parsed from their documented string representation, and CLOB
+  V2 fee admission now follows `fd.to=true` plus validated rate/exponent rather
+  than rejecting a nonzero `mbf`; `nr=null` is normalized to the documented
+  false/default state. Captured payload-shaped regression tests keep all three
+  boundaries fail-closed without weakening maker-fee assumptions.
+- [x] BTC forward storage v9 now records every immutable part in a transactional
+  session inventory, reconciles durable prepared pairs after interruption,
+  excludes concurrent writers with one storage lease, detects adjacent
+  part/manifest deletion, and provides content-addressed rclone/local backup,
+  full-download verification receipts, fail-closed local archival, and atomic
+  restore across filesystems. Operational rules are documented in
+  [BTC 前瞻数据持久性与灾难恢复](btc-data-durability-research.md).
 
 - [x] v4 staged replay loading now prepares Polymarket metadata first, loads all
   book data second, and loads execution trade ticks last. PMXT filtered-cache
