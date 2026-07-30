@@ -75,6 +75,7 @@ class PaperExecutionVariantConfig:
         if (
             not isinstance(self.variant_id, str)
             or not self.variant_id
+            or len(self.variant_id) > 64
             or not self.variant_id[0].isascii()
             or not self.variant_id[0].isalnum()
             or any(
@@ -85,8 +86,8 @@ class PaperExecutionVariantConfig:
             raise ValueError("paper execution variant ID must be a simple ASCII identifier")
         if not isinstance(self.label, str) or not self.label.strip():
             raise ValueError("paper execution variant label must not be empty")
-        if self.mode not in {"maker", "maker_then_fak"}:
-            raise ValueError("paper execution mode must be maker or maker_then_fak")
+        if self.mode not in {"maker", "immediate_fak", "maker_then_fak"}:
+            raise ValueError("paper execution mode must be maker, immediate_fak, or maker_then_fak")
         for name, value in (
             ("maker_work_seconds", self.maker_work_seconds),
             ("minimum_taker_net_edge", self.minimum_taker_net_edge),
@@ -95,8 +96,10 @@ class PaperExecutionVariantConfig:
         ):
             if isinstance(value, bool) or not isfinite(value) or value < 0.0:
                 raise ValueError(f"paper execution {name} must be finite and >= 0")
-        if self.maker_work_seconds <= 0.0:
-            raise ValueError("paper execution maker_work_seconds must be > 0")
+        if self.mode == "immediate_fak" and self.maker_work_seconds != 0.0:
+            raise ValueError("immediate-FAK paper variants require maker_work_seconds=0")
+        if self.mode != "immediate_fak" and self.maker_work_seconds <= 0.0:
+            raise ValueError("maker paper variants require maker_work_seconds > 0")
         if not isinstance(self.primary, bool):
             raise ValueError("paper execution primary must be bool")
         if self.mode == "maker" and any(
@@ -108,7 +111,7 @@ class PaperExecutionVariantConfig:
             )
         ):
             raise ValueError("maker-only paper variants cannot configure taker buffers")
-        if self.mode == "maker_then_fak" and any(
+        if self.mode in {"immediate_fak", "maker_then_fak"} and any(
             value <= 0.0
             for value in (
                 self.minimum_taker_net_edge,
@@ -116,7 +119,7 @@ class PaperExecutionVariantConfig:
                 self.model_uncertainty_buffer,
             )
         ):
-            raise ValueError("maker-then-FAK variants require positive taker safety buffers")
+            raise ValueError("FAK paper variants require positive taker safety buffers")
         if (
             self.minimum_taker_net_edge + self.slippage_buffer + self.model_uncertainty_buffer
             >= 1.0
@@ -132,6 +135,7 @@ class BtcProjectConfig:
     research_timing: ResearchTimingConfig
     collection: ForwardCollectionConfig
     maker: MakerStrategyConfig
+    paper_execution_epoch: str
     paper_execution_variants: tuple[PaperExecutionVariantConfig, ...]
     data_sources: tuple[str, ...]
     scenarios: tuple[ExecutionScenario, ...]
@@ -199,6 +203,7 @@ def load_btc_project_config(path: Path) -> BtcProjectConfig:
         price_level_tick_offsets=tuple(
             _nonnegative_int_list(maker_section, "price_level_tick_offsets")
         ),
+        improve_inside_spread=_bool(maker_section, "improve_inside_spread"),
     )
     if maker.entry_start_seconds != float(
         timing.entry_start_seconds
@@ -223,6 +228,10 @@ def load_btc_project_config(path: Path) -> BtcProjectConfig:
         raise ValueError("paper execution variant IDs must be unique")
     if sum(variant.primary for variant in paper_variants) != 1:
         raise ValueError("exactly one paper execution variant must be primary")
+    paper_execution_epoch = _simple_ascii_identifier(
+        raw.get("paper_execution_epoch"),
+        "paper_execution_epoch",
+    )
     sources = _data_sources(root, raw)
     scenarios = tuple(_scenario(item) for item in _mapping_list(raw, "execution_scenarios"))
     if not scenarios:
@@ -254,6 +263,7 @@ def load_btc_project_config(path: Path) -> BtcProjectConfig:
         research_timing=timing,
         collection=collection,
         maker=maker,
+        paper_execution_epoch=paper_execution_epoch,
         paper_execution_variants=paper_variants,
         data_sources=sources,
         scenarios=scenarios,
@@ -268,12 +278,28 @@ def _paper_execution_variant(section: Mapping[str, object]) -> PaperExecutionVar
         variant_id=_text(section, "id"),
         label=_text(section, "label"),
         mode=_text(section, "mode"),
-        maker_work_seconds=_positive_float(section, "maker_work_seconds"),
+        maker_work_seconds=_nonnegative_float(section, "maker_work_seconds"),
         primary=primary,
         minimum_taker_net_edge=_nonnegative_float(section, "minimum_taker_net_edge"),
         slippage_buffer=_nonnegative_float(section, "slippage_buffer"),
         model_uncertainty_buffer=_nonnegative_float(section, "model_uncertainty_buffer"),
     )
+
+
+def _simple_ascii_identifier(value: object, name: str) -> str:
+    if not isinstance(value, str) or not value.strip() or len(value.strip()) > 64:
+        raise ValueError(f"{name} must be a non-empty string")
+    result = value.strip()
+    if (
+        not result[0].isascii()
+        or not result[0].isalnum()
+        or any(
+            not character.isascii() or not (character.isalnum() or character in {"_", "-"})
+            for character in result
+        )
+    ):
+        raise ValueError(f"{name} must be a simple ASCII identifier")
+    return result
 
 
 def _scenario(section: Mapping[str, object]) -> ExecutionScenario:

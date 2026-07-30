@@ -43,8 +43,9 @@ def test_opening_regimes_cover_the_frozen_three_minute_protocol() -> None:
         OpeningRegime.MID_EARLY,
         OpeningRegime.MID_EARLY,
     ]
-    with pytest.raises(ValueError, match="three-minute"):
-        opening_regime_for_elapsed_seconds(181)
+    for gap_value in (31, 34.999, 90.001, 94.999, 181):
+        with pytest.raises(ValueError, match="three-minute"):
+            opening_regime_for_elapsed_seconds(gap_value)
 
 
 def test_opening_proxy_protocol_rejects_an_early_30_second_artifact() -> None:

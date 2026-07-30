@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from hashlib import sha256
@@ -96,6 +97,69 @@ class PaperMarketRules:
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         return sha256(encoded).hexdigest()
 
+    def to_json(self) -> dict[str, object]:
+        return {
+            "condition_id": self.condition_id,
+            "token_id": self.token_id,
+            "tick_size": self.tick_size,
+            "minimum_order_size": self.minimum_order_size,
+            "neg_risk": self.neg_risk,
+            "maker_fee_rate_bps": self.maker_fee_rate_bps,
+            "observed_at_ns": self.observed_at_ns,
+            "taker_fee_rate": self.taker_fee_rate,
+            "taker_fee_exponent": self.taker_fee_exponent,
+            "taker_only": self.taker_only,
+            "rules_sha256": self.rules_sha256,
+        }
+
+    @classmethod
+    def from_json(cls, raw: object) -> PaperMarketRules:
+        if not isinstance(raw, Mapping):
+            raise ValueError("paper market rules must be a JSON object")
+        condition_id = raw.get("condition_id")
+        token_id = raw.get("token_id")
+        tick_size = raw.get("tick_size")
+        minimum_order_size = raw.get("minimum_order_size")
+        neg_risk = raw.get("neg_risk")
+        maker_fee_rate_bps = raw.get("maker_fee_rate_bps")
+        observed_at_ns = raw.get("observed_at_ns")
+        taker_fee_rate = raw.get("taker_fee_rate")
+        taker_fee_exponent = raw.get("taker_fee_exponent")
+        taker_only = raw.get("taker_only")
+        if not all(
+            isinstance(value, str) and value for value in (condition_id, token_id, tick_size)
+        ):
+            raise ValueError("paper market rule identifiers must be non-empty strings")
+        if (
+            isinstance(minimum_order_size, bool)
+            or not isinstance(minimum_order_size, int | float)
+            or isinstance(taker_fee_rate, bool)
+            or not isinstance(taker_fee_rate, int | float)
+        ):
+            raise ValueError("paper market rule sizes and rates must be numeric")
+        if not isinstance(neg_risk, bool) or not isinstance(taker_only, bool):
+            raise ValueError("paper market rule flags must be bool")
+        if any(
+            isinstance(value, bool) or not isinstance(value, int)
+            for value in (maker_fee_rate_bps, observed_at_ns, taker_fee_exponent)
+        ):
+            raise ValueError("paper market rule counters must be integers")
+        result = cls(
+            condition_id=condition_id,
+            token_id=token_id,
+            tick_size=tick_size,
+            minimum_order_size=float(minimum_order_size),
+            neg_risk=neg_risk,
+            maker_fee_rate_bps=maker_fee_rate_bps,
+            observed_at_ns=observed_at_ns,
+            taker_fee_rate=float(taker_fee_rate),
+            taker_fee_exponent=taker_fee_exponent,
+            taker_only=taker_only,
+        )
+        if raw.get("rules_sha256") != result.rules_sha256:
+            raise ValueError("paper market rules hash mismatch")
+        return result
+
 
 @dataclass(slots=True)
 class PaperOrderLayerState:
@@ -111,6 +175,69 @@ class PaperOrderLayerState:
     @property
     def remaining_size(self) -> float:
         return max(0.0, self.size - self.filled_size)
+
+
+@dataclass(frozen=True, slots=True)
+class PaperFakQuote:
+    """Read-only executable FAK quote after fees and policy buffers."""
+
+    requested_size: float
+    filled_size: float
+    filled_notional: float
+    taker_fees: float
+    limit_price: float | None
+    net_edge_per_share: float | None
+
+    def __post_init__(self) -> None:
+        for name in ("requested_size", "filled_size", "filled_notional", "taker_fees"):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int | float)
+                or not isfinite(value)
+                or value < 0.0
+            ):
+                raise ValueError(f"{name} must be finite and >= 0")
+        if self.requested_size <= 0.0:
+            raise ValueError("requested_size must be > 0")
+        if self.filled_size > self.requested_size + 1e-12:
+            raise ValueError("filled_size must not exceed requested_size")
+        if self.filled_size <= 0.0:
+            if (
+                self.filled_notional != 0.0
+                or self.taker_fees != 0.0
+                or self.limit_price is not None
+                or self.net_edge_per_share is not None
+            ):
+                raise ValueError("an empty FAK quote cannot contain execution values")
+        elif (
+            self.limit_price is None
+            or isinstance(self.limit_price, bool)
+            or not isinstance(self.limit_price, int | float)
+            or not isfinite(self.limit_price)
+            or not 0.0 < self.limit_price < 1.0
+            or self.net_edge_per_share is None
+            or isinstance(self.net_edge_per_share, bool)
+            or not isinstance(self.net_edge_per_share, int | float)
+            or not isfinite(self.net_edge_per_share)
+        ):
+            raise ValueError("a filled FAK quote requires a valid price and net edge")
+
+    @property
+    def fully_filled(self) -> bool:
+        return self.filled_size >= self.requested_size - 1e-12
+
+    @property
+    def average_price(self) -> float | None:
+        return None if self.filled_size <= 0.0 else self.filled_notional / self.filled_size
+
+    @property
+    def all_in_average_price(self) -> float | None:
+        return (
+            None
+            if self.filled_size <= 0.0
+            else (self.filled_notional + self.taker_fees) / self.filled_size
+        )
 
 
 @dataclass(slots=True)
@@ -180,6 +307,14 @@ class PaperExecutionSimulator:
     def placements(self) -> tuple[PaperPlacement, ...]:
         return tuple(self._placements.values())
 
+    def retire_terminal_placements(self) -> None:
+        if any(
+            placement.status in {"insert_pending", "working", "cancel_pending", "fak_pending"}
+            for placement in self._placements.values()
+        ):
+            raise RuntimeError("cannot retire an unfinished paper placement")
+        self._placements.clear()
+
     def submit(
         self,
         *,
@@ -201,6 +336,8 @@ class PaperExecutionSimulator:
             raise ValueError("paper placement already exists")
         layer_states: list[PaperOrderLayerState] = []
         for index, layer in enumerate(plan.layers):
+            if layer.queue_ahead is None:
+                raise RuntimeError("validated maker layer has no queue-ahead value")
             request = LiveOrderRequest(
                 condition_id=rules.condition_id,
                 token_id=rules.token_id,
@@ -224,8 +361,8 @@ class PaperExecutionSimulator:
                     order_id=response.venue_order_id,
                     price=layer.price,
                     size=layer.size,
-                    queue_ahead=layer.visible_size,
-                    initial_queue_ahead=layer.visible_size,
+                    queue_ahead=layer.queue_ahead,
+                    initial_queue_ahead=layer.queue_ahead,
                 )
             )
         placement = PaperPlacement(
@@ -238,6 +375,131 @@ class PaperExecutionSimulator:
         )
         self._placements[placement_id] = placement
         return placement
+
+    def submit_direct_fak(
+        self,
+        *,
+        plan: OrderPlan,
+        rules: PaperMarketRules,
+        book: SideBook,
+        now_ts_ns: int,
+        selected_probability: float,
+        minimum_net_edge: float,
+        slippage_buffer: float,
+        model_uncertainty_buffer: float,
+    ) -> PaperPlacement:
+        """Submit one delayed FAK attempt without a synthetic maker lifecycle.
+
+        ``book`` validates the submission contract only. The single fill attempt
+        uses the current book supplied to :meth:`advance` after taker latency.
+        """
+
+        self._validate_order_inputs(plan=plan, rules=rules, book=book, now_ts_ns=now_ts_ns)
+        self._validate_fak_inputs(
+            selected_probability=selected_probability,
+            minimum_net_edge=minimum_net_edge,
+            slippage_buffer=slippage_buffer,
+            model_uncertainty_buffer=model_uncertainty_buffer,
+        )
+        placement_id = f"{plan.market_slug}:{plan.created_ts_ns}"
+        if placement_id in self._placements:
+            raise ValueError("paper placement already exists")
+        active_ts_ns = now_ts_ns + round(self.config.taker_latency_ms * 1_000_000)
+        placement = PaperPlacement(
+            placement_id=placement_id,
+            plan=plan,
+            rules=rules,
+            submitted_ts_ns=now_ts_ns,
+            active_ts_ns=active_ts_ns,
+            layers=(),
+            status="fak_pending",
+            execution_route="direct_fak",
+            fak_requested_ts_ns=now_ts_ns,
+            fak_active_ts_ns=active_ts_ns,
+            fak_selected_probability=selected_probability,
+            fak_minimum_net_edge=minimum_net_edge,
+            fak_slippage_buffer=slippage_buffer,
+            fak_model_uncertainty_buffer=model_uncertainty_buffer,
+        )
+        self._placements[placement_id] = placement
+        return placement
+
+    def preview_fak(
+        self,
+        *,
+        token_id: str,
+        requested_size: float,
+        rules: PaperMarketRules,
+        book: SideBook,
+        now_ts_ns: int,
+        selected_probability: float,
+        minimum_net_edge: float,
+        slippage_buffer: float,
+        model_uncertainty_buffer: float,
+    ) -> PaperFakQuote:
+        """Quote one FAK against the complete current ask depth without mutating state."""
+
+        self._validate_market_inputs(
+            token_id=token_id,
+            rules=rules,
+            book=book,
+            now_ts_ns=now_ts_ns,
+        )
+        if (
+            isinstance(requested_size, bool)
+            or not isinstance(requested_size, int | float)
+            or not isfinite(requested_size)
+            or requested_size + 1e-12 < rules.minimum_order_size
+        ):
+            raise ValueError("requested_size must be finite and at least the minimum order size")
+        self._validate_fak_inputs(
+            selected_probability=selected_probability,
+            minimum_net_edge=minimum_net_edge,
+            slippage_buffer=slippage_buffer,
+            model_uncertainty_buffer=model_uncertainty_buffer,
+        )
+        remaining = requested_size
+        filled = 0.0
+        notional = 0.0
+        fees = 0.0
+        limit_price: float | None = None
+        weighted_net_edge = 0.0
+        for level in sorted(book.asks, key=lambda item: item.price):
+            if remaining <= 1e-12:
+                break
+            quantity = min(remaining, level.size)
+            if quantity <= 0.0:
+                continue
+            fee = calculate_commission(
+                quantity=Decimal(str(quantity)),
+                price=Decimal(str(level.price)),
+                fee_rate=Decimal(str(rules.taker_fee_rate)),
+                liquidity_side=LiquiditySide.TAKER,
+            )
+            fee_per_share = fee / quantity
+            net_edge = (
+                selected_probability
+                - level.price
+                - fee_per_share
+                - slippage_buffer
+                - model_uncertainty_buffer
+            )
+            if net_edge + 1e-12 < minimum_net_edge:
+                break
+            filled += quantity
+            notional += quantity * level.price
+            fees += fee
+            weighted_net_edge += quantity * net_edge
+            remaining -= quantity
+            limit_price = level.price
+        return PaperFakQuote(
+            requested_size=requested_size,
+            filled_size=filled,
+            filled_notional=notional,
+            taker_fees=fees,
+            limit_price=limit_price,
+            net_edge_per_share=None if filled <= 0.0 else weighted_net_edge / filled,
+        )
 
     def advance(self, *, now_ts_ns: int, books: dict[str, SideBook]) -> None:
         for placement in self._placements.values():
@@ -303,18 +565,12 @@ class PaperExecutionSimulator:
     ) -> bool:
         if placement.status != "canceled" or placement.maker_filled_size > 0.0:
             return False
-        for name, value in (
-            ("selected_probability", selected_probability),
-            ("minimum_net_edge", minimum_net_edge),
-            ("slippage_buffer", slippage_buffer),
-            ("model_uncertainty_buffer", model_uncertainty_buffer),
-        ):
-            if not isfinite(value) or value < 0.0:
-                raise ValueError(f"{name} must be finite and >= 0")
-        if not 0.0 < selected_probability < 1.0:
-            raise ValueError("selected_probability must be in (0, 1)")
-        if minimum_net_edge + slippage_buffer + model_uncertainty_buffer >= 1.0:
-            raise ValueError("FAK edge and safety buffers must sum to less than 1")
+        self._validate_fak_inputs(
+            selected_probability=selected_probability,
+            minimum_net_edge=minimum_net_edge,
+            slippage_buffer=slippage_buffer,
+            model_uncertainty_buffer=model_uncertainty_buffer,
+        )
         placement.status = "fak_pending"
         placement.execution_route = "maker_then_fak"
         placement.fak_requested_ts_ns = now_ts_ns
@@ -395,6 +651,78 @@ class PaperExecutionSimulator:
         placement.terminal_reason = reason
         placement.terminal_ts_ns = placement.active_ts_ns
 
+    @staticmethod
+    def _validate_order_inputs(
+        *,
+        plan: OrderPlan,
+        rules: PaperMarketRules,
+        book: SideBook,
+        now_ts_ns: int,
+    ) -> None:
+        if not isinstance(plan, OrderPlan):
+            raise TypeError("plan must be an OrderPlan")
+        PaperExecutionSimulator._validate_market_inputs(
+            token_id=plan.token_id,
+            rules=rules,
+            book=book,
+            now_ts_ns=now_ts_ns,
+        )
+        if isinstance(now_ts_ns, bool) or now_ts_ns < plan.created_ts_ns:
+            raise ValueError("now_ts_ns must be at or after plan creation")
+        if now_ts_ns >= plan.expires_ts_ns:
+            raise ValueError("now_ts_ns must be before plan expiry")
+
+    @staticmethod
+    def _validate_market_inputs(
+        *,
+        token_id: str,
+        rules: PaperMarketRules,
+        book: SideBook,
+        now_ts_ns: int,
+    ) -> None:
+        if not isinstance(rules, PaperMarketRules):
+            raise TypeError("rules must be PaperMarketRules")
+        if not isinstance(book, SideBook):
+            raise TypeError("book must be a SideBook")
+        if not isinstance(token_id, str) or not token_id:
+            raise ValueError("token_id must be a non-empty string")
+        if token_id != rules.token_id or book.token_id != rules.token_id:
+            raise ValueError("token, book, and rules IDs must match")
+        if abs(book.tick_size - float(rules.tick_size)) > 1e-12:
+            raise ValueError("book tick size does not match observed market rules")
+        if abs(book.minimum_order_size - rules.minimum_order_size) > 1e-12:
+            raise ValueError("book minimum size does not match observed market rules")
+        if isinstance(now_ts_ns, bool) or not isinstance(now_ts_ns, int) or now_ts_ns < 0:
+            raise ValueError("now_ts_ns must be a non-negative integer")
+        if rules.observed_at_ns > now_ts_ns:
+            raise ValueError("market rules cannot be observed in the future")
+
+    @staticmethod
+    def _validate_fak_inputs(
+        *,
+        selected_probability: float,
+        minimum_net_edge: float,
+        slippage_buffer: float,
+        model_uncertainty_buffer: float,
+    ) -> None:
+        for name, value in (
+            ("selected_probability", selected_probability),
+            ("minimum_net_edge", minimum_net_edge),
+            ("slippage_buffer", slippage_buffer),
+            ("model_uncertainty_buffer", model_uncertainty_buffer),
+        ):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int | float)
+                or not isfinite(value)
+                or value < 0.0
+            ):
+                raise ValueError(f"{name} must be finite and >= 0")
+        if not 0.0 < selected_probability < 1.0:
+            raise ValueError("selected_probability must be in (0, 1)")
+        if minimum_net_edge + slippage_buffer + model_uncertainty_buffer >= 1.0:
+            raise ValueError("FAK edge and safety buffers must sum to less than 1")
+
     def _execute_fak(
         self,
         placement: PaperPlacement,
@@ -406,46 +734,24 @@ class PaperExecutionSimulator:
         if selected_probability is None:
             raise RuntimeError("FAK probability is unavailable")
         remaining = placement.plan.total_size - placement.maker_filled_size
-        filled = 0.0
-        notional = 0.0
-        fees = 0.0
-        last_price: float | None = None
-        weighted_net_edge = 0.0
-        for level in sorted(book.asks, key=lambda item: item.price):
-            if remaining <= 1e-12:
-                break
-            quantity = min(remaining, level.size)
-            if quantity <= 0.0:
-                continue
-            fee = calculate_commission(
-                quantity=Decimal(str(quantity)),
-                price=Decimal(str(level.price)),
-                fee_rate=Decimal(str(placement.rules.taker_fee_rate)),
-                liquidity_side=LiquiditySide.TAKER,
-            )
-            fee_per_share = fee / quantity
-            net_edge = (
-                selected_probability
-                - level.price
-                - fee_per_share
-                - placement.fak_slippage_buffer
-                - placement.fak_model_uncertainty_buffer
-            )
-            if net_edge + 1e-12 < placement.fak_minimum_net_edge:
-                break
-            filled += quantity
-            notional += quantity * level.price
-            fees += fee
-            weighted_net_edge += quantity * net_edge
-            remaining -= quantity
-            last_price = level.price
-        placement.taker_filled_size = filled
-        placement.taker_filled_notional = notional
-        placement.taker_fees = fees
-        placement.fak_limit_price = last_price
-        placement.fak_net_edge_per_share = None if filled <= 0.0 else weighted_net_edge / filled
+        quote = self.preview_fak(
+            token_id=placement.plan.token_id,
+            requested_size=remaining,
+            rules=placement.rules,
+            book=book,
+            now_ts_ns=now_ts_ns,
+            selected_probability=selected_probability,
+            minimum_net_edge=placement.fak_minimum_net_edge,
+            slippage_buffer=placement.fak_slippage_buffer,
+            model_uncertainty_buffer=placement.fak_model_uncertainty_buffer,
+        )
+        placement.taker_filled_size = quote.filled_size
+        placement.taker_filled_notional = quote.filled_notional
+        placement.taker_fees = quote.taker_fees
+        placement.fak_limit_price = quote.limit_price
+        placement.fak_net_edge_per_share = quote.net_edge_per_share
         placement.terminal_ts_ns = now_ts_ns
-        if filled <= 0.0:
+        if quote.filled_size <= 0.0:
             placement.status = "canceled"
             placement.terminal_reason = "fak_net_edge_insufficient"
         elif placement.filled_size >= placement.plan.total_size - 1e-12:
@@ -459,6 +765,7 @@ class PaperExecutionSimulator:
 __all__ = [
     "PaperExecutionConfig",
     "PaperExecutionSimulator",
+    "PaperFakQuote",
     "PaperMarketRules",
     "PaperOrderLayerState",
     "PaperPlacement",

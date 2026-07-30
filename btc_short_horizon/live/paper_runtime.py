@@ -153,6 +153,50 @@ class ModelPaperPredictor:
         )
 
 
+def build_research_paper_portfolio(
+    *,
+    project: BtcProjectConfig,
+    predictor: ModelPaperPredictor,
+    runtime_root: Path,
+    starting_balance: float,
+) -> ResearchPaperPortfolio:
+    """Build the one execution-policy portfolio shared by live and replay."""
+
+    scenario = project.require_scenario("p99_half_volume_book_first").execution
+    latency = scenario.latency_model
+    execution_config = PaperExecutionConfig(
+        insert_latency_ms=latency.base_latency_ms + latency.insert_latency_ms,
+        cancel_latency_ms=latency.base_latency_ms + latency.cancel_latency_ms,
+        taker_latency_ms=latency.base_latency_ms + latency.insert_latency_ms,
+        trade_volume_multiplier=scenario.trade_execution_size_multiplier,
+    )
+    return ResearchPaperPortfolio(
+        tuple(
+            ResearchPaperEngine(
+                predictor=predictor,
+                model_id=predictor.model_id,
+                maker_config=replace(
+                    project.maker,
+                    max_work_seconds=(
+                        variant.maker_work_seconds
+                        if variant.mode == "maker"
+                        else project.maker.max_work_seconds
+                    ),
+                ),
+                execution_config=execution_config,
+                variant=variant,
+                ledger_store=PaperLedgerStore(
+                    runtime_root,
+                    project.paper_execution_epoch,
+                    variant.variant_id,
+                ),
+                starting_balance=starting_balance,
+            )
+            for variant in project.paper_execution_variants
+        )
+    )
+
+
 class ResearchPaperRuntime:
     """Keep Paper failures isolated while preserving real-time causal decisions."""
 
@@ -169,34 +213,12 @@ class ResearchPaperRuntime:
         gamma_client: GammaMarketClient | None = None,
     ) -> None:
         predictor = ModelPaperPredictor(project=project, model_directory=model_directory)
-        scenario = project.require_scenario("p99_half_volume_book_first").execution
-        latency = scenario.latency_model
-        execution_config = PaperExecutionConfig(
-            insert_latency_ms=latency.base_latency_ms + latency.insert_latency_ms,
-            cancel_latency_ms=latency.base_latency_ms + latency.cancel_latency_ms,
-            taker_latency_ms=latency.base_latency_ms + latency.insert_latency_ms,
-            trade_volume_multiplier=scenario.trade_execution_size_multiplier,
+        self.engine = build_research_paper_portfolio(
+            project=project,
+            predictor=predictor,
+            runtime_root=runtime_root,
+            starting_balance=starting_balance,
         )
-        engines = tuple(
-            ResearchPaperEngine(
-                predictor=predictor,
-                model_id=predictor.model_id,
-                maker_config=replace(
-                    project.maker,
-                    max_work_seconds=(
-                        variant.maker_work_seconds
-                        if variant.mode == "maker"
-                        else project.maker.max_work_seconds
-                    ),
-                ),
-                execution_config=execution_config,
-                variant=variant,
-                ledger_store=PaperLedgerStore(runtime_root, variant.variant_id),
-                starting_balance=starting_balance,
-            )
-            for variant in project.paper_execution_variants
-        )
-        self.engine = ResearchPaperPortfolio(engines)
         self.project = project
         self.runtime_root = runtime_root
         self.rule_epoch = rule_epoch
@@ -396,10 +418,11 @@ class ResearchPaperRuntime:
             self._next_decision_ns = first_ns + steps * cadence_ns
 
     def _run_due_decision(self, now: datetime) -> None:
-        if self._next_decision_ns is None or self.engine.market is None:
+        if self.engine.market is None:
             return
         now_ns = int(now.timestamp() * 1_000_000_000)
-        if now_ns < self._next_decision_ns:
+        self.engine.advance(now_ts_ns=now_ns)
+        if self._next_decision_ns is None or now_ns < self._next_decision_ns:
             return
         end_ns = int(self.engine.market.t0.timestamp() * 1_000_000_000) + round(
             (
@@ -411,7 +434,6 @@ class ResearchPaperRuntime:
             * 1_000_000_000
         )
         if self._next_decision_ns > end_ns:
-            self.engine.advance(now_ts_ns=now_ns)
             self._next_decision_ns = None
             return
         try:
@@ -474,6 +496,7 @@ class ResearchPaperRuntime:
     def _publish(self, *, now: datetime, state: str, healthy: bool) -> None:
         details = {
             "model_id": self.model_id,
+            "paper_execution_epoch": self.project.paper_execution_epoch,
             "active_market": self._active_slug,
             "ready": self._ready,
             "last_decision_result": self._last_decision_result,

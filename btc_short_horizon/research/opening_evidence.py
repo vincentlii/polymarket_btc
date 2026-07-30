@@ -164,6 +164,7 @@ class ForwardRawEvent:
     sequence_or_hash: str
     source: str
     instrument: str
+    schema_version: str
     ingest_version: str
     event_type: str
     collector_session_id: str
@@ -278,6 +279,7 @@ def load_forward_raw_events(
                     sequence_or_hash=_required_text(row, "sequence_or_hash", path, row_index),
                     source=source,
                     instrument=instrument,
+                    schema_version=_required_text(row, "schema_version", path, row_index),
                     ingest_version=row_ingest_version,
                     event_type=_required_text(row, "event_type", path, row_index),
                     collector_session_id=_required_text(

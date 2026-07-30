@@ -280,9 +280,22 @@ Grafana建议刷新频率应匹配数据变化速度，并为 panel 添加说明
 
 这一顺序优先满足“打开后几秒内知道是否正常、是否赚钱、是否该行动”，同时为后续 Shadow、Canary 和 Live 逐步补齐真实数据留出稳定接口。
 
-Research Paper 的首页额外显示三张紧凑执行策略卡：15 秒 maker、30 秒 maker、
-5 秒 maker 后转 FAK。三者共享同一因果信号和行情，但资金、订单、成交与 PnL
-账本完全隔离；主资金曲线仍只采用标记为 primary 的策略。订单表必须显示策略、
-执行状态与结算状态，未成交订单的 PnL 显示 `—`，不能把“已结算但未成交”显示成
-一笔收益为零的交易。终止原因、queue ahead、可消费卖盘量、执行路径和 taker fee
-保留在投影中供逐单诊断。
+Research Paper 的首页显示三张紧凑执行策略卡：15 秒 maker、确认后立即提交的一次性
+FAK、5 秒 maker 后转一次性 FAK。三者共享同一模型概率、决策时刻、两次确认与
+opportunity ID，但资金、订单、成交与 PnL 账本完全隔离；主资金曲线仍只采用标记为
+primary 的策略。卡片同时显示全样本 PnL、仅核心价格样本的 paired EV、全样本
+paired EV、按已成交份额计算的 conditional EV、成交率、核心/尾部样本和 taker
+fee，并按 3--30 秒、35--90 秒、95--180 秒及价格区间分层。Promotion 只读取核心
+paired EV；尾部研究样本不能靠较大的偶然 PnL 抬高 Go 指标。
+
+策略卡下方显示主策略本进程的决策漏斗：decision tick、有效预测、候选信号、独立
+机会、提交、拒绝、成交、结算。该漏斗只用于解释为什么没有订单或没有成交，不能跨重启
+拼接为伪精确转化率。首页订单仍固定为最近 15 条；完整历史通过只读、分页、可按
+variant 筛选的 `/api/orders` 显式加载。历史读取递归发现各 execution epoch 的账本，
+但任一账本结构、路径身份或 schema 校验失败时整次请求 fail closed，不返回看似完整
+的残缺结果，也不暴露本地路径或 token ID。
+
+订单表必须显示策略、执行状态与结算状态，未成交订单的 PnL 显示 `—`，不能把
+“已结算但未成交”显示成一笔收益为零的交易。完整历史保留 opportunity、执行阶段、
+core/tail、Go eligibility、decision ask 以及最多三次 fair/VWAP/fee/net-edge 观察；
+终止原因、queue ahead、可消费卖盘量、执行路径和 taker fee 继续保留供逐单诊断。

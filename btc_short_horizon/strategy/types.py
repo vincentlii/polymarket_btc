@@ -125,6 +125,7 @@ class MakerOrderLayer:
     price: float
     size: float
     visible_size: float
+    queue_ahead: float | None = None
 
     def __post_init__(self) -> None:
         _require_probability("price", self.price)
@@ -132,6 +133,11 @@ class MakerOrderLayer:
         _require_positive("visible_size", self.visible_size)
         if self.size > self.visible_size + 1e-12:
             raise ValueError("order size cannot exceed visible same-side depth")
+        queue_ahead = self.visible_size if self.queue_ahead is None else self.queue_ahead
+        _require_nonnegative("queue_ahead", queue_ahead)
+        if queue_ahead > self.visible_size + 1e-12:
+            raise ValueError("queue_ahead cannot exceed the visible capacity reference")
+        object.__setattr__(self, "queue_ahead", queue_ahead)
 
     @property
     def notional(self) -> float:

@@ -183,11 +183,61 @@ def test_plan_caps_each_layer_by_visible_depth_and_rejects_below_venue_minimum()
     assert not rejected.accepted
 
 
+def test_plan_improves_one_tick_only_when_spread_and_edge_allow_it() -> None:
+    wide_up = SideBook(
+        token_id="up-token",
+        bids=(VisibleBookLevel(price=0.60, size=100.0),),
+        asks=(VisibleBookLevel(price=0.63, size=100.0),),
+        tick_size=0.01,
+        minimum_order_size=1.0,
+    )
+    books = OutcomeBooks(up=wide_up, down=_books().down)
+
+    improved = plan_opening_mispricing_orders(
+        market_slug="btc-updown-15m-1776038400",
+        p_boundary_up=0.65,
+        p_up=0.72,
+        books=books,
+        decision_ts_ns=5_000_000_000,
+        elapsed_seconds=5.0,
+        config=_config(
+            structure=LayerStructure.SINGLE,
+            price_level_tick_offsets=(0,),
+            improve_inside_spread=True,
+        ),
+    )
+
+    assert improved.plan is not None
+    assert improved.plan.layers[0].price == pytest.approx(0.61)
+    assert improved.plan.layers[0].queue_ahead == pytest.approx(0.0)
+    assert improved.plan.layers[0].visible_size == pytest.approx(100.0)
+
+    edge_limited = plan_opening_mispricing_orders(
+        market_slug="btc-updown-15m-1776038400",
+        p_boundary_up=0.65,
+        p_up=0.72,
+        books=books,
+        decision_ts_ns=5_000_000_000,
+        elapsed_seconds=5.0,
+        config=_config(
+            structure=LayerStructure.SINGLE,
+            safety_buffer=0.01,
+            minimum_edge=0.11,
+            price_level_tick_offsets=(0,),
+            improve_inside_spread=True,
+        ),
+    )
+
+    assert edge_limited.plan is not None
+    assert edge_limited.plan.layers[0].price == pytest.approx(0.60)
+    assert edge_limited.plan.layers[0].queue_ahead == pytest.approx(100.0)
+
+
 @pytest.mark.parametrize(
     ("kwargs", "reason"),
     (
         ({"has_data_gap": True}, "data_gap"),
-        ({"data_age_seconds": 1.1}, "data_stale"),
+        ({"data_age_seconds": 1.1}, "book_stale_connection_unobserved"),
         ({"tick_unchanged": False}, "tick_changed"),
         ({"selected_probability": 0.68}, "probability_drop"),
         (

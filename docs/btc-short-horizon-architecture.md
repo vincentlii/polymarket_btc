@@ -855,3 +855,76 @@ all four Gamma-verified BTC 15m conditions in the local archive file. The
 archive may become usable for other windows only after the per-market coverage
 audit succeeds; this project does not substitute PMXT v1 or treat an empty
 hour as a tradable historical replay.
+
+## Research Paper execution epoch v2
+
+`paper-v2-direct-fak` is a new evidence epoch. It does not migrate or rewrite
+older ledgers. Every variant receives the same model prediction, decision
+timestamp, two-signal confirmation and deterministic opportunity ID, then owns
+an isolated balance and execution ledger:
+
+- `maker_15s` remains the primary passive policy. It may improve the best bid by
+  one tick only when the spread is at least two ticks, the price remains
+  post-only and the configured edge survives. An empty improved level starts
+  with zero queue ahead; visible best-bid depth is retained only as a sizing
+  reference.
+- `immediate_fak` replaces the uninformative 30-second maker control. After the
+  shared confirmation it waits the configured P99 taker latency, consumes the
+  complete then-visible ask ladder once, applies the documented fee curve at
+  every level, and requires edge after the 0.5c slippage, 3c model-uncertainty
+  and 3c minimum-net-edge buffers. Partial fill is valid; the remainder is
+  canceled and never retried.
+- `maker_5s_then_fak` keeps the five-second maker comparison. It can convert
+  only after cancel acknowledgement and only if the maker leg filled zero
+  shares, then uses the same one-shot FAK estimator as the direct route.
+
+The unit for paired route comparison is one independent opportunity. Rejected,
+canceled and unfilled routes contribute zero PnL to EV per opportunity; EV per
+filled share is reported separately and must not replace it. Results are also
+partitioned by the frozen `3--30s`, `35--90s`, `95--180s` regimes and by price
+bucket. Prices below 0.20 or above 0.80 remain recorded for research but carry
+`go_eligible=false`; only the 0.20--0.80 core can support an initial promotion
+decision.
+
+Each record preserves up to three signal observations containing fair
+probability, maker price, executable ask VWAP, taker fee and net taker edge.
+The decision funnel counts the primary process session from decision ticks
+through prediction, confirmation, opportunity, placement, fill and resolution.
+These diagnostics explain low conversion without changing the frozen strategy.
+
+Latency transitions are causal. If insert, cancel or FAK latency expires before
+the next admitted market event, the transition is executed against the last
+book available at that deadline; a later book event cannot reprice an earlier
+execution. Events at the exact deadline are applied first as the conservative
+same-timestamp tie break. A continuity gap is distinct from a quiet connection:
+without an observed connection-state proof the one-second book-age gate remains
+strict and reports `book_stale_connection_unobserved` instead of silently
+loosening freshness. The watchdog runs after the admitted-event queue is drained,
+not between two same-timestamp Up/Down rows, so a transient half-applied pair
+cannot trigger a false cancel. During a genuinely quiet connection, the 50 ms
+runtime clock continues advancing the watchdog and latency state.
+
+Terminal simulator placements are retired when the next market activates so the
+50 ms loop remains constant-time across long-running market rotations. A new
+market is rejected while any prior placement is still pending, working,
+cancel-pending or FAK-pending; rotation cannot silently orphan an order cycle.
+
+Activation atomically stores the exact CLOB tick, minimum size, fee and token
+rules under the execution epoch. `scripts/btc_research_paper_replay.py` reads
+those frozen rules and immutable raw events, reconstructs a contiguous Binance
+bootstrap, and drives the same `ResearchPaperPortfolio` used by the live
+runtime in `available_ts` order. This is the only supported offline Paper replay
+path; it does not substitute a second strategy implementation.
+
+```bash
+uv run python scripts/btc_research_paper_replay.py \
+  --market-catalog data/catalogs/<market>.json \
+  --market-slug <btc-updown-15m-slug> \
+  --model-directory output/models/opening-proxy \
+  --raw-data-root data/forward \
+  --rules-runtime-root output/runtime \
+  --output-root output/replays/<market>
+```
+
+The output root must be new. Replay refuses to append to an existing epoch so
+reruns cannot overwrite or silently blend prior evidence.

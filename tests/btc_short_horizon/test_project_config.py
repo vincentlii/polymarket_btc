@@ -23,6 +23,7 @@ def test_baseline_config_is_path_relative_and_has_explicit_queue_scenarios() -> 
     assert config.maker.confirmation_signals == 2
     assert config.maker.signal_cadence_seconds == 5.0
     assert config.maker.max_visible_depth_fraction == 0.05
+    assert config.maker.improve_inside_spread is True
     assert config.maker.max_work_seconds == 15.0
     assert config.collection.flush_size == 50_000
     assert config.collection.flush_interval_seconds == 60.0
@@ -37,12 +38,15 @@ def test_baseline_config_is_path_relative_and_has_explicit_queue_scenarios() -> 
     assert config.collection.polymarket_capture_lead_seconds == 90.0
     assert config.collection.opening_handoff_delay_seconds == 215.0
     assert config.collection.ingest_version == "btc-short-horizon-v14"
+    assert config.paper_execution_epoch == "paper-v2-direct-fak"
     assert [variant.variant_id for variant in config.paper_execution_variants] == [
         "maker_15s",
-        "maker_30s",
+        "immediate_fak",
         "maker_5s_then_fak",
     ]
     assert config.paper_execution_variants[0].primary is True
+    assert config.paper_execution_variants[1].mode == "immediate_fak"
+    assert config.paper_execution_variants[1].maker_work_seconds == 0.0
     formal = tuple(scenario for scenario in config.scenarios if scenario.formal_grid_component)
     assert len(formal) == 4
     assert all(scenario.execution.queue_position for scenario in formal)
@@ -97,7 +101,7 @@ def test_collection_window_covers_cancel_race_latency(tmp_path: Path) -> None:
     path = tmp_path / "short-capture.toml"
     path.write_text(
         baseline.replace(
-            "opening_handoff_delay_seconds = 215.0", "opening_handoff_delay_seconds = 210.0"
+            "opening_handoff_delay_seconds = 215.0", "opening_handoff_delay_seconds = 195.0"
         ),
         encoding="utf-8",
     )
@@ -112,6 +116,36 @@ def test_paper_execution_variant_ids_cannot_escape_the_ledger_root(tmp_path: Pat
     path.write_text(baseline.replace('id = "maker_15s"', 'id = "../maker_15s"'), encoding="utf-8")
 
     with pytest.raises(ValueError, match="ASCII identifier"):
+        load_btc_project_config(path)
+
+
+def test_paper_execution_epoch_cannot_escape_the_ledger_root(tmp_path: Path) -> None:
+    baseline = Path("configs/btc_short_horizon/baseline.toml").read_text(encoding="utf-8")
+    path = tmp_path / "unsafe-epoch.toml"
+    path.write_text(
+        baseline.replace(
+            'paper_execution_epoch = "paper-v2-direct-fak"',
+            'paper_execution_epoch = "../paper-v2-direct-fak"',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="ASCII identifier"):
+        load_btc_project_config(path)
+
+
+def test_immediate_fak_variant_cannot_hide_a_maker_wait(tmp_path: Path) -> None:
+    baseline = Path("configs/btc_short_horizon/baseline.toml").read_text(encoding="utf-8")
+    path = tmp_path / "delayed-immediate-fak.toml"
+    path.write_text(
+        baseline.replace(
+            'mode = "immediate_fak"\nmaker_work_seconds = 0.0',
+            'mode = "immediate_fak"\nmaker_work_seconds = 5.0',
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="maker_work_seconds=0"):
         load_btc_project_config(path)
 
 

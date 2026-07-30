@@ -39,9 +39,9 @@ def opening_regime_for_elapsed_seconds(elapsed_seconds: float) -> OpeningRegime:
 
     if 3.0 <= elapsed_seconds <= 30.0:
         return OpeningRegime.EARLY
-    if 30.0 < elapsed_seconds <= 90.0:
+    if 35.0 <= elapsed_seconds <= 90.0:
         return OpeningRegime.PRICE_DISCOVERY
-    if 90.0 < elapsed_seconds <= 180.0:
+    if 95.0 <= elapsed_seconds <= 180.0:
         return OpeningRegime.MID_EARLY
     raise ValueError("elapsed_seconds falls outside the frozen three-minute protocol")
 

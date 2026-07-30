@@ -52,6 +52,18 @@ and reporting plumbing without importing archived BTC strategy logic.
   Active prediction failures now make Paper unhealthy with the exact market,
   timestamp and reason until a later decision succeeds; a cumulative error
   counter can no longer coexist with a misleading healthy status.
+  Execution epoch `paper-v2-direct-fak` now compares 15-second maker, immediate
+  one-shot FAK and 5-second maker-to-FAK on the same confirmed opportunity.
+  Direct and hybrid FAK use complete ask depth, P99 latency, per-level taker
+  fees and frozen safety buffers with no retry. Maker may improve one tick only
+  inside a two-tick spread while keeping correct zero queue at the empty level.
+  Paired EV counts every resolved opportunity, including rejected/unfilled
+  routes as zero, while filled-share EV, time regime and core/tail price buckets
+  remain separate. New ledgers are isolated from legacy evidence; per-market
+  rules are frozen atomically for deterministic raw replay through the same live
+  portfolio. Latency transitions now execute before later events can reprice
+  them. The read-only dashboard exposes the primary-session funnel, execution
+  epoch, segment metrics and paginated full schema-validated order history.
 - Model/research hardening: model inputs and probabilities now reject coercion,
   non-finite values, invalid shapes, and inconsistent lineage. Walk-forward
   tests are non-overlapping and group-safe; LightGBM early stopping, calibration,

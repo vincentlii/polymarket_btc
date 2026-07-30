@@ -1,3 +1,5 @@
+paper_execution_epoch = "paper-v2-direct-fak"
+
 data_sources = [
   "local:../../data/pmxt_raw",
   "archive:r2v2.pmxt.dev",
@@ -60,6 +62,7 @@ stale_after_seconds = 1.0
 cancel_probability_drop = 0.03
 max_visible_depth_fraction = 0.05
 price_level_tick_offsets = [0]
+improve_inside_spread = true
 
 [[paper_execution_variants]]
 id = "maker_15s"
@@ -72,14 +75,14 @@ slippage_buffer = 0.0
 model_uncertainty_buffer = 0.0
 
 [[paper_execution_variants]]
-id = "maker_30s"
-label = "Maker 30s"
-mode = "maker"
-maker_work_seconds = 30.0
+id = "immediate_fak"
+label = "Immediate FAK"
+mode = "immediate_fak"
+maker_work_seconds = 0.0
 primary = false
-minimum_taker_net_edge = 0.0
-slippage_buffer = 0.0
-model_uncertainty_buffer = 0.0
+minimum_taker_net_edge = 0.03
+slippage_buffer = 0.005
+model_uncertainty_buffer = 0.03
 
 [[paper_execution_variants]]
 id = "maker_5s_then_fak"

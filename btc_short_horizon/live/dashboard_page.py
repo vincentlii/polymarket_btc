@@ -48,7 +48,7 @@ body {
   font-family:"Avenir Next","Segoe UI Variable","Noto Sans SC",sans-serif;
   font-variant-numeric:tabular-nums;
 }
-button, input, table { font:inherit; }
+button, input, select, table { font:inherit; }
 main { width:min(1240px, calc(100% - 40px)); margin:0 auto; padding:26px 0 56px; }
 .topbar { display:flex; align-items:center; justify-content:space-between; gap:24px; padding:8px 0 24px; }
 .brand { display:flex; align-items:center; gap:12px; min-width:0; }
@@ -108,6 +108,13 @@ h1 { margin:9px 0 12px; max-width:720px; font-size:clamp(2rem,4.2vw,3.65rem); li
 .variant-values { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:14px; }
 .variant-values span { display:block; color:var(--quiet); font-size:.62rem; }
 .variant-values strong { display:block; margin-top:4px; font-size:.82rem; font-weight:550; }
+.variant-segments { margin-top:12px; padding-top:10px; border-top:1px solid var(--line-soft); color:var(--quiet); font-size:.62rem; line-height:1.55; }
+.funnel-shell { padding:0 20px 20px; }
+.funnel-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:9px; color:var(--quiet); font-size:.64rem; }
+.funnel-track { display:grid; grid-template-columns:repeat(7,minmax(88px,1fr)); gap:7px; overflow-x:auto; padding-bottom:3px; }
+.funnel-step { min-width:88px; padding:10px 11px; border:1px solid var(--line-soft); border-radius:8px; background:#111713; }
+.funnel-step span { display:block; color:var(--quiet); font-size:.59rem; }
+.funnel-step strong { display:block; margin-top:5px; color:var(--text); font-size:.9rem; font-weight:560; }
 .lifecycle-body { padding:18px 20px 20px; }
 .stage-track { display:grid; grid-template-columns:repeat(5,1fr); gap:4px; margin:2px 0 22px; }
 .stage { position:relative; padding-top:13px; color:var(--quiet); font-size:.62rem; text-align:center; }
@@ -148,11 +155,23 @@ tbody tr:hover { background:rgba(255,255,255,.018); }
 .market-cell { max-width:260px; overflow:hidden; text-overflow:ellipsis; }
 .side { display:inline-flex; align-items:center; min-width:42px; justify-content:center; padding:4px 7px; border-radius:6px; background:#222c25; color:#dce3dc; font-size:.62rem; text-transform:uppercase; }
 .table-empty { padding:30px !important; color:var(--quiet); text-align:center; }
+.history-bar { display:flex; align-items:center; justify-content:space-between; gap:18px; padding:14px 20px; border-top:1px solid var(--line-soft); background:#101512; }
+.history-copy strong { display:block; font-size:.72rem; font-weight:570; }
+.history-copy span { display:block; margin-top:4px; color:var(--quiet); font-size:.65rem; }
+.control { min-height:32px; padding:7px 11px; border:1px solid #455248; border-radius:7px; background:#1a211c; color:var(--text); font-size:.68rem; cursor:pointer; }
+.control:hover { border-color:#6b7b6e; background:#202821; }
+.control:disabled { opacity:.45; cursor:not-allowed; }
+.history-panel { border-top:1px solid var(--line); background:#0f1411; }
+.history-toolbar { display:flex; align-items:end; justify-content:space-between; gap:16px; padding:14px 20px; }
+.history-filter { display:grid; gap:5px; color:var(--quiet); font-size:.62rem; }
+.history-filter select { min-width:170px; cursor:pointer; }
+.history-state { color:var(--quiet); font-size:.65rem; text-align:right; }
+.history-more { display:flex; justify-content:center; padding:14px 20px 18px; border-top:1px solid var(--line-soft); }
 footer { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:20px 2px 0; color:var(--quiet); font-size:.65rem; }
 @keyframes settle { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
 @media (prefers-reduced-motion:reduce) { * { animation:none !important; transition:none !important; } }
 @media (max-width:930px) { .metric-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .main-grid { grid-template-columns:1fr; } .health-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .variant-grid { grid-template-columns:1fr; } }
-@media (max-width:640px) { main { width:min(100% - 24px,1240px); padding-top:14px; } .topbar,.hero { align-items:flex-start; flex-direction:column; display:flex; } .top-meta { justify-content:flex-start; } .hero { gap:16px; padding:26px 0 22px; } .freshness { text-align:left; } .metric-grid { grid-template-columns:1fr 1fr; } .metric { min-height:104px; padding:15px; } .main-grid { gap:10px; } .panel-head { padding:16px; } .chart-wrap { padding-left:10px; padding-right:10px; } .mini-stats { grid-template-columns:1fr 1fr; } .mini-stat:nth-child(2) { border-right:0; } .mini-stat:nth-child(-n+2) { border-bottom:1px solid var(--line-soft); } .health-grid { grid-template-columns:1fr; } .cycle-row { grid-template-columns:96px minmax(0,1fr); } footer { align-items:flex-start; flex-direction:column; } }
+@media (max-width:640px) { main { width:min(100% - 24px,1240px); padding-top:14px; } .topbar,.hero { align-items:flex-start; flex-direction:column; display:flex; } .top-meta { justify-content:flex-start; } .hero { gap:16px; padding:26px 0 22px; } .freshness { text-align:left; } .metric-grid { grid-template-columns:1fr 1fr; } .metric { min-height:104px; padding:15px; } .main-grid { gap:10px; } .panel-head { padding:16px; } .chart-wrap { padding-left:10px; padding-right:10px; } .mini-stats { grid-template-columns:1fr 1fr; } .mini-stat:nth-child(2) { border-right:0; } .mini-stat:nth-child(-n+2) { border-bottom:1px solid var(--line-soft); } .health-grid { grid-template-columns:1fr; } .cycle-row { grid-template-columns:96px minmax(0,1fr); } .history-bar,.history-toolbar { align-items:flex-start; flex-direction:column; } .history-state { text-align:left; } footer { align-items:flex-start; flex-direction:column; } }
 </style>
 </head>
 <body>
@@ -203,8 +222,12 @@ footer { display:flex; align-items:center; justify-content:space-between; gap:20
   </section>
 
   <section class="panel section">
-    <div class="panel-head"><div><div class="section-kicker">EXECUTION RACE</div><h2>三种成交策略对比</h2></div><div class="panel-meta">同一信号 · 独立模拟账本</div></div>
+    <div class="panel-head"><div><div class="section-kicker">EXECUTION RACE</div><h2>三种成交策略对比</h2></div><div id="execution-epoch" class="panel-meta">同一信号 · 独立模拟账本</div></div>
     <div id="variant-grid" class="variant-grid"><div class="table-empty">等待策略数据</div></div>
+    <div class="funnel-shell">
+      <div class="funnel-head"><span>主策略本进程决策漏斗</span><span id="funnel-scope">等待数据</span></div>
+      <div id="decision-funnel" class="funnel-track"><div class="funnel-step"><span>尚未开始</span><strong>—</strong></div></div>
+    </div>
   </section>
 
   <section class="panel section">
@@ -213,8 +236,20 @@ footer { display:flex; align-items:center; justify-content:space-between; gap:20
   </section>
 
   <section class="panel section">
-    <div class="panel-head"><div><div class="section-kicker">ORDERS</div><h2>最近订单与逐单盈亏</h2></div><div class="panel-meta">按下单时间倒序 · 只读</div></div>
+    <div class="panel-head"><div><div class="section-kicker">ORDERS</div><h2>最近订单与逐单盈亏</h2></div><div class="panel-meta">仅展示最近 15 条 · 按下单时间倒序</div></div>
     <div class="table-wrap"><table><thead><tr><th>时间</th><th>策略</th><th>市场</th><th>方向</th><th>执行 / 结算</th><th>成交</th><th>Fair / Market</th><th>PnL</th><th>下单 RTT</th></tr></thead><tbody id="trade-rows"><tr><td colspan="9" class="table-empty">尚无订单记录</td></tr></tbody></table></div>
+    <div class="history-bar">
+      <div class="history-copy"><strong>首页固定显示最近 15 条</strong><span>完整模拟订单保存在只读账本，可按策略分页查看。</span></div>
+      <button id="history-toggle" class="control" type="button" aria-expanded="false" aria-controls="history-panel">查看完整历史</button>
+    </div>
+    <div id="history-panel" class="history-panel" hidden>
+      <div class="history-toolbar">
+        <label class="history-filter">策略筛选<select id="history-variant" class="control"><option value="">全部策略</option></select></label>
+        <div id="history-state" class="history-state" aria-live="polite">尚未读取完整账本</div>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>时间</th><th>策略</th><th>市场</th><th>方向</th><th>执行 / 结算</th><th>成交</th><th>Fair / Market</th><th>PnL</th><th>下单 RTT</th></tr></thead><tbody id="history-rows"><tr><td colspan="9" class="table-empty">点击“查看完整历史”后按页读取</td></tr></tbody></table></div>
+      <div class="history-more"><button id="history-more" class="control" type="button" hidden>加载更多</button></div>
+    </div>
   </section>
 
   <footer><span>只读看板 · 无下单、撤单或停机权限</span><span id="snapshot-source">Runtime status only</span></footer>
@@ -229,6 +264,8 @@ const runtimeServiceLabels = {forward_collector:'前瞻数据采集',opening_sha
 const runtimeModeLabels = {forward_collection:'实时采集',post_window_shadow:'开盘后 Shadow',paper:'实时模拟'};
 const tradeSideLabels = {up:'看涨',down:'看跌'};
 const tradeStatusLabels = {insert_pending:'等待生效',working:'挂单中',cancel_pending:'撤单中',fak_pending:'FAK 提交中',partially_filled:'部分成交',filled:'已成交',canceled:'已撤单',recovery_canceled:'重启撤单',rejected:'已拒绝',pending:'待结算',resolved:'已结算',void:'作废'};
+const regimeLabels = {early_3s_to_30s:'3–30s',price_discovery_35s_to_90s:'35–90s',mid_early_95s_to_180s:'95–180s',core:'核心价 20–80%',tail_low:'低价尾部 <20%',tail_high:'高价尾部 >80%'};
+const history = {cursor:null,variant:'',loaded:0,currency:'USDC',loading:false};
 
 function finite(value) { return typeof value === 'number' && Number.isFinite(value); }
 function money(value,currency='USDC',signed=false) { if(!finite(value)) return '—'; const prefix=signed&&value>0?'+':''; return `${prefix}${value.toFixed(2)} ${currency}`; }
@@ -245,9 +282,11 @@ function runtimeServiceLabel(value) { return runtimeServiceLabels[value]||readab
 function runtimeModeLabel(value) { return runtimeModeLabels[value]||readableIdentifier(value); }
 function tradeSideLabel(value) { return tradeSideLabels[value]||readableIdentifier(value); }
 function tradeStatusLabel(value) { return tradeStatusLabels[value]||readableIdentifier(value); }
+function orderStrategyLabel(item) { const variant=readableIdentifier(item.variant_id); return item.execution_epoch?`${variant} · ${readableIdentifier(item.execution_epoch)}`:variant; }
 
 function renderSummary(snapshot) {
   const performance=snapshot&&snapshot.performance; const currency=(performance&&performance.currency)||'USDC';
+  history.currency=currency;
   setMetric('metric-equity',money(performance&&performance.equity,currency));
   byId('metric-equity-note').textContent=performance&&finite(performance.starting_balance)?`起始 ${money(performance.starting_balance,currency)}`:'尚无账户快照';
   const total=performance&&finite(performance.realized_pnl)?performance.realized_pnl+(finite(performance.unrealized_pnl)?performance.unrealized_pnl:0):null;
@@ -261,13 +300,22 @@ function renderSummary(snapshot) {
   byId('stat-exposure').textContent=money(performance&&performance.open_exposure,currency);
   renderEquity(performance&&performance.equity_curve,currency);
   renderVariants(performance&&performance.variant_summaries,currency);
+  renderFunnel(performance&&performance.decision_funnel,performance&&performance.paper_execution_epoch);
   renderOrders(performance&&performance.recent_orders,currency);
 }
 
 function renderVariants(variants,currency) {
   const grid=byId('variant-grid'); grid.replaceChildren();
   if(!(variants||[]).length) { const empty=document.createElement('div'); empty.className='table-empty'; empty.textContent='当前快照没有并行执行策略。'; grid.append(empty); return; }
-  for(const item of variants) { const card=document.createElement('article'); card.className=`variant-card ${item.primary?'primary':''}`; const title=document.createElement('div'); title.className='variant-title'; const name=document.createElement('strong'); name.textContent=item.label; const badge=document.createElement('span'); badge.textContent=item.primary?'主策略':'对照'; title.append(name,badge); const policy=document.createElement('div'); policy.className='variant-policy'; policy.textContent=readableIdentifier(item.policy); const values=document.createElement('div'); values.className='variant-values'; for(const [label,value,tone] of [['PnL',money(item.realized_pnl,currency,true),pnlTone(item.realized_pnl)],['成交率',percent(item.fill_rate),'neutral'],['订单 / 成交',`${item.order_count||0} / ${item.fill_count||0}`,'neutral'],['Taker fee',money(item.taker_fees,currency),'neutral']]) { const cell=document.createElement('div'); const caption=document.createElement('span'); caption.textContent=label; const strong=document.createElement('strong'); strong.textContent=value; strong.className=tone; cell.append(caption,strong); values.append(cell); } card.append(title,policy,values); grid.append(card); }
+  for(const item of variants) { const card=document.createElement('article'); card.className=`variant-card ${item.primary?'primary':''}`; const title=document.createElement('div'); title.className='variant-title'; const name=document.createElement('strong'); name.textContent=item.label; const badge=document.createElement('span'); badge.textContent=item.primary?'主策略':'对照'; title.append(name,badge); const policy=document.createElement('div'); policy.className='variant-policy'; policy.textContent=readableIdentifier(item.policy); const values=document.createElement('div'); values.className='variant-values'; for(const [label,value,tone] of [['全样本 PnL',money(item.realized_pnl,currency,true),pnlTone(item.realized_pnl)],['核心 EV / 机会',money(item.core_paired_ev_per_opportunity,currency,true),pnlTone(item.core_paired_ev_per_opportunity)],['全样本 EV / 机会',money(item.paired_ev_per_opportunity,currency,true),pnlTone(item.paired_ev_per_opportunity)],['EV / 成交份额',money(item.conditional_ev_per_filled_share,currency,true),pnlTone(item.conditional_ev_per_filled_share)],['成交率',percent(item.fill_rate),'neutral'],['机会 / 成交',`${item.resolved_opportunity_count||0} / ${item.fill_count||0}`,'neutral'],['核心 / 尾部',`${item.core_resolved_opportunity_count||0} / ${item.tail_resolved_opportunity_count||0}`,'neutral'],['Taker fee',money(item.taker_fees,currency),'neutral']]) { const cell=document.createElement('div'); const caption=document.createElement('span'); caption.textContent=label; const strong=document.createElement('strong'); strong.textContent=value; strong.className=tone; cell.append(caption,strong); values.append(cell); } const segments=document.createElement('div'); segments.className='variant-segments'; const resolved=(item.segment_summaries||[]).filter(segment=>(segment.resolved_count||0)>0); segments.textContent=resolved.length?resolved.map(segment=>`${regimeLabels[segment.key]||readableIdentifier(segment.key)} ${segment.resolved_count}次 · EV ${money(segment.paired_ev_per_opportunity,currency,true)}`).join(' ｜ '):'阶段与价格分层将在机会结算后显示'; card.append(title,policy,values,segments); grid.append(card); }
+}
+
+function renderFunnel(funnel,epoch) {
+  byId('execution-epoch').textContent=epoch?`同一信号 · epoch ${readableIdentifier(epoch)}`:'同一信号 · 独立模拟账本';
+  const track=byId('decision-funnel'); track.replaceChildren(); byId('funnel-scope').textContent=funnel?readableIdentifier(funnel.scope):'等待数据';
+  if(!funnel) { const node=document.createElement('div'); node.className='funnel-step'; node.innerHTML='<span>尚未开始</span><strong>—</strong>'; track.append(node); return; }
+  const stages=[['决策 tick',funnel.decision_ticks],['有效预测',funnel.predictions],['候选信号',funnel.eligible_signal_ticks],['独立机会',funnel.opportunities],['已提交',funnel.placements],['被拒绝',funnel.rejected],['有成交',funnel.fills],['已结算',funnel.resolved]];
+  for(const [label,value] of stages) { const node=document.createElement('div'); node.className='funnel-step'; const caption=document.createElement('span'); caption.textContent=label; const strong=document.createElement('strong'); strong.textContent=String(value||0); node.append(caption,strong); track.append(node); }
 }
 
 function svgNode(name,attributes={}) { const node=document.createElementNS('http://www.w3.org/2000/svg',name); for(const [key,value] of Object.entries(attributes)) node.setAttribute(key,String(value)); return node; }
@@ -326,10 +374,42 @@ function renderHealth(payload,snapshot) {
 }
 
 function renderOrders(orders,currency) {
-  const body=byId('trade-rows'); body.replaceChildren(); const records=[...(orders||[])].sort((a,b)=>String(b.placed_at).localeCompare(String(a.placed_at)));
-  if(records.length===0) { const row=document.createElement('tr'),cell=document.createElement('td'); cell.colSpan=9; cell.className='table-empty'; cell.textContent='尚无订单记录；Shadow 信号不会伪装成成交。'; row.append(cell); body.append(row); return; }
-  for(const item of records) { const row=document.createElement('tr'); const pnl=item.filled_shares>0?(finite(item.realized_pnl)?item.realized_pnl:item.unrealized_pnl):null; const status=`${tradeStatusLabel(item.execution_status)} / ${tradeStatusLabel(item.settlement_status)}`; const values=[localTime(item.placed_at),readableIdentifier(item.variant_id),item.market_slug,tradeSideLabel(item.side),status,`${finite(item.entry_price)?item.entry_price.toFixed(3):'—'} × ${finite(item.filled_shares)?item.filled_shares.toFixed(2):'—'}`,`${probability(item.p_fair)} / ${probability(item.market_price)}`,money(pnl,currency,true),latency(item.order_latency_ms)]; values.forEach((value,index)=>{ const cell=document.createElement('td'); if(index===2){cell.className='market-cell';cell.title=String(value);} if(index===3){const badge=document.createElement('span');badge.className='side';badge.textContent=String(value);cell.append(badge);}else{cell.textContent=String(value);} if(index===7) cell.classList.add(pnlTone(pnl)); row.append(cell); }); if(item.terminal_reason) row.title=`终止原因：${readableIdentifier(item.terminal_reason)}`; body.append(row); }
+  const records=[...(orders||[])].sort((a,b)=>String(b.placed_at).localeCompare(String(a.placed_at)));
+  renderOrderRows(byId('trade-rows'),records,currency,{emptyText:'尚无订单记录；Shadow 信号不会伪装成成交。'});
 }
+
+function renderOrderRows(body,records,currency,{append=false,emptyText='尚无订单记录'}={}) {
+  if(!append) body.replaceChildren();
+  if(records.length===0&&!append) { const row=document.createElement('tr'),cell=document.createElement('td'); cell.colSpan=9; cell.className='table-empty'; cell.textContent=emptyText; row.append(cell); body.append(row); return; }
+  for(const item of records) { const row=document.createElement('tr'); const pnl=item.filled_shares>0?(finite(item.realized_pnl)?item.realized_pnl:item.unrealized_pnl):null; const status=`${tradeStatusLabel(item.execution_status)} / ${tradeStatusLabel(item.settlement_status)}`; const values=[localTime(item.placed_at),orderStrategyLabel(item),item.market_slug,tradeSideLabel(item.side),status,`${finite(item.entry_price)?item.entry_price.toFixed(3):'—'} × ${finite(item.filled_shares)?item.filled_shares.toFixed(2):'—'}`,`${probability(item.p_fair)} / ${probability(item.market_price)}`,money(pnl,currency,true),latency(item.order_latency_ms)]; values.forEach((value,index)=>{ const cell=document.createElement('td'); if(index===2){cell.className='market-cell';cell.title=String(value);} if(index===3){const badge=document.createElement('span');badge.className='side';badge.textContent=String(value);cell.append(badge);}else{cell.textContent=String(value);} if(index===7) cell.classList.add(pnlTone(pnl)); row.append(cell); }); const details=[]; if(item.execution_route) details.push(`执行：${readableIdentifier(item.execution_route)}`); if(item.entry_regime) details.push(`阶段：${regimeLabels[item.entry_regime]||readableIdentifier(item.entry_regime)}`); if(item.price_bucket) details.push(`价格：${regimeLabels[item.price_bucket]||readableIdentifier(item.price_bucket)}${item.go_eligible===false?'（仅研究）':''}`); if(item.terminal_reason) details.push(`终止：${readableIdentifier(item.terminal_reason)}`); if((item.signal_observations||[]).length) details.push(`信号：${item.signal_observations.map(signal=>`#${signal.signal_number} edge ${finite(signal.taker_net_edge)?signal.taker_net_edge.toFixed(3):'—'}`).join(' → ')}`); if(details.length) row.title=details.join(' ｜ '); body.append(row); }
+}
+
+function updateHistoryVariants(variants) {
+  const select=byId('history-variant'),current=select.value; select.replaceChildren(); const all=document.createElement('option'); all.value=''; all.textContent='全部策略'; select.append(all);
+  for(const variant of variants||[]) { const option=document.createElement('option'); option.value=variant; option.textContent=readableIdentifier(variant); select.append(option); }
+  if([...select.options].some(option=>option.value===current)) select.value=current;
+}
+
+async function loadHistory({reset=false}={}) {
+  if(history.loading) return;
+  history.loading=true; const more=byId('history-more'),variantSelect=byId('history-variant'); more.disabled=true; variantSelect.disabled=true; byId('history-state').textContent='正在读取完整账本…';
+  if(reset) { history.cursor=null; history.loaded=0; }
+  const params=new URLSearchParams({limit:'50'}); if(history.cursor) params.set('cursor',history.cursor); if(history.variant) params.set('variant',history.variant);
+  try {
+    const response=await fetch(`/api/orders?${params}`,{cache:'no-store'}); const payload=await response.json(); if(!response.ok) throw new Error(payload.message||'完整账本读取失败');
+    renderOrderRows(byId('history-rows'),payload.items||[],history.currency,{append:!reset,emptyText:'当前筛选没有订单记录。'});
+    history.loaded+=Array.isArray(payload.items)?payload.items.length:0; history.cursor=payload.next_cursor||null; updateHistoryVariants(payload.available_variants);
+    byId('history-state').textContent=`已加载 ${history.loaded} / ${payload.total_records||0} 条 · 只读模拟账本`;
+    more.hidden=!payload.has_more;
+  } catch(error) {
+    if(reset) renderOrderRows(byId('history-rows'),[],history.currency,{emptyText:'完整历史暂不可用。'});
+    byId('history-state').textContent=`读取失败：${error instanceof Error?error.message:'未知错误'}`; more.hidden=true;
+  } finally { history.loading=false; more.disabled=false; variantSelect.disabled=false; }
+}
+
+byId('history-toggle').addEventListener('click',()=>{ const panel=byId('history-panel'),opening=panel.hidden; panel.hidden=!opening; byId('history-toggle').textContent=opening?'收起完整历史':'查看完整历史'; byId('history-toggle').setAttribute('aria-expanded',String(opening)); if(opening&&history.loaded===0) loadHistory({reset:true}); });
+byId('history-more').addEventListener('click',()=>loadHistory());
+byId('history-variant').addEventListener('change',event=>{ history.variant=event.target.value; loadHistory({reset:true}); });
 
 function renderAlerts(payload,snapshot) {
   const target=byId('alerts'); target.replaceChildren(); const items=[]; for(const error of payload.errors||[]) items.push({state:'error',message:error}); if(payload.stop_request) items.push({state:'warning',message:`已请求停止：${payload.stop_request.reason}`}); for(const alert of (snapshot&&snapshot.alerts)||[]) items.push(alert);

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict, deque
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -15,9 +16,14 @@ from btc_short_horizon.data.contracts import TimedMarketEvent
 from btc_short_horizon.data.forward import AdmittedEventBuffer
 from btc_short_horizon.live.paper_execution import PaperExecutionConfig, PaperMarketRules
 from btc_short_horizon.live.paper_runtime import ResearchPaperRuntime
+from btc_short_horizon.live.paper_replay import (
+    build_replay_binance_history,
+    replay_research_paper,
+)
 import btc_short_horizon.live.paper_runtime as paper_runtime_module
 from btc_short_horizon.live.research_paper import (
     PaperLedgerStore,
+    PaperRuleSnapshotStore,
     ResearchPaperEngine,
     ResearchPaperPortfolio,
 )
@@ -179,9 +185,9 @@ def _variant(
         mode=mode,
         maker_work_seconds=maker_work_seconds,
         primary=primary,
-        minimum_taker_net_edge=0.03 if mode == "maker_then_fak" else 0.0,
-        slippage_buffer=0.005 if mode == "maker_then_fak" else 0.0,
-        model_uncertainty_buffer=0.03 if mode == "maker_then_fak" else 0.0,
+        minimum_taker_net_edge=0.03 if mode != "maker" else 0.0,
+        slippage_buffer=0.005 if mode != "maker" else 0.0,
+        model_uncertainty_buffer=0.03 if mode != "maker" else 0.0,
     )
 
 
@@ -191,6 +197,7 @@ def _engine(
     predictor=_predict,
     starting_balance: float = 1_000.0,
     variant: PaperExecutionVariantConfig | None = None,
+    taker_latency_ms: float = 50.0,
 ) -> ResearchPaperEngine:  # type: ignore[no-untyped-def]
     selected_variant = variant or _variant()
     return ResearchPaperEngine(
@@ -215,11 +222,15 @@ def _engine(
         execution_config=PaperExecutionConfig(
             insert_latency_ms=50.0,
             cancel_latency_ms=100.0,
-            taker_latency_ms=50.0,
+            taker_latency_ms=taker_latency_ms,
             trade_volume_multiplier=0.5,
         ),
         variant=selected_variant,
-        ledger_store=PaperLedgerStore(tmp_path, selected_variant.variant_id),
+        ledger_store=PaperLedgerStore(
+            tmp_path,
+            "test-paper-v2",
+            selected_variant.variant_id,
+        ),
         starting_balance=starting_balance,
     )
 
@@ -243,6 +254,35 @@ def test_research_paper_requires_two_live_cadence_signals_and_one_cycle(tmp_path
     assert third == "continue"
     assert len(engine.records) == 1
     assert engine.records[0].execution_status == "working"
+    assert engine.records[0].opportunity_id == engine.records[0].placement_id
+    assert engine.records[0].entry_regime == "early_3s_to_30s"
+    assert engine.records[0].price_bucket == "core"
+    assert engine.records[0].go_eligible is True
+    assert [item.signal_number for item in engine.records[0].signal_observations] == [1, 2, 3]
+
+
+def test_market_activation_persists_frozen_rules_for_replay(tmp_path) -> None:
+    market = _market()
+    rules = {UP: _rules(UP), DOWN: _rules(DOWN)}
+    engine = _engine(tmp_path)
+
+    engine.activate_market(market, rules=rules)
+
+    restored = PaperRuleSnapshotStore(tmp_path, "test-paper-v2").read(market)
+    assert restored == rules
+
+    conflicting = dict(rules)
+    conflicting[UP] = PaperMarketRules(
+        condition_id=CONDITION,
+        token_id=UP,
+        tick_size="0.001",
+        minimum_order_size=1.0,
+        neg_risk=False,
+        maker_fee_rate_bps=0,
+        observed_at_ns=T0_NS - 1,
+    )
+    with pytest.raises(ValueError, match="immutable rule snapshot conflict"):
+        PaperRuleSnapshotStore(tmp_path, "test-paper-v2").write(market, conflicting)
 
 
 def test_research_paper_accepts_binance_decimal_strings_from_admitted_wire_event(tmp_path) -> None:
@@ -277,6 +317,145 @@ def test_trade_event_activates_pending_order_before_matching(tmp_path) -> None:
     assert engine.records[0].filled_shares == pytest.approx(5.0)
 
 
+def test_trade_at_cancel_ack_is_processed_before_the_cancel_tie_break(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.activate_market(_market(), rules={UP: _rules(UP), DOWN: _rules(DOWN)})
+    for second in (5, 10):
+        engine.on_event(_book(UP, bid="0.40", ask="0.42", second=second))
+        engine.on_event(_book(DOWN, bid="0.56", ask="0.58", second=second))
+        engine.decide(now_ts_ns=T0_NS + second * 1_000_000_000 + 500_000_000)
+    placement = engine.active_placement
+    assert placement is not None
+    engine.advance(now_ts_ns=T0_NS + 10_550_000_000)
+    engine.simulator.request_cancel(
+        placement,
+        now_ts_ns=T0_NS + 10_600_000_000,
+        reason="test_cancel",
+    )
+
+    engine.on_event(_trade(UP, price="0.40", size="210", milliseconds=10_700))
+
+    assert placement.status == "filled"
+    assert placement.cancel_race_filled_size == pytest.approx(5.0)
+    assert engine.records[0].filled_shares == pytest.approx(5.0)
+
+
+def test_quiet_book_cancels_working_order_at_the_frozen_age_limit(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.activate_market(_market(), rules={UP: _rules(UP), DOWN: _rules(DOWN)})
+    for second in (5, 10):
+        engine.on_event(_book(UP, bid="0.40", ask="0.42", second=second))
+        engine.on_event(_book(DOWN, bid="0.56", ask="0.58", second=second))
+        engine.decide(now_ts_ns=T0_NS + second * 1_000_000_000 + 500_000_000)
+
+    engine.advance(now_ts_ns=T0_NS + 11_200_000_000)
+
+    assert engine.active_placement is not None
+    assert engine.active_placement.status == "cancel_pending"
+    assert engine.active_placement.terminal_reason == "book_stale_connection_unobserved"
+
+
+def test_quiet_book_aborts_direct_fak_before_a_stale_latency_deadline(tmp_path) -> None:
+    engine = _engine(
+        tmp_path,
+        variant=_variant(
+            "immediate_fak",
+            mode="immediate_fak",
+            maker_work_seconds=0.0,
+        ),
+        taker_latency_ms=800.0,
+    )
+    engine.activate_market(_market(), rules={UP: _rules(UP), DOWN: _rules(DOWN)})
+    for second in (5, 10):
+        engine.on_event(_book(UP, bid="0.40", ask="0.42", second=second))
+        engine.on_event(_book(DOWN, bid="0.56", ask="0.58", second=second))
+        engine.decide(now_ts_ns=T0_NS + second * 1_000_000_000 + 500_000_000)
+
+    engine.advance(now_ts_ns=T0_NS + 11_300_000_000)
+
+    assert engine.active_placement is not None
+    assert engine.active_placement.status == "canceled"
+    assert engine.active_placement.terminal_reason == "fak_book_stale_connection_unobserved"
+    assert engine.records[0].filled_shares == 0.0
+
+
+def test_market_rotation_retires_terminal_execution_state(tmp_path) -> None:
+    engine = _engine(
+        tmp_path,
+        variant=_variant(
+            "immediate_fak",
+            mode="immediate_fak",
+            maker_work_seconds=0.0,
+        ),
+    )
+    engine.activate_market(_market(), rules={UP: _rules(UP), DOWN: _rules(DOWN)})
+    for second in (5, 10):
+        engine.on_event(_book(UP, bid="0.40", ask="0.42", second=second))
+        engine.on_event(_book(DOWN, bid="0.56", ask="0.58", second=second))
+        engine.decide(now_ts_ns=T0_NS + second * 1_000_000_000 + 500_000_000)
+    engine.advance(now_ts_ns=T0_NS + 10_550_000_000)
+    assert engine.active_placement is not None
+    assert engine.active_placement.status == "filled"
+    assert len(engine.simulator.placements) == 1
+    next_t0 = T0 + timedelta(minutes=15)
+    next_market = replace(
+        _market(),
+        slug=BTC_15M_MARKET_FAMILY.slug_for(next_t0),
+        t0=next_t0,
+        t1=next_t0 + timedelta(minutes=15),
+    )
+
+    engine.activate_market(next_market, rules={UP: _rules(UP), DOWN: _rules(DOWN)})
+
+    assert engine.market == next_market
+    assert engine.simulator.placements == ()
+
+
+def test_market_rotation_rejects_an_unfinished_execution_cycle(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.activate_market(_market(), rules={UP: _rules(UP), DOWN: _rules(DOWN)})
+    for second in (5, 10):
+        engine.on_event(_book(UP, bid="0.40", ask="0.42", second=second))
+        engine.on_event(_book(DOWN, bid="0.56", ask="0.58", second=second))
+        engine.decide(now_ts_ns=T0_NS + second * 1_000_000_000 + 500_000_000)
+    next_t0 = T0 + timedelta(minutes=15)
+    next_market = replace(
+        _market(),
+        slug=BTC_15M_MARKET_FAMILY.slug_for(next_t0),
+        t0=next_t0,
+        t1=next_t0 + timedelta(minutes=15),
+    )
+
+    with pytest.raises(RuntimeError, match="unfinished paper placement"):
+        engine.activate_market(next_market, rules={UP: _rules(UP), DOWN: _rules(DOWN)})
+
+    assert engine.market == _market()
+
+
+def test_regime_boundary_accepts_only_configured_scheduler_tolerance(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.activate_market(_market(), rules={UP: _rules(UP), DOWN: _rules(DOWN)})
+    for second in (25, 30):
+        engine.on_event(_book(UP, bid="0.40", ask="0.42", second=second))
+        engine.on_event(_book(DOWN, bid="0.56", ask="0.58", second=second))
+        result = engine.decide(now_ts_ns=T0_NS + second * 1_000_000_000 + 100_000_000)
+
+    assert result == "submitted"
+    assert engine.records[0].entry_regime == "early_3s_to_30s"
+
+
+def test_regime_gap_is_not_silently_assigned_to_a_neighboring_segment(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.activate_market(_market(), rules={UP: _rules(UP), DOWN: _rules(DOWN)})
+    for book_second, decision_second in ((26, 27), (31, 32)):
+        engine.on_event(_book(UP, bid="0.40", ask="0.42", second=book_second))
+        engine.on_event(_book(DOWN, bid="0.56", ask="0.58", second=book_second))
+        result = engine.decide(now_ts_ns=T0_NS + decision_second * 1_000_000_000)
+
+    assert result == "outside_frozen_regime"
+    assert engine.records == []
+
+
 def test_portfolio_runs_three_execution_policies_on_the_same_events(tmp_path) -> None:
     prediction_calls = 0
 
@@ -290,7 +469,12 @@ def test_portfolio_runs_three_execution_policies_on_the_same_events(tmp_path) ->
         _engine(
             tmp_path,
             predictor=counting_predictor,
-            variant=_variant("maker_30s", maker_work_seconds=30.0, primary=False),
+            variant=_variant(
+                "immediate_fak",
+                mode="immediate_fak",
+                maker_work_seconds=0.0,
+                primary=False,
+            ),
         ),
         _engine(
             tmp_path,
@@ -316,12 +500,198 @@ def test_portfolio_runs_three_execution_policies_on_the_same_events(tmp_path) ->
     assert prediction_calls == 2
     assert set(portfolio.last_decisions) == {
         "maker_15s",
-        "maker_30s",
+        "immediate_fak",
         "maker_5s_then_fak",
     }
     assert snapshot.performance is not None
     assert len(snapshot.performance.variant_summaries) == 3
     assert len(snapshot.performance.recent_orders) == 3
+    assert len({record.opportunity_id for record in portfolio.records}) == 1
+    assert snapshot.performance.decision_funnel is not None
+    assert snapshot.performance.decision_funnel.opportunities == 1
+    assert snapshot.performance.decision_funnel.placements == 1
+
+
+def test_immediate_fak_uses_same_confirmation_then_executes_once_after_latency(tmp_path) -> None:
+    engine = _engine(
+        tmp_path,
+        variant=_variant(
+            "immediate_fak",
+            mode="immediate_fak",
+            maker_work_seconds=0.0,
+        ),
+    )
+    market = _market()
+    engine.activate_market(market, rules={UP: _rules(UP), DOWN: _rules(DOWN)})
+    for second in (5, 10):
+        engine.on_event(_book(UP, bid="0.40", ask="0.42", second=second))
+        engine.on_event(_book(DOWN, bid="0.56", ask="0.58", second=second))
+        result = engine.decide(now_ts_ns=T0_NS + second * 1_000_000_000 + 500_000_000)
+
+    assert result == "submitted"
+    assert engine.active_placement is not None
+    assert engine.active_placement.status == "fak_pending"
+    assert engine.active_placement.layers == ()
+    assert engine.records[0].execution_route == "direct_fak"
+
+    engine.advance(now_ts_ns=T0_NS + 10_550_000_000)
+    engine.settle(
+        market_slug=market.slug,
+        outcome=MarketOutcome.UP,
+        label_available_ts_ns=int(market.t1.timestamp() * 1_000_000_000),
+    )
+
+    assert engine.active_placement.status == "filled"
+    assert engine.records[0].taker_filled_shares == pytest.approx(5.0)
+    performance = engine.variant_performance()
+    assert performance.resolved_opportunity_count == 1
+    assert performance.paired_ev_per_opportunity == pytest.approx(2.9)
+    assert performance.core_paired_ev_per_opportunity == pytest.approx(2.9)
+    assert performance.tail_paired_ev_per_opportunity is None
+    assert performance.conditional_ev_per_filled_share == pytest.approx(0.58)
+
+
+def test_balance_rejection_is_a_zero_fill_paired_opportunity(tmp_path) -> None:
+    engine = _engine(
+        tmp_path,
+        starting_balance=1.0,
+        variant=_variant(
+            "immediate_fak",
+            mode="immediate_fak",
+            maker_work_seconds=0.0,
+        ),
+    )
+    portfolio = ResearchPaperPortfolio((engine,))
+    portfolio.activate_market(_market(), rules={UP: _rules(UP), DOWN: _rules(DOWN)})
+    for second in (5, 10):
+        portfolio.on_event(_book(UP, bid="0.40", ask="0.42", second=second))
+        portfolio.on_event(_book(DOWN, bid="0.56", ask="0.58", second=second))
+        result = portfolio.decide(now_ts_ns=T0_NS + second * 1_000_000_000 + 500_000_000)
+
+    assert result == "insufficient_virtual_balance"
+    assert len(engine.records) == 1
+    assert engine.records[0].execution_status == "rejected"
+    assert engine.records[0].filled_shares == 0.0
+    snapshot = portfolio.dashboard_snapshot(now=T0 + timedelta(seconds=11))
+    assert snapshot.performance is not None
+    assert snapshot.performance.decision_funnel is not None
+    assert snapshot.performance.decision_funnel.opportunities == 1
+    assert snapshot.performance.decision_funnel.placements == 0
+    assert snapshot.performance.decision_funnel.rejected == 1
+
+
+def test_event_after_fak_latency_cannot_reprice_prior_execution(tmp_path) -> None:
+    engine = _engine(
+        tmp_path,
+        variant=_variant(
+            "immediate_fak",
+            mode="immediate_fak",
+            maker_work_seconds=0.0,
+        ),
+    )
+    engine.activate_market(_market(), rules={UP: _rules(UP), DOWN: _rules(DOWN)})
+    for second in (5, 10):
+        engine.on_event(_book(UP, bid="0.40", ask="0.42", second=second))
+        engine.on_event(_book(DOWN, bid="0.56", ask="0.58", second=second))
+        engine.decide(now_ts_ns=T0_NS + second * 1_000_000_000 + 500_000_000)
+
+    engine.on_event(_book(UP, bid="0.88", ask="0.90", second=11))
+
+    assert engine.active_placement is not None
+    assert engine.active_placement.status == "filled"
+    assert engine.records[0].taker_filled_shares == pytest.approx(5.0)
+    assert engine.records[0].taker_filled_notional == pytest.approx(2.1)
+
+
+def test_causal_replay_runs_unordered_events_through_the_live_portfolio_seam(tmp_path) -> None:
+    engine = _engine(
+        tmp_path,
+        variant=_variant(
+            "immediate_fak",
+            mode="immediate_fak",
+            maker_work_seconds=0.0,
+        ),
+    )
+    portfolio = ResearchPaperPortfolio((engine,))
+    chronological = [
+        _book(UP, bid="0.40", ask="0.42", second=5),
+        _book(DOWN, bid="0.56", ask="0.58", second=5),
+        _book(UP, bid="0.40", ask="0.42", second=10),
+        _book(DOWN, bid="0.56", ask="0.58", second=10),
+        _book(UP, bid="0.88", ask="0.90", second=11),
+    ]
+    admitted = tuple(
+        event.with_admission_sequence(index) for index, event in enumerate(chronological, start=1)
+    )
+
+    result = replay_research_paper(
+        portfolio=portfolio,
+        market=_market(),
+        rules={UP: _rules(UP), DOWN: _rules(DOWN)},
+        events=tuple(reversed(admitted)),
+        decision_ts_ns=(T0_NS + 5_500_000_000, T0_NS + 10_500_000_000),
+        replay_end_ts_ns=T0_NS + 11_100_000_000,
+        outcome=MarketOutcome.UP,
+        label_available_ts_ns=int(_market().t1.timestamp() * 1_000_000_000),
+    )
+
+    assert [item.result for item in result.decisions] == [
+        "confirmation_pending",
+        "submitted",
+    ]
+    assert result.processed_event_count == 5
+    assert len(portfolio.records) == 1
+    assert portfolio.records[0].execution_status == "filled"
+    assert portfolio.records[0].realized_pnl == pytest.approx(2.9)
+
+
+def test_replay_binance_bootstrap_requires_contiguous_fresh_closed_bars() -> None:
+    history = build_replay_binance_history(
+        (_closed_binance_kline(second=-2), _closed_binance_kline(second=-1)),
+        cutoff_ts_ns=T0_NS,
+        minimum_bars=2,
+    )
+
+    assert history.open_ts_ns.tolist() == [
+        T0_NS - 2_000_000_000,
+        T0_NS - 1_000_000_000,
+    ]
+    with pytest.raises(ValueError, match="kline gap"):
+        build_replay_binance_history(
+            (_closed_binance_kline(second=-3), _closed_binance_kline(second=-1)),
+            cutoff_ts_ns=T0_NS,
+            minimum_bars=2,
+        )
+
+
+def test_tail_price_is_recorded_but_excluded_from_initial_go_bucket(tmp_path) -> None:
+    engine = _engine(
+        tmp_path,
+        variant=_variant(
+            "immediate_fak",
+            mode="immediate_fak",
+            maker_work_seconds=0.0,
+        ),
+    )
+    market = _market()
+    engine.activate_market(market, rules={UP: _rules(UP), DOWN: _rules(DOWN)})
+    for second in (5, 10):
+        engine.on_event(_book(UP, bid="0.17", ask="0.19", second=second))
+        engine.on_event(_book(DOWN, bid="0.79", ask="0.81", second=second))
+        engine.decide(now_ts_ns=T0_NS + second * 1_000_000_000 + 500_000_000)
+    engine.advance(now_ts_ns=T0_NS + 10_550_000_000)
+    engine.settle(
+        market_slug=market.slug,
+        outcome=MarketOutcome.UP,
+        label_available_ts_ns=int(market.t1.timestamp() * 1_000_000_000),
+    )
+
+    assert engine.records[0].price_bucket == "tail_low"
+    assert engine.records[0].go_eligible is False
+    performance = engine.variant_performance()
+    assert performance.paired_ev_per_opportunity == pytest.approx(4.05)
+    assert performance.core_paired_ev_per_opportunity is None
+    assert performance.tail_paired_ev_per_opportunity == pytest.approx(4.05)
 
 
 def test_maker_then_fak_rechecks_probability_after_cancel_ack(tmp_path) -> None:
@@ -446,7 +816,9 @@ def test_research_paper_rejects_plan_above_virtual_available_balance(tmp_path) -
         result = engine.decide(now_ts_ns=T0_NS + second * 1_000_000_000 + 500_000_000)
 
     assert result == "insufficient_virtual_balance"
-    assert engine.records == []
+    assert len(engine.records) == 1
+    assert engine.records[0].execution_status == "rejected"
+    assert engine.records[0].terminal_reason == "insufficient_virtual_balance"
     assert engine.active_placement is None
 
 
@@ -498,7 +870,7 @@ def test_research_paper_settlement_is_persisted_and_projected_as_simulated_pnl(t
         label_available_ts_ns=int(market.t1.timestamp() * 1_000_000_000),
     )
     snapshot = engine.dashboard_snapshot(now=market.t1 + timedelta(seconds=1))
-    restored = PaperLedgerStore(tmp_path, "maker_15s").read()
+    restored = PaperLedgerStore(tmp_path, "test-paper-v2", "maker_15s").read()
 
     assert snapshot.run_mode == "research_paper"
     assert snapshot.performance is not None
@@ -533,6 +905,9 @@ def test_paper_runtime_surfaces_prediction_failure_until_a_successful_decision()
             self.market = _market()
             self.fail = True
             self.result = "book_unavailable"
+
+        def advance(self, *, now_ts_ns: int) -> None:
+            assert now_ts_ns >= T0_NS
 
         def decide(self, *, now_ts_ns: int) -> str:
             assert now_ts_ns >= T0_NS
@@ -579,6 +954,24 @@ def test_paper_runtime_surfaces_prediction_failure_until_a_successful_decision()
 
     assert runtime._last_decision_result == "unsafe_prediction"
     assert "prediction" not in runtime._recoverable_errors
+
+
+def test_paper_runtime_advances_latency_deadlines_between_signal_ticks() -> None:
+    class RecordingEngine:
+        def __init__(self) -> None:
+            self.market = _market()
+            self.advanced: list[int] = []
+
+        def advance(self, *, now_ts_ns: int) -> None:
+            self.advanced.append(now_ts_ns)
+
+    runtime = object.__new__(ResearchPaperRuntime)
+    runtime.engine = RecordingEngine()
+    runtime._next_decision_ns = T0_NS + 10_000_000_000
+
+    runtime._run_due_decision(T0 + timedelta(seconds=7))
+
+    assert runtime.engine.advanced == [T0_NS + 7_000_000_000]
 
 
 def test_paper_runtime_retires_old_market_books_when_catalog_advances() -> None:

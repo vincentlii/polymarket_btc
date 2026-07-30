@@ -111,7 +111,10 @@ def test_paper_runtime_keeps_deciding_through_order_work_horizon() -> None:
     assert runtime.engine.decisions == [
         int(T0.timestamp() * 1_000_000_000) + second * 1_000_000_000 for second in (185, 190, 195)
     ]
-    assert runtime.engine.advances == [int(T0.timestamp() * 1_000_000_000) + 200_000_000_000]
+    assert runtime.engine.advances == [
+        int(T0.timestamp() * 1_000_000_000) + second * 1_000_000_000
+        for second in (185, 190, 195, 200)
+    ]
     assert runtime._next_decision_ns is None
 
 

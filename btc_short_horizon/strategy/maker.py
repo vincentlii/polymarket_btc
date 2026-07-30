@@ -35,6 +35,7 @@ class MakerStrategyConfig:
     cancel_probability_drop: float = 0.03
     max_visible_depth_fraction: float = 0.05
     price_level_tick_offsets: tuple[int, ...] = (0,)
+    improve_inside_spread: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.structure, LayerStructure):
@@ -84,6 +85,8 @@ class MakerStrategyConfig:
             raise ValueError("price_level_tick_offsets must contain non-negative integers")
         if tuple(sorted(self.price_level_tick_offsets)) != self.price_level_tick_offsets:
             raise ValueError("price_level_tick_offsets must be non-decreasing")
+        if not isinstance(self.improve_inside_spread, bool):
+            raise ValueError("improve_inside_spread must be bool")
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,7 +192,7 @@ def evaluate_cancellation(
     if has_data_gap:
         return CancellationAssessment(True, "data_gap")
     if data_age_seconds > config.stale_after_seconds:
-        return CancellationAssessment(True, "data_stale")
+        return CancellationAssessment(True, "book_stale_connection_unobserved")
     if not tick_unchanged:
         return CancellationAssessment(True, "tick_changed")
     if not fee_unchanged:
@@ -212,13 +215,26 @@ def _build_layers(
     *, p_fair: float, book: SideBook, config: MakerStrategyConfig
 ) -> tuple[MakerOrderLayer, ...]:
     maximum_price = p_fair - config.safety_buffer - config.minimum_edge
+    anchor_price = book.best_bid
+    improved_price = _snap_down(book.best_bid + book.tick_size, book.tick_size)
+    if (
+        config.improve_inside_spread
+        and improved_price < book.best_ask - 1e-12
+        and improved_price <= maximum_price + 1e-12
+    ):
+        anchor_price = improved_price
     layers: list[MakerOrderLayer] = []
     for index, allocation in enumerate(config.structure.allocations):
         offset = config.price_level_tick_offsets[index]
-        price = _snap_down(book.best_bid - offset * book.tick_size, book.tick_size)
+        price = _snap_down(anchor_price - offset * book.tick_size, book.tick_size)
         if not 0.0 < price < book.best_ask or price > maximum_price + 1e-12:
             return ()
-        visible_size = book.visible_bid_size_at(price)
+        queue_ahead = book.visible_bid_size_at(price)
+        visible_size = (
+            book.visible_bid_size_at(book.best_bid)
+            if price > book.best_bid and queue_ahead <= 0.0
+            else queue_ahead
+        )
         if visible_size <= 0.0:
             return ()
         size = min(
@@ -227,7 +243,14 @@ def _build_layers(
         )
         if size + 1e-12 < book.minimum_order_size:
             return ()
-        layers.append(MakerOrderLayer(price=price, size=size, visible_size=visible_size))
+        layers.append(
+            MakerOrderLayer(
+                price=price,
+                size=size,
+                visible_size=visible_size,
+                queue_ahead=queue_ahead,
+            )
+        )
     return tuple(layers)
 
 
