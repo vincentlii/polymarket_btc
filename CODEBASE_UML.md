@@ -1,8 +1,8 @@
 # Codebase UML Inventory
 
 This file is generated from Python AST metadata and excludes `tests/` plus git-ignored private strategy/research directories.
-Generated: 2026-07-31T17:47:39+00:00
-Modules: 220 | Classes: 447 | Functions/methods: 3174
+Generated: 2026-08-02T17:23:27+00:00
+Modules: 220 | Classes: 447 | Functions/methods: 3175
 
 ## Backtesting Data Flow
 
@@ -1286,21 +1286,21 @@ flowchart TD
 
 ### `btc_short_horizon/live/research_paper.py`
 - Imports: `__future__, btc_short_horizon, collections, dataclasses, datetime, json, math, numpy, os, pathlib, uuid`
-- Function L1768: `_signal_edge_decay(observations: list[PaperSignalObservation]) -> float | None`
-- Function L1773: `_price_bucket(executable_ask: float) -> str`
-- Function L1781: `_opening_regime_for_live_decision(*, elapsed_seconds: float, cadence_seconds: float, tolerance_seconds: float) -> str`
-- Function L1796: `_segment_performance(records: list[PaperTradeRecord]) -> tuple[ExecutionSegmentPerformance, ...]`
-- Function L1819: `_text(value: object, name: str) -> str`
-- Function L1825: `_identifier(value: object, name: str, *, maximum: int = 64) -> str`
-- Function L1840: `_mapping_value(value: object, name: str) -> Mapping[str, object]`
-- Function L1846: `_sequence_value(value: object, name: str) -> list[object]`
-- Function L1852: `_boolean(value: object, name: str) -> bool`
-- Function L1858: `_optional_text(value: object, name: str) -> str | None`
-- Function L1862: `_integer(value: object, name: str) -> int`
-- Function L1868: `_optional_integer(value: object, name: str) -> int | None`
-- Function L1872: `_number(value: object, name: str) -> float`
-- Function L1878: `_wire_number(value: object, name: str) -> float`
-- Function L1890: `_optional_number(value: object, name: str) -> float | None`
+- Function L1785: `_signal_edge_decay(observations: list[PaperSignalObservation]) -> float | None`
+- Function L1790: `_price_bucket(executable_ask: float) -> str`
+- Function L1798: `_opening_regime_for_live_decision(*, elapsed_seconds: float, cadence_seconds: float, tolerance_seconds: float) -> str`
+- Function L1813: `_segment_performance(records: list[PaperTradeRecord]) -> tuple[ExecutionSegmentPerformance, ...]`
+- Function L1836: `_text(value: object, name: str) -> str`
+- Function L1842: `_identifier(value: object, name: str, *, maximum: int = 64) -> str`
+- Function L1857: `_mapping_value(value: object, name: str) -> Mapping[str, object]`
+- Function L1863: `_sequence_value(value: object, name: str) -> list[object]`
+- Function L1869: `_boolean(value: object, name: str) -> bool`
+- Function L1875: `_optional_text(value: object, name: str) -> str | None`
+- Function L1879: `_integer(value: object, name: str) -> int`
+- Function L1885: `_optional_integer(value: object, name: str) -> int | None`
+- Function L1889: `_number(value: object, name: str) -> float`
+- Function L1895: `_wire_number(value: object, name: str) -> float`
+- Function L1907: `_optional_number(value: object, name: str) -> float | None`
 - Class L70: `PaperSignalObservation`
   - Method L79: `__post_init__(self) -> None`
   - Method L93: `to_json(self) -> dict[str, object]`
@@ -1318,54 +1318,55 @@ flowchart TD
   - Method L381: `__init__(self, runtime_root: Path, execution_epoch: str) -> None`
   - Method L386: `write(self, market: MarketWindow, rules: Mapping[str, PaperMarketRules]) -> Path`
   - Method L425: `read(self, market: MarketWindow) -> dict[str, PaperMarketRules]`
-  - Method L455: `_path(self, market_slug: str) -> Path`
-  - Method L459: `_validate_rules(market: MarketWindow, rules: Mapping[str, PaperMarketRules]) -> None`
-- Class L474: `ResearchPaperEngine`
-  - Method L477: `__init__(self, *, predictor: PaperPredictor, model_id: str, maker_config: MakerStrategyConfig, execution_config: PaperExecutionConfig, variant: PaperExecutionVariantConfig, ledger_store: PaperLedgerStore, starting_balance: float, kline_history: BinanceKlineHistory | None = None) -> None`
-  - Method L547: `active_placement(self) -> PaperPlacement | None`
-  - Method L550: `predict_current(self, *, now_ts_ns: int) -> OpeningMispricingPrediction | None`
-  - Method L558: `needs_prediction(self, *, now_ts_ns: int) -> bool`
-  - Method L571: `set_kline_history(self, history: BinanceKlineHistory) -> None`
-  - Method L574: `activate_market(self, market: MarketWindow, *, rules: Mapping[str, PaperMarketRules]) -> None`
-  - Method L610: `on_event(self, event: RawCollectorEvent) -> None`
-  - Method L653: `_advance_execution_before(self, event_ts_ns: int) -> None`
-  - Method L681: `on_trade(self, *, token_id: str, aggressor_side: str, price: float, size: float, available_ts_ns: int) -> None`
-  - Method L699: `advance(self, *, now_ts_ns: int) -> None`
-  - Method L720: `_unsafe_execution_reason(self, *, now_ts_ns: int) -> str | None`
-  - Method L742: `decide(self, *, now_ts_ns: int, prediction: OpeningMispricingPrediction | None = None) -> str`
-  - Method L974: `reevaluate(self, prediction: OpeningMispricingPrediction, *, now_ts_ns: int) -> str`
-  - Method L1013: `settle(self, *, market_slug: str, outcome: MarketOutcome, label_available_ts_ns: int) -> None`
-  - Method L1044: `dashboard_snapshot(self, *, now: datetime) -> BotDashboardSnapshot`
-  - Method L1078: `_sync_active_record(self) -> None`
-  - Method L1117: `_maybe_request_fak(self, *, now_ts_ns: int) -> None`
-  - Method L1154: `_prediction_safety_reason(self, prediction: OpeningMispricingPrediction) -> str | None`
-  - Method L1172: `_signal_observation(self, *, plan: OrderPlan | TakerOrderPlan, book: SideBook, now_ts_ns: int, signal_number: int) -> PaperSignalObservation`
-  - Method L1215: `_maybe_record_third_signal(self, *, prediction: OpeningMispricingPrediction, books: OutcomeBooks, now_ts_ns: int) -> None`
-  - Method L1259: `_outcome_books(self) -> OutcomeBooks | None`
-  - Method L1272: `_predict_current(self, *, books: OutcomeBooks, now_ts_ns: int) -> OpeningMispricingPrediction`
-  - Method L1297: `_validate_shared_prediction(self, prediction: OpeningMispricingPrediction, *, now_ts_ns: int) -> None`
-  - Method L1309: `_books_by_token(self) -> dict[str, SideBook]`
-  - Method L1328: `performance_snapshot(self, *, now: datetime) -> PerformanceSnapshot`
-  - Method L1428: `variant_performance(self) -> ExecutionVariantPerformance`
-  - Method L1464: `_performance_totals(self) -> tuple[float, float]`
-  - Method L1474: `_available_balance(self) -> float`
-  - Method L1478: `_cash_and_working_notional(self) -> tuple[float, float]`
-  - Method L1494: `_append_binance_kline(self, payload: Mapping[str, object]) -> None`
-  - Method L1527: `_persist(self) -> None`
-  - Method L1535: `_persist_taker_diagnostics(self, decision: TakerPlanDecision, *, now_ts_ns: int) -> None`
-- Class L1617: `ResearchPaperPortfolio`
-  - Method L1620: `__init__(self, engines: tuple[ResearchPaperEngine, ...]) -> None`
-  - Method L1639: `model_id(self) -> str`
-  - Method L1643: `market(self) -> MarketWindow | None`
-  - Method L1647: `records(self) -> tuple[PaperTradeRecord, ...]`
-  - Method L1650: `set_kline_history(self, history: BinanceKlineHistory) -> None`
-  - Method L1654: `activate_market(self, market: MarketWindow, *, rules: Mapping[str, PaperMarketRules]) -> None`
-  - Method L1663: `on_event(self, event: RawCollectorEvent) -> None`
-  - Method L1667: `advance(self, *, now_ts_ns: int) -> None`
-  - Method L1671: `decide(self, *, now_ts_ns: int) -> str`
-  - Method L1706: `settle(self, *, market_slug: str, outcome: MarketOutcome, label_available_ts_ns: int) -> None`
-  - Method L1720: `dashboard_snapshot(self, *, now: datetime) -> BotDashboardSnapshot`
-  - Method L1744: `_decision_funnel(self) -> DecisionFunnelSnapshot`
+  - Method L455: `load_or_create(self, market: MarketWindow, rules: Mapping[str, PaperMarketRules]) -> dict[str, PaperMarketRules]`
+  - Method L472: `_path(self, market_slug: str) -> Path`
+  - Method L476: `_validate_rules(market: MarketWindow, rules: Mapping[str, PaperMarketRules]) -> None`
+- Class L491: `ResearchPaperEngine`
+  - Method L494: `__init__(self, *, predictor: PaperPredictor, model_id: str, maker_config: MakerStrategyConfig, execution_config: PaperExecutionConfig, variant: PaperExecutionVariantConfig, ledger_store: PaperLedgerStore, starting_balance: float, kline_history: BinanceKlineHistory | None = None) -> None`
+  - Method L564: `active_placement(self) -> PaperPlacement | None`
+  - Method L567: `predict_current(self, *, now_ts_ns: int) -> OpeningMispricingPrediction | None`
+  - Method L575: `needs_prediction(self, *, now_ts_ns: int) -> bool`
+  - Method L588: `set_kline_history(self, history: BinanceKlineHistory) -> None`
+  - Method L591: `activate_market(self, market: MarketWindow, *, rules: Mapping[str, PaperMarketRules]) -> None`
+  - Method L627: `on_event(self, event: RawCollectorEvent) -> None`
+  - Method L670: `_advance_execution_before(self, event_ts_ns: int) -> None`
+  - Method L698: `on_trade(self, *, token_id: str, aggressor_side: str, price: float, size: float, available_ts_ns: int) -> None`
+  - Method L716: `advance(self, *, now_ts_ns: int) -> None`
+  - Method L737: `_unsafe_execution_reason(self, *, now_ts_ns: int) -> str | None`
+  - Method L759: `decide(self, *, now_ts_ns: int, prediction: OpeningMispricingPrediction | None = None) -> str`
+  - Method L991: `reevaluate(self, prediction: OpeningMispricingPrediction, *, now_ts_ns: int) -> str`
+  - Method L1030: `settle(self, *, market_slug: str, outcome: MarketOutcome, label_available_ts_ns: int) -> None`
+  - Method L1061: `dashboard_snapshot(self, *, now: datetime) -> BotDashboardSnapshot`
+  - Method L1095: `_sync_active_record(self) -> None`
+  - Method L1134: `_maybe_request_fak(self, *, now_ts_ns: int) -> None`
+  - Method L1171: `_prediction_safety_reason(self, prediction: OpeningMispricingPrediction) -> str | None`
+  - Method L1189: `_signal_observation(self, *, plan: OrderPlan | TakerOrderPlan, book: SideBook, now_ts_ns: int, signal_number: int) -> PaperSignalObservation`
+  - Method L1232: `_maybe_record_third_signal(self, *, prediction: OpeningMispricingPrediction, books: OutcomeBooks, now_ts_ns: int) -> None`
+  - Method L1276: `_outcome_books(self) -> OutcomeBooks | None`
+  - Method L1289: `_predict_current(self, *, books: OutcomeBooks, now_ts_ns: int) -> OpeningMispricingPrediction`
+  - Method L1314: `_validate_shared_prediction(self, prediction: OpeningMispricingPrediction, *, now_ts_ns: int) -> None`
+  - Method L1326: `_books_by_token(self) -> dict[str, SideBook]`
+  - Method L1345: `performance_snapshot(self, *, now: datetime) -> PerformanceSnapshot`
+  - Method L1445: `variant_performance(self) -> ExecutionVariantPerformance`
+  - Method L1481: `_performance_totals(self) -> tuple[float, float]`
+  - Method L1491: `_available_balance(self) -> float`
+  - Method L1495: `_cash_and_working_notional(self) -> tuple[float, float]`
+  - Method L1511: `_append_binance_kline(self, payload: Mapping[str, object]) -> None`
+  - Method L1544: `_persist(self) -> None`
+  - Method L1552: `_persist_taker_diagnostics(self, decision: TakerPlanDecision, *, now_ts_ns: int) -> None`
+- Class L1634: `ResearchPaperPortfolio`
+  - Method L1637: `__init__(self, engines: tuple[ResearchPaperEngine, ...]) -> None`
+  - Method L1656: `model_id(self) -> str`
+  - Method L1660: `market(self) -> MarketWindow | None`
+  - Method L1664: `records(self) -> tuple[PaperTradeRecord, ...]`
+  - Method L1667: `set_kline_history(self, history: BinanceKlineHistory) -> None`
+  - Method L1671: `activate_market(self, market: MarketWindow, *, rules: Mapping[str, PaperMarketRules]) -> None`
+  - Method L1680: `on_event(self, event: RawCollectorEvent) -> None`
+  - Method L1684: `advance(self, *, now_ts_ns: int) -> None`
+  - Method L1688: `decide(self, *, now_ts_ns: int) -> str`
+  - Method L1723: `settle(self, *, market_slug: str, outcome: MarketOutcome, label_available_ts_ns: int) -> None`
+  - Method L1737: `dashboard_snapshot(self, *, now: datetime) -> BotDashboardSnapshot`
+  - Method L1761: `_decision_funnel(self) -> DecisionFunnelSnapshot`
 
 ### `btc_short_horizon/live/risk.py`
 - Imports: `__future__, dataclasses, datetime, math`

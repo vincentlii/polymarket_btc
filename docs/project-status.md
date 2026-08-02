@@ -66,8 +66,11 @@ and reporting plumbing without importing archived BTC strategy logic.
   routes as zero, while filled-share EV, time regime and core/tail price buckets
   remain separate. New ledgers are isolated from legacy evidence; per-market
   rules are frozen atomically for deterministic raw replay through the same live
-  portfolio. Latency transitions now execute before later events can reprice
-  them. The read-only dashboard exposes the primary-session funnel, execution
+  portfolio. A restart in the same market reloads that validated immutable
+  snapshot rather than attempting to replace it with a new observation timestamp;
+  malformed, schema, identity, and hash conflicts remain fail-closed. Latency
+  transitions now execute before later events can reprice them. The read-only
+  dashboard exposes the primary-session funnel, execution
   epoch, segment metrics and paginated full schema-validated order history.
 - Model/research hardening: model inputs and probabilities now reject coercion,
   non-finite values, invalid shapes, and inconsistent lineage. Walk-forward

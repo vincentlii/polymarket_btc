@@ -452,6 +452,23 @@ class PaperRuleSnapshotStore:
         self._validate_rules(market, rules)
         return rules
 
+    def load_or_create(
+        self,
+        market: MarketWindow,
+        rules: Mapping[str, PaperMarketRules],
+    ) -> dict[str, PaperMarketRules]:
+        """Return the epoch's frozen rules, atomically creating them once."""
+        try:
+            return self.read(market)
+        except FileNotFoundError:
+            pass
+        try:
+            self.write(market, rules)
+        except ValueError as exc:
+            if str(exc) != "immutable rule snapshot conflict":
+                raise
+        return self.read(market)
+
     def _path(self, market_slug: str) -> Path:
         return self.root / f"{_identifier(market_slug, 'market_slug', maximum=320)}.json"
 
@@ -590,13 +607,13 @@ class ResearchPaperEngine:
             for placement in self.simulator.placements
         ):
             raise RuntimeError("cannot activate a market with an unfinished paper placement")
-        PaperRuleSnapshotStore(
+        frozen_rules = PaperRuleSnapshotStore(
             self.ledger_store.runtime_root,
             self.ledger_store.execution_epoch,
-        ).write(market, rules)
+        ).load_or_create(market, rules)
         self.simulator.retire_terminal_placements()
         self.market = market
-        self.rules = dict(rules)
+        self.rules = frozen_rules
         self._normalizers = {token: PolymarketL2Normalizer(token_id=token) for token in expected}
         self._last_books.clear()
         self._gapped_tokens.clear()

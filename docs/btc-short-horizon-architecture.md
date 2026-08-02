@@ -955,3 +955,12 @@ model's two five-second confirmations. `independent_fak_stable_3x5s` requires
 three five-second observations and limits peak-to-current net-edge decay to one
 cent. The cadence remains five seconds because the current model artifact is
 trained and validated for that cadence.
+
+Rule snapshots are immutable per `(execution_epoch, market identity)`, but a
+process restart during the same market must not create a second observation-time
+variant. Activation therefore loads and validates an existing snapshot before
+attempting atomic creation; it reuses the stored rules for the restarted
+process. A malformed snapshot, schema mismatch, market-identity mismatch, or
+rules-hash mismatch remains fail-closed. Concurrent first activations retain
+the same atomic link creation boundary: the loser reads and validates the
+winner's snapshot rather than overwriting it.

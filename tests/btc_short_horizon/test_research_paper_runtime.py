@@ -295,6 +295,52 @@ def test_market_activation_persists_frozen_rules_for_replay(tmp_path) -> None:
         PaperRuleSnapshotStore(tmp_path, "test-paper-v2").write(market, conflicting)
 
 
+def test_market_reactivation_reuses_existing_frozen_rules_after_restart(tmp_path) -> None:
+    market = _market()
+    initial = {UP: _rules(UP), DOWN: _rules(DOWN)}
+    _engine(tmp_path).activate_market(market, rules=initial)
+
+    refreshed = {
+        token_id: replace(rule, observed_at_ns=rule.observed_at_ns + 1_000_000_000)
+        for token_id, rule in initial.items()
+    }
+    restarted = _engine(tmp_path)
+
+    restarted.activate_market(market, rules=refreshed)
+
+    assert restarted.rules == initial
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("schema_version", 2, "unsupported Research Paper rule snapshot schema"),
+        ("market.rule_hash", "b" * 64, "rule snapshot market identity mismatch"),
+        ("rules.0.rules_sha256", "0" * 64, "paper market rules hash mismatch"),
+    ],
+)
+def test_market_reactivation_fails_closed_for_invalid_frozen_snapshot(
+    tmp_path,
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    market = _market()
+    rules = {UP: _rules(UP), DOWN: _rules(DOWN)}
+    store = PaperRuleSnapshotStore(tmp_path, "test-paper-v2")
+    store.write(market, rules)
+    path = store._path(market.slug)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    target: object = raw
+    for part in field.split(".")[:-1]:
+        target = target[int(part)] if part.isdigit() else target[part]
+    target[field.rsplit(".", 1)[-1]] = value
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        _engine(tmp_path).activate_market(market, rules=rules)
+
+
 def test_research_paper_accepts_binance_decimal_strings_from_admitted_wire_event(tmp_path) -> None:
     engine = _engine(tmp_path)
     engine.kline_history = BinanceKlineHistory(
