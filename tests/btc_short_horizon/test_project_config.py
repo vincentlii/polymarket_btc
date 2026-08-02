@@ -38,15 +38,22 @@ def test_baseline_config_is_path_relative_and_has_explicit_queue_scenarios() -> 
     assert config.collection.polymarket_capture_lead_seconds == 90.0
     assert config.collection.opening_handoff_delay_seconds == 215.0
     assert config.collection.ingest_version == "btc-short-horizon-v14"
-    assert config.paper_execution_epoch == "paper-v2-direct-fak"
+    assert config.paper_execution_epoch == "paper-v3-independent-fak"
     assert [variant.variant_id for variant in config.paper_execution_variants] == [
         "maker_15s",
         "immediate_fak",
         "maker_5s_then_fak",
+        "independent_fak_2x5s",
+        "independent_fak_stable_3x5s",
     ]
     assert config.paper_execution_variants[0].primary is True
     assert config.paper_execution_variants[1].mode == "immediate_fak"
     assert config.paper_execution_variants[1].maker_work_seconds == 0.0
+    assert config.paper_execution_variants[3].opportunity_policy == "independent_taker"
+    assert config.paper_execution_variants[3].confirmation_signals == 2
+    assert config.paper_execution_variants[4].confirmation_policy == "edge_stable"
+    assert config.paper_execution_variants[4].confirmation_signals == 3
+    assert config.paper_execution_variants[4].maximum_edge_decay == 0.01
     formal = tuple(scenario for scenario in config.scenarios if scenario.formal_grid_component)
     assert len(formal) == 4
     assert all(scenario.execution.queue_position for scenario in formal)
@@ -124,8 +131,8 @@ def test_paper_execution_epoch_cannot_escape_the_ledger_root(tmp_path: Path) -> 
     path = tmp_path / "unsafe-epoch.toml"
     path.write_text(
         baseline.replace(
-            'paper_execution_epoch = "paper-v2-direct-fak"',
-            'paper_execution_epoch = "../paper-v2-direct-fak"',
+            'paper_execution_epoch = "paper-v3-independent-fak"',
+            'paper_execution_epoch = "../paper-v3-independent-fak"',
         ),
         encoding="utf-8",
     )

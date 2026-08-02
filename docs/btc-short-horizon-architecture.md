@@ -394,6 +394,14 @@ fair-probability model. This prevents a Binance-only historical proxy from
 quietly learning a feature unavailable in that proxy. A later residual model
 may use synchronized CLOB history only after its own held-out validation.
 
+The market-relative MVP remains research-only. Its development run freezes the
+paired dataset, schema and split/model protocol hashes, and sealed holdout
+rejects any lineage substitution. Its metadata contract is not a runtime model
+artifact: the current observation schema lacks a pair-level CLOB session
+identity, while per-token numeric epoch IDs are local stream values and cannot
+prove synchronization by numeric equality. P2b must add that causal identity,
+spread, executable-depth and microstructure fields before runtime promotion.
+
 The walk-forward protocol keeps every snapshot of one market in the same
 group. A train/calibration/test/holdout boundary may never split a market,
 because doing so would leak the shared final label across partitions. Each
@@ -928,3 +936,22 @@ uv run python scripts/btc_research_paper_replay.py \
 
 The output root must be new. Replay refuses to append to an existing epoch so
 reruns cannot overwrite or silently blend prior evidence.
+
+## Research Paper execution epoch v3
+
+`paper-v3-independent-fak` changes execution evidence semantics and therefore
+never reads or rewrites v2 ledgers. The CLOB `itode` flag is required and frozen
+with a versioned delay policy in every market-rule snapshot. Client submission
+latency and the documented 250 ms venue taker delay are recorded separately;
+FAK eligibility occurs only after both have elapsed. A submitted FAK cannot be
+retroactively canceled because the local feed becomes stale. If its match-time
+book evidence is not trustworthy, the placement becomes `evidence_invalid` and
+is excluded from settlement PnL and Go/No-Go statistics.
+
+The v2 routes remain controls. Two new routes use an independent taker planner
+which evaluates both outcome-token ask ladders, per-level fees and frozen safety
+buffers without requiring a maker plan. `independent_fak_2x5s` uses the deployed
+model's two five-second confirmations. `independent_fak_stable_3x5s` requires
+three five-second observations and limits peak-to-current net-edge decay to one
+cent. The cadence remains five seconds because the current model artifact is
+trained and validated for that cadence.

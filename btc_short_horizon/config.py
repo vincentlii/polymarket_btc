@@ -15,6 +15,10 @@ from prediction_market_extensions.backtesting._execution_config import (
 )
 
 from btc_short_horizon.data import BtcMarketFamily, MarketCollectionMode
+from btc_short_horizon.execution_timing import (
+    CLOB_DELAYED_TAKER_SERVER_MS,
+    paper_execution_lifecycle_tail_seconds,
+)
 from btc_short_horizon.strategy import LayerStructure, MakerStrategyConfig
 
 
@@ -70,6 +74,10 @@ class PaperExecutionVariantConfig:
     minimum_taker_net_edge: float
     slippage_buffer: float
     model_uncertainty_buffer: float
+    opportunity_policy: str = "shared_maker"
+    confirmation_policy: str = "side_only"
+    confirmation_signals: int = 2
+    maximum_edge_decay: float = 0.0
 
     def __post_init__(self) -> None:
         if (
@@ -88,6 +96,24 @@ class PaperExecutionVariantConfig:
             raise ValueError("paper execution variant label must not be empty")
         if self.mode not in {"maker", "immediate_fak", "maker_then_fak"}:
             raise ValueError("paper execution mode must be maker, immediate_fak, or maker_then_fak")
+        if self.opportunity_policy not in {"shared_maker", "independent_taker"}:
+            raise ValueError("paper opportunity policy must be shared_maker or independent_taker")
+        if self.confirmation_policy not in {"side_only", "edge_stable"}:
+            raise ValueError("paper confirmation policy must be side_only or edge_stable")
+        if self.opportunity_policy == "independent_taker" and self.mode != "immediate_fak":
+            raise ValueError("independent taker opportunity policy requires immediate_fak mode")
+        if self.opportunity_policy == "shared_maker" and self.confirmation_policy != "side_only":
+            raise ValueError("shared maker opportunity policy requires side_only confirmation")
+        if (
+            isinstance(self.confirmation_signals, bool)
+            or not isinstance(self.confirmation_signals, int)
+            or self.confirmation_signals < 1
+        ):
+            raise ValueError("paper confirmation_signals must be an integer >= 1")
+        if not isfinite(self.maximum_edge_decay) or self.maximum_edge_decay < 0.0:
+            raise ValueError("paper maximum_edge_decay must be finite and >= 0")
+        if self.confirmation_policy == "side_only" and self.maximum_edge_decay != 0.0:
+            raise ValueError("side_only confirmation cannot configure maximum_edge_decay")
         for name, value in (
             ("maker_work_seconds", self.maker_work_seconds),
             ("minimum_taker_net_edge", self.minimum_taker_net_edge),
@@ -239,19 +265,24 @@ def load_btc_project_config(path: Path) -> BtcProjectConfig:
     if len({scenario.name for scenario in scenarios}) != len(scenarios):
         raise ValueError("execution scenario names must be unique")
     _validate_formal_scenario_grid(scenarios)
-    maximum_cancel_race_seconds = max(
-        (
-            scenario.execution.latency_model.base_latency_ms
-            + scenario.execution.latency_model.cancel_latency_ms
+    maximum_lifecycle_tail_seconds = max(
+        paper_execution_lifecycle_tail_seconds(
+            mode=variant.mode,
+            maker_work_seconds=variant.maker_work_seconds,
+            cancel_latency_ms=(
+                scenario.execution.latency_model.base_latency_ms
+                + scenario.execution.latency_model.cancel_latency_ms
+            ),
+            taker_latency_ms=(
+                scenario.execution.latency_model.base_latency_ms
+                + scenario.execution.latency_model.insert_latency_ms
+            ),
+            taker_server_delay_ms=CLOB_DELAYED_TAKER_SERVER_MS,
         )
-        / 1_000
         for scenario in scenarios
+        for variant in paper_variants
     )
-    required_handoff_seconds = (
-        maker.entry_end_seconds
-        + max(variant.maker_work_seconds for variant in paper_variants)
-        + maximum_cancel_race_seconds
-    )
+    required_handoff_seconds = maker.entry_end_seconds + maximum_lifecycle_tail_seconds
     if collection.opening_handoff_delay_seconds < required_handoff_seconds:
         raise ValueError(
             "opening handoff must cover the entry window, order lifecycle, and cancel latency"
@@ -283,6 +314,10 @@ def _paper_execution_variant(section: Mapping[str, object]) -> PaperExecutionVar
         minimum_taker_net_edge=_nonnegative_float(section, "minimum_taker_net_edge"),
         slippage_buffer=_nonnegative_float(section, "slippage_buffer"),
         model_uncertainty_buffer=_nonnegative_float(section, "model_uncertainty_buffer"),
+        opportunity_policy=_text(section, "opportunity_policy"),
+        confirmation_policy=_text(section, "confirmation_policy"),
+        confirmation_signals=_positive_int(section, "confirmation_signals"),
+        maximum_edge_decay=_nonnegative_float(section, "maximum_edge_decay"),
     )
 
 

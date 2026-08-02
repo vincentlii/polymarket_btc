@@ -14,6 +14,7 @@ from btc_short_horizon.strategy import (
     MakerOrderLayer,
     OrderPlan,
     SideBook,
+    TakerOrderPlan,
     TokenSide,
     VisibleBookLevel,
 )
@@ -56,7 +57,26 @@ def _plan() -> OrderPlan:
     )
 
 
-def _rules(*, taker_fee_rate: float = 0.0) -> PaperMarketRules:
+def _taker_plan(*, limit_price: float = 0.42) -> TakerOrderPlan:
+    return TakerOrderPlan(
+        market_slug="btc-updown-15m-1785110400",
+        token_id=UP_TOKEN,
+        side=TokenSide.UP,
+        p_boundary=0.55,
+        p_fair=0.60,
+        p_market=0.42,
+        created_ts_ns=NOW_NS,
+        total_size=2.0,
+        filled_notional=0.84,
+        taker_fees=0.0,
+        slippage_buffer=0.005,
+        model_uncertainty_buffer=0.03,
+        minimum_edge=0.03,
+        limit_price=limit_price,
+    )
+
+
+def _rules(*, taker_fee_rate: float = 0.0, taker_server_delay_ms: float = 0.0) -> PaperMarketRules:
     return PaperMarketRules(
         condition_id=CONDITION_ID,
         token_id=UP_TOKEN,
@@ -66,6 +86,8 @@ def _rules(*, taker_fee_rate: float = 0.0) -> PaperMarketRules:
         maker_fee_rate_bps=0,
         observed_at_ns=NOW_NS - 1,
         taker_fee_rate=taker_fee_rate,
+        taker_server_delay_ms=taker_server_delay_ms,
+        taker_delay_enabled=taker_server_delay_ms > 0.0,
     )
 
 
@@ -79,6 +101,46 @@ def _simulator() -> PaperExecutionSimulator:
             trade_volume_multiplier=0.5,
         ),
     )
+
+
+def test_direct_fak_adds_frozen_server_delay_exactly_once() -> None:
+    simulator = _simulator()
+
+    placement = simulator.submit_direct_fak(
+        plan=_plan(),
+        rules=_rules(taker_server_delay_ms=250.0),
+        book=_book(),
+        now_ts_ns=NOW_NS,
+        selected_probability=0.60,
+        minimum_net_edge=0.03,
+        slippage_buffer=0.005,
+        model_uncertainty_buffer=0.03,
+    )
+
+    assert placement.fak_client_latency_ms == 50.0
+    assert placement.fak_server_delay_ms == 250.0
+    assert placement.fak_total_latency_ms == 300.0
+    assert placement.fak_active_ts_ns == NOW_NS + 300_000_000
+
+
+def test_taker_delay_policy_is_part_of_the_frozen_rule_hash() -> None:
+    baseline = _rules(taker_server_delay_ms=250.0)
+    changed_policy = PaperMarketRules(
+        condition_id=baseline.condition_id,
+        token_id=baseline.token_id,
+        tick_size=baseline.tick_size,
+        minimum_order_size=baseline.minimum_order_size,
+        neg_risk=baseline.neg_risk,
+        maker_fee_rate_bps=baseline.maker_fee_rate_bps,
+        observed_at_ns=baseline.observed_at_ns,
+        taker_fee_rate=baseline.taker_fee_rate,
+        taker_server_delay_ms=baseline.taker_server_delay_ms,
+        taker_delay_enabled=True,
+        taker_delay_policy_id="clob-itode-250ms-v2",
+    )
+
+    assert baseline.rules_sha256 != changed_policy.rules_sha256
+    assert PaperMarketRules.from_json(baseline.to_json()) == baseline
 
 
 def test_paper_fill_requires_insert_latency_sell_trade_and_queue_consumption() -> None:
@@ -199,6 +261,7 @@ def test_fak_waits_for_cancel_ack_and_charges_taker_fee() -> None:
         minimum_net_edge=0.03,
         slippage_buffer=0.005,
         model_uncertainty_buffer=0.03,
+        book=_book(),
     )
 
     simulator.advance(now_ts_ns=NOW_NS + 160_000_000, books={UP_TOKEN: _book()})
@@ -209,6 +272,7 @@ def test_fak_waits_for_cancel_ack_and_charges_taker_fee() -> None:
         minimum_net_edge=0.03,
         slippage_buffer=0.005,
         model_uncertainty_buffer=0.03,
+        book=_book(),
     )
     simulator.advance(now_ts_ns=NOW_NS + 210_000_000, books={UP_TOKEN: _book()})
 
@@ -247,6 +311,45 @@ def test_direct_fak_waits_for_taker_latency_without_creating_a_maker_order() -> 
     assert placement.taker_filled_notional == pytest.approx(0.84)
     assert placement.taker_fees == 0.0
     assert placement.terminal_reason == "fak_filled"
+
+
+def test_direct_fak_never_raises_the_frozen_request_limit_at_arrival() -> None:
+    simulator = _simulator()
+    placement = simulator.submit_direct_fak(
+        plan=_taker_plan(limit_price=0.42),
+        rules=_rules(),
+        book=_book(ask=0.42),
+        now_ts_ns=NOW_NS,
+        selected_probability=0.60,
+        minimum_net_edge=0.03,
+        slippage_buffer=0.005,
+        model_uncertainty_buffer=0.03,
+    )
+
+    simulator.advance(now_ts_ns=NOW_NS + 50_000_000, books={UP_TOKEN: _book(ask=0.43)})
+
+    assert placement.fak_request_limit_price == pytest.approx(0.42)
+    assert placement.status == "canceled"
+    assert placement.filled_size == 0.0
+
+
+def test_shared_maker_direct_fak_freezes_the_decision_book_limit() -> None:
+    simulator = _simulator()
+    placement = simulator.submit_direct_fak(
+        plan=_plan(),
+        rules=_rules(),
+        book=_book(ask=0.42),
+        now_ts_ns=NOW_NS,
+        selected_probability=0.60,
+        minimum_net_edge=0.03,
+        slippage_buffer=0.005,
+        model_uncertainty_buffer=0.03,
+    )
+
+    simulator.advance(now_ts_ns=NOW_NS + 50_000_000, books={UP_TOKEN: _book(ask=0.43)})
+
+    assert placement.fak_request_limit_price == pytest.approx(0.42)
+    assert placement.status == "canceled"
 
 
 def test_fak_preview_walks_full_ask_depth_with_fee_and_buffers() -> None:

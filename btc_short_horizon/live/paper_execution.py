@@ -11,7 +11,7 @@ from math import isfinite
 from typing import Literal
 
 from btc_short_horizon.live.gateway import LiveOrderRequest, PaperOrderGateway
-from btc_short_horizon.strategy import OrderPlan, SideBook
+from btc_short_horizon.strategy import OrderPlan, SideBook, TakerOrderPlan
 from nautilus_trader.model.enums import LiquiditySide
 from prediction_market_extensions.adapters.polymarket.parsing import calculate_commission
 
@@ -50,6 +50,9 @@ class PaperMarketRules:
     taker_fee_rate: float = 0.0
     taker_fee_exponent: int = 1
     taker_only: bool = True
+    taker_server_delay_ms: float = 0.0
+    taker_delay_enabled: bool = False
+    taker_delay_policy_id: str = "clob-itode-250ms-v1"
 
     def __post_init__(self) -> None:
         if not self.condition_id or not self.token_id or not self.tick_size:
@@ -80,6 +83,18 @@ class PaperMarketRules:
             raise ValueError("Research Paper supports only the documented fee exponent 1")
         if self.taker_only is not True:
             raise ValueError("Research Paper requires taker-only fees")
+        if (
+            isinstance(self.taker_server_delay_ms, bool)
+            or not isfinite(self.taker_server_delay_ms)
+            or self.taker_server_delay_ms < 0.0
+        ):
+            raise ValueError("taker_server_delay_ms must be finite and >= 0")
+        if not isinstance(self.taker_delay_enabled, bool):
+            raise ValueError("taker_delay_enabled must be bool")
+        if self.taker_delay_enabled != (self.taker_server_delay_ms > 0.0):
+            raise ValueError("taker delay flag and milliseconds must agree")
+        if not self.taker_delay_policy_id or len(self.taker_delay_policy_id) > 64:
+            raise ValueError("taker_delay_policy_id must be a short non-empty string")
 
     @property
     def rules_sha256(self) -> str:
@@ -93,6 +108,9 @@ class PaperMarketRules:
             "taker_fee_rate": self.taker_fee_rate,
             "taker_fee_exponent": self.taker_fee_exponent,
             "taker_only": self.taker_only,
+            "taker_server_delay_ms": self.taker_server_delay_ms,
+            "taker_delay_enabled": self.taker_delay_enabled,
+            "taker_delay_policy_id": self.taker_delay_policy_id,
         }
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
         return sha256(encoded).hexdigest()
@@ -109,6 +127,9 @@ class PaperMarketRules:
             "taker_fee_rate": self.taker_fee_rate,
             "taker_fee_exponent": self.taker_fee_exponent,
             "taker_only": self.taker_only,
+            "taker_server_delay_ms": self.taker_server_delay_ms,
+            "taker_delay_enabled": self.taker_delay_enabled,
+            "taker_delay_policy_id": self.taker_delay_policy_id,
             "rules_sha256": self.rules_sha256,
         }
 
@@ -126,6 +147,9 @@ class PaperMarketRules:
         taker_fee_rate = raw.get("taker_fee_rate")
         taker_fee_exponent = raw.get("taker_fee_exponent")
         taker_only = raw.get("taker_only")
+        taker_server_delay_ms = raw.get("taker_server_delay_ms")
+        taker_delay_enabled = raw.get("taker_delay_enabled")
+        taker_delay_policy_id = raw.get("taker_delay_policy_id")
         if not all(
             isinstance(value, str) and value for value in (condition_id, token_id, tick_size)
         ):
@@ -135,10 +159,18 @@ class PaperMarketRules:
             or not isinstance(minimum_order_size, int | float)
             or isinstance(taker_fee_rate, bool)
             or not isinstance(taker_fee_rate, int | float)
+            or isinstance(taker_server_delay_ms, bool)
+            or not isinstance(taker_server_delay_ms, int | float)
         ):
             raise ValueError("paper market rule sizes and rates must be numeric")
-        if not isinstance(neg_risk, bool) or not isinstance(taker_only, bool):
+        if (
+            not isinstance(neg_risk, bool)
+            or not isinstance(taker_only, bool)
+            or not isinstance(taker_delay_enabled, bool)
+        ):
             raise ValueError("paper market rule flags must be bool")
+        if not isinstance(taker_delay_policy_id, str) or not taker_delay_policy_id:
+            raise ValueError("paper market rule taker delay policy must be a non-empty string")
         if any(
             isinstance(value, bool) or not isinstance(value, int)
             for value in (maker_fee_rate_bps, observed_at_ns, taker_fee_exponent)
@@ -155,6 +187,9 @@ class PaperMarketRules:
             taker_fee_rate=float(taker_fee_rate),
             taker_fee_exponent=taker_fee_exponent,
             taker_only=taker_only,
+            taker_server_delay_ms=float(taker_server_delay_ms),
+            taker_delay_enabled=taker_delay_enabled,
+            taker_delay_policy_id=taker_delay_policy_id,
         )
         if raw.get("rules_sha256") != result.rules_sha256:
             raise ValueError("paper market rules hash mismatch")
@@ -243,7 +278,7 @@ class PaperFakQuote:
 @dataclass(slots=True)
 class PaperPlacement:
     placement_id: str
-    plan: OrderPlan
+    plan: OrderPlan | TakerOrderPlan
     rules: PaperMarketRules
     submitted_ts_ns: int
     active_ts_ns: int
@@ -265,8 +300,11 @@ class PaperPlacement:
     fak_minimum_net_edge: float = 0.0
     fak_slippage_buffer: float = 0.0
     fak_model_uncertainty_buffer: float = 0.0
+    fak_request_limit_price: float | None = None
     fak_limit_price: float | None = None
     fak_net_edge_per_share: float | None = None
+    fak_client_latency_ms: float = 0.0
+    fak_server_delay_ms: float = 0.0
 
     @property
     def filled_size(self) -> float:
@@ -291,6 +329,10 @@ class PaperPlacement:
     @property
     def average_fill_price(self) -> float | None:
         return None if self.filled_size <= 0.0 else self.filled_notional / self.filled_size
+
+    @property
+    def fak_total_latency_ms(self) -> float:
+        return self.fak_client_latency_ms + self.fak_server_delay_ms
 
 
 class PaperExecutionSimulator:
@@ -379,7 +421,7 @@ class PaperExecutionSimulator:
     def submit_direct_fak(
         self,
         *,
-        plan: OrderPlan,
+        plan: OrderPlan | TakerOrderPlan,
         rules: PaperMarketRules,
         book: SideBook,
         now_ts_ns: int,
@@ -394,7 +436,18 @@ class PaperExecutionSimulator:
         uses the current book supplied to :meth:`advance` after taker latency.
         """
 
-        self._validate_order_inputs(plan=plan, rules=rules, book=book, now_ts_ns=now_ts_ns)
+        if not isinstance(plan, OrderPlan | TakerOrderPlan):
+            raise TypeError("plan must be an OrderPlan or TakerOrderPlan")
+        self._validate_market_inputs(
+            token_id=plan.token_id,
+            rules=rules,
+            book=book,
+            now_ts_ns=now_ts_ns,
+        )
+        if now_ts_ns < plan.created_ts_ns:
+            raise ValueError("now_ts_ns must be at or after plan creation")
+        if isinstance(plan, OrderPlan) and now_ts_ns >= plan.expires_ts_ns:
+            raise ValueError("now_ts_ns must be before plan expiry")
         self._validate_fak_inputs(
             selected_probability=selected_probability,
             minimum_net_edge=minimum_net_edge,
@@ -404,7 +457,24 @@ class PaperExecutionSimulator:
         placement_id = f"{plan.market_slug}:{plan.created_ts_ns}"
         if placement_id in self._placements:
             raise ValueError("paper placement already exists")
-        active_ts_ns = now_ts_ns + round(self.config.taker_latency_ms * 1_000_000)
+        client_latency_ms = self.config.taker_latency_ms
+        server_delay_ms = rules.taker_server_delay_ms
+        request_limit_price = (
+            plan.limit_price
+            if isinstance(plan, TakerOrderPlan)
+            else self.preview_fak(
+                token_id=plan.token_id,
+                requested_size=plan.total_size,
+                rules=rules,
+                book=book,
+                now_ts_ns=now_ts_ns,
+                selected_probability=selected_probability,
+                minimum_net_edge=minimum_net_edge,
+                slippage_buffer=slippage_buffer,
+                model_uncertainty_buffer=model_uncertainty_buffer,
+            ).limit_price
+        )
+        active_ts_ns = now_ts_ns + round((client_latency_ms + server_delay_ms) * 1_000_000)
         placement = PaperPlacement(
             placement_id=placement_id,
             plan=plan,
@@ -420,6 +490,9 @@ class PaperExecutionSimulator:
             fak_minimum_net_edge=minimum_net_edge,
             fak_slippage_buffer=slippage_buffer,
             fak_model_uncertainty_buffer=model_uncertainty_buffer,
+            fak_request_limit_price=request_limit_price,
+            fak_client_latency_ms=client_latency_ms,
+            fak_server_delay_ms=server_delay_ms,
         )
         self._placements[placement_id] = placement
         return placement
@@ -436,6 +509,7 @@ class PaperExecutionSimulator:
         minimum_net_edge: float,
         slippage_buffer: float,
         model_uncertainty_buffer: float,
+        maximum_price: float | None = None,
     ) -> PaperFakQuote:
         """Quote one FAK against the complete current ask depth without mutating state."""
 
@@ -458,6 +532,13 @@ class PaperExecutionSimulator:
             slippage_buffer=slippage_buffer,
             model_uncertainty_buffer=model_uncertainty_buffer,
         )
+        if maximum_price is not None and (
+            isinstance(maximum_price, bool)
+            or not isinstance(maximum_price, int | float)
+            or not isfinite(maximum_price)
+            or not 0.0 < maximum_price < 1.0
+        ):
+            raise ValueError("maximum_price must be finite and in (0, 1) when provided")
         remaining = requested_size
         filled = 0.0
         notional = 0.0
@@ -466,6 +547,8 @@ class PaperExecutionSimulator:
         weighted_net_edge = 0.0
         for level in sorted(book.asks, key=lambda item: item.price):
             if remaining <= 1e-12:
+                break
+            if maximum_price is not None and level.price > maximum_price + 1e-12:
                 break
             quantity = min(remaining, level.size)
             if quantity <= 0.0:
@@ -562,6 +645,7 @@ class PaperExecutionSimulator:
         minimum_net_edge: float,
         slippage_buffer: float,
         model_uncertainty_buffer: float,
+        book: SideBook,
     ) -> bool:
         if placement.status != "canceled" or placement.maker_filled_size > 0.0:
             return False
@@ -571,19 +655,39 @@ class PaperExecutionSimulator:
             slippage_buffer=slippage_buffer,
             model_uncertainty_buffer=model_uncertainty_buffer,
         )
+        self._validate_market_inputs(
+            token_id=placement.plan.token_id,
+            rules=placement.rules,
+            book=book,
+            now_ts_ns=now_ts_ns,
+        )
+        request_quote = self.preview_fak(
+            token_id=placement.plan.token_id,
+            requested_size=placement.plan.total_size - placement.maker_filled_size,
+            rules=placement.rules,
+            book=book,
+            now_ts_ns=now_ts_ns,
+            selected_probability=selected_probability,
+            minimum_net_edge=minimum_net_edge,
+            slippage_buffer=slippage_buffer,
+            model_uncertainty_buffer=model_uncertainty_buffer,
+        )
         placement.status = "fak_pending"
         placement.execution_route = "maker_then_fak"
         placement.fak_requested_ts_ns = now_ts_ns
-        placement.fak_active_ts_ns = now_ts_ns + round(self.config.taker_latency_ms * 1_000_000)
+        placement.fak_client_latency_ms = self.config.taker_latency_ms
+        placement.fak_server_delay_ms = placement.rules.taker_server_delay_ms
+        placement.fak_active_ts_ns = now_ts_ns + round(placement.fak_total_latency_ms * 1_000_000)
         placement.fak_selected_probability = selected_probability
         placement.fak_minimum_net_edge = minimum_net_edge
         placement.fak_slippage_buffer = slippage_buffer
         placement.fak_model_uncertainty_buffer = model_uncertainty_buffer
+        placement.fak_request_limit_price = request_quote.limit_price
         placement.terminal_reason = None
         placement.terminal_ts_ns = None
         return True
 
-    def abort_fak(
+    def invalidate_fak_evidence(
         self,
         placement: PaperPlacement,
         *,
@@ -592,7 +696,7 @@ class PaperExecutionSimulator:
     ) -> None:
         if placement.status != "fak_pending":
             return
-        placement.status = "canceled"
+        placement.status = "evidence_invalid"
         placement.terminal_reason = reason
         placement.terminal_ts_ns = now_ts_ns
 
@@ -744,6 +848,7 @@ class PaperExecutionSimulator:
             minimum_net_edge=placement.fak_minimum_net_edge,
             slippage_buffer=placement.fak_slippage_buffer,
             model_uncertainty_buffer=placement.fak_model_uncertainty_buffer,
+            maximum_price=placement.fak_request_limit_price,
         )
         placement.taker_filled_size = quote.filled_size
         placement.taker_filled_notional = quote.filled_notional

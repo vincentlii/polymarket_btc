@@ -40,6 +40,7 @@ async def test_public_paper_rules_use_one_clob_snapshot_and_require_taker_only_f
                 "mts": 0.01,
                 "mbf": 1000,
                 "nr": None,
+                "itode": True,
                 "fd": {"r": 0.07, "e": 1, "to": True},
             },
         )
@@ -54,6 +55,49 @@ async def test_public_paper_rules_use_one_clob_snapshot_and_require_taker_only_f
     assert rules["1"].taker_fee_rate == 0.07
     assert rules["1"].taker_fee_exponent == 1
     assert rules["1"].taker_only is True
+    assert rules["1"].taker_server_delay_ms == 250.0
+
+
+@pytest.mark.asyncio
+async def test_public_paper_rules_require_a_boolean_taker_delay_flag() -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "t": [{"t": "1", "o": "Up"}, {"t": "2", "o": "Down"}],
+                "mos": 5,
+                "mts": 0.01,
+                "nr": False,
+                "itode": "true",
+                "fd": {"r": 0.07, "e": 1, "to": True},
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ValueError, match="taker delay"):
+            await PublicPaperRulesClient().fetch(_market(), client=client)
+
+
+@pytest.mark.asyncio
+async def test_public_paper_rules_record_disabled_taker_delay() -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "t": [{"t": "1", "o": "Up"}, {"t": "2", "o": "Down"}],
+                "mos": 5,
+                "mts": 0.01,
+                "nr": False,
+                "itode": False,
+                "fd": {"r": 0.07, "e": 1, "to": True},
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        rules = await PublicPaperRulesClient().fetch(_market(), client=client)
+
+    assert rules["1"].taker_delay_enabled is False
+    assert rules["1"].taker_server_delay_ms == 0.0
 
 
 @pytest.mark.asyncio

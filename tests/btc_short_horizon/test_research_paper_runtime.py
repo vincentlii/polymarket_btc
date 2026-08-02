@@ -4,6 +4,7 @@ import asyncio
 from collections import defaultdict, deque
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+import json
 from types import SimpleNamespace
 
 import numpy as np
@@ -24,6 +25,7 @@ import btc_short_horizon.live.paper_runtime as paper_runtime_module
 from btc_short_horizon.live.research_paper import (
     PaperLedgerStore,
     PaperRuleSnapshotStore,
+    PaperTradeRecord,
     ResearchPaperEngine,
     ResearchPaperPortfolio,
 )
@@ -178,6 +180,10 @@ def _variant(
     mode: str = "maker",
     maker_work_seconds: float = 15.0,
     primary: bool = True,
+    opportunity_policy: str = "shared_maker",
+    confirmation_policy: str = "side_only",
+    confirmation_signals: int = 2,
+    maximum_edge_decay: float = 0.0,
 ) -> PaperExecutionVariantConfig:
     return PaperExecutionVariantConfig(
         variant_id=variant_id,
@@ -188,6 +194,10 @@ def _variant(
         minimum_taker_net_edge=0.03 if mode != "maker" else 0.0,
         slippage_buffer=0.005 if mode != "maker" else 0.0,
         model_uncertainty_buffer=0.03 if mode != "maker" else 0.0,
+        opportunity_policy=opportunity_policy,
+        confirmation_policy=confirmation_policy,
+        confirmation_signals=confirmation_signals,
+        maximum_edge_decay=maximum_edge_decay,
     )
 
 
@@ -355,7 +365,7 @@ def test_quiet_book_cancels_working_order_at_the_frozen_age_limit(tmp_path) -> N
     assert engine.active_placement.terminal_reason == "book_stale_connection_unobserved"
 
 
-def test_quiet_book_aborts_direct_fak_before_a_stale_latency_deadline(tmp_path) -> None:
+def test_quiet_book_marks_submitted_fak_execution_evidence_invalid(tmp_path) -> None:
     engine = _engine(
         tmp_path,
         variant=_variant(
@@ -374,9 +384,34 @@ def test_quiet_book_aborts_direct_fak_before_a_stale_latency_deadline(tmp_path) 
     engine.advance(now_ts_ns=T0_NS + 11_300_000_000)
 
     assert engine.active_placement is not None
-    assert engine.active_placement.status == "canceled"
-    assert engine.active_placement.terminal_reason == "fak_book_stale_connection_unobserved"
+    assert engine.active_placement.status == "evidence_invalid"
+    assert engine.active_placement.terminal_reason == "book_stale_connection_unobserved"
     assert engine.records[0].filled_shares == 0.0
+    assert engine.records[0].execution_evidence_valid is False
+    assert engine.records[0].settlement_status == "evidence_invalid"
+
+    engine.settle(
+        market_slug=_market().slug,
+        outcome=MarketOutcome.UP,
+        label_available_ts_ns=int(_market().t1.timestamp() * 1_000_000_000),
+    )
+
+    assert engine.records[0].realized_pnl is None
+    assert engine.variant_performance().resolved_opportunity_count == 0
+
+
+def test_paper_trade_record_fails_closed_without_execution_evidence_flag(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.activate_market(_market(), rules={UP: _rules(UP), DOWN: _rules(DOWN)})
+    for second in (5, 10):
+        engine.on_event(_book(UP, bid="0.40", ask="0.42", second=second))
+        engine.on_event(_book(DOWN, bid="0.56", ask="0.58", second=second))
+        engine.decide(now_ts_ns=T0_NS + second * 1_000_000_000 + 500_000_000)
+    raw = engine.records[0].to_json()
+    raw.pop("execution_evidence_valid")
+
+    with pytest.raises(ValueError, match="execution_evidence_valid"):
+        PaperTradeRecord.from_json(raw)
 
 
 def test_market_rotation_retires_terminal_execution_state(tmp_path) -> None:
@@ -543,12 +578,61 @@ def test_immediate_fak_uses_same_confirmation_then_executes_once_after_latency(t
 
     assert engine.active_placement.status == "filled"
     assert engine.records[0].taker_filled_shares == pytest.approx(5.0)
+    assert engine.records[0].fak_client_latency_ms == pytest.approx(50.0)
+    assert engine.records[0].fak_server_delay_ms == 0.0
+    assert engine.records[0].fak_total_latency_ms == pytest.approx(50.0)
+    assert PaperTradeRecord.from_json(engine.records[0].to_json()) == engine.records[0]
     performance = engine.variant_performance()
     assert performance.resolved_opportunity_count == 1
     assert performance.paired_ev_per_opportunity == pytest.approx(2.9)
     assert performance.core_paired_ev_per_opportunity == pytest.approx(2.9)
     assert performance.tail_paired_ev_per_opportunity is None
     assert performance.conditional_ev_per_filled_share == pytest.approx(0.58)
+
+
+def test_independent_fak_submits_when_shared_maker_gate_has_no_plan(tmp_path) -> None:
+    control = _engine(
+        tmp_path,
+        predictor=lambda _market, _history, observation: _prediction(observation, p_up=0.63),
+        variant=_variant("control", primary=True),
+    )
+    challenger = _engine(
+        tmp_path,
+        predictor=lambda _market, _history, observation: _prediction(observation, p_up=0.63),
+        variant=_variant(
+            "independent_fak_2x5s",
+            mode="immediate_fak",
+            maker_work_seconds=0.0,
+            primary=False,
+            opportunity_policy="independent_taker",
+        ),
+    )
+    portfolio = ResearchPaperPortfolio((control, challenger))
+    portfolio.activate_market(_market(), rules={UP: _rules(UP), DOWN: _rules(DOWN)})
+    for second in (5, 10):
+        portfolio.on_event(_book(UP, bid="0.54", ask="0.55", second=second))
+        portfolio.on_event(_book(DOWN, bid="0.43", ask="0.45", second=second))
+        portfolio.decide(now_ts_ns=T0_NS + second * 1_000_000_000 + 500_000_000)
+
+    assert control.records == []
+    assert portfolio.last_decisions["control"] == "no_passive_price_with_required_edge"
+    assert portfolio.last_decisions["independent_fak_2x5s"] == "submitted"
+    assert len(challenger.records) == 1
+    assert challenger.records[0].execution_route == "direct_fak"
+    assert challenger.records[0].side == "up"
+    diagnostic_paths = tuple(
+        (tmp_path / "paper" / "epochs" / "test-paper-v2").glob(
+            "variants/independent_fak_2x5s/diagnostics/*.json"
+        )
+    )
+    assert len(diagnostic_paths) == 1
+    diagnostic = json.loads(diagnostic_paths[0].read_text(encoding="utf-8"))
+    assert diagnostic["market_slug"] == _market().slug
+    assert [item["decision_ts_ns"] for item in diagnostic["entries"]] == [
+        T0_NS + 5_500_000_000,
+        T0_NS + 10_500_000_000,
+    ]
+    assert all(len(item["evaluations"]) == 2 for item in diagnostic["entries"])
 
 
 def test_balance_rejection_is_a_zero_fill_paired_opportunity(tmp_path) -> None:
@@ -719,6 +803,9 @@ def test_maker_then_fak_rechecks_probability_after_cancel_ack(tmp_path) -> None:
     assert engine.records[0].execution_route == "maker_then_fak"
     assert engine.records[0].taker_filled_shares == pytest.approx(5.0)
     assert engine.records[0].terminal_reason == "fak_filled"
+    assert engine.records[0].fak_client_latency_ms == pytest.approx(50.0)
+    assert engine.records[0].fak_server_delay_ms == 0.0
+    assert engine.records[0].fak_total_latency_ms == pytest.approx(50.0)
 
 
 @pytest.mark.asyncio

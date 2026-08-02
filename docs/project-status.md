@@ -52,7 +52,12 @@ and reporting plumbing without importing archived BTC strategy logic.
   Active prediction failures now make Paper unhealthy with the exact market,
   timestamp and reason until a later decision succeeds; a cumulative error
   counter can no longer coexist with a misleading healthy status.
-  Execution epoch `paper-v2-direct-fak` now compares 15-second maker, immediate
+  Execution epoch `paper-v3-independent-fak` retains the v2 controls and adds
+  independent 2x5s and edge-stable 3x5s FAK challengers. They evaluate both
+  outcome-token ask ladders without requiring a maker opportunity. Frozen CLOB
+  `itode` rules add the versioned 250 ms venue delay separately from client
+  latency; post-submit gaps become invalid execution evidence instead of a
+  fabricated cancellation. The existing controls compare 15-second maker, immediate
   one-shot FAK and 5-second maker-to-FAK on the same confirmed opportunity.
   Direct and hybrid FAK use complete ask depth, P99 latency, per-level taker
   fees and frozen safety buffers with no retry. Maker may improve one tick only
@@ -73,6 +78,11 @@ and reporting plumbing without importing archived BTC strategy logic.
   schema/config/source/code hashes. Price-proxy persistence resets on an
   intervening failed signal, and stress tests discard prices at or above one
   instead of fabricating an executable price.
+  A research-only market-relative pipeline builds exact paired control and
+  challenger datasets, freezes four Logistic factor ablations, runs grouped OOF
+  comparisons with paired block-bootstrap intervals, and keeps sealed holdout
+  unavailable until the development gate passes. Insufficient causal CLOB
+  coverage returns a structured No-Go and cannot publish or activate a model.
 - Replay/execution hardening: the BTC runner now consumes current dual-token L2
   books, requires exchange-valid post-only prices and minimum sizes, caps each
   layer to 5% of displayed same-side depth, and confirms two exact five-second

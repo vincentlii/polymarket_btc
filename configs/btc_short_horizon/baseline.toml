@@ -1,4 +1,4 @@
-paper_execution_epoch = "paper-v2-direct-fak"
+paper_execution_epoch = "paper-v3-independent-fak"
 
 data_sources = [
   "local:../../data/pmxt_raw",
@@ -73,6 +73,10 @@ primary = true
 minimum_taker_net_edge = 0.0
 slippage_buffer = 0.0
 model_uncertainty_buffer = 0.0
+opportunity_policy = "shared_maker"
+confirmation_policy = "side_only"
+confirmation_signals = 2
+maximum_edge_decay = 0.0
 
 [[paper_execution_variants]]
 id = "immediate_fak"
@@ -83,6 +87,10 @@ primary = false
 minimum_taker_net_edge = 0.03
 slippage_buffer = 0.005
 model_uncertainty_buffer = 0.03
+opportunity_policy = "shared_maker"
+confirmation_policy = "side_only"
+confirmation_signals = 2
+maximum_edge_decay = 0.0
 
 [[paper_execution_variants]]
 id = "maker_5s_then_fak"
@@ -93,6 +101,38 @@ primary = false
 minimum_taker_net_edge = 0.03
 slippage_buffer = 0.005
 model_uncertainty_buffer = 0.03
+opportunity_policy = "shared_maker"
+confirmation_policy = "side_only"
+confirmation_signals = 2
+maximum_edge_decay = 0.0
+
+[[paper_execution_variants]]
+id = "independent_fak_2x5s"
+label = "Independent FAK 2x5s"
+mode = "immediate_fak"
+maker_work_seconds = 0.0
+primary = false
+minimum_taker_net_edge = 0.03
+slippage_buffer = 0.005
+model_uncertainty_buffer = 0.03
+opportunity_policy = "independent_taker"
+confirmation_policy = "side_only"
+confirmation_signals = 2
+maximum_edge_decay = 0.0
+
+[[paper_execution_variants]]
+id = "independent_fak_stable_3x5s"
+label = "Independent FAK Stable 3x5s"
+mode = "immediate_fak"
+maker_work_seconds = 0.0
+primary = false
+minimum_taker_net_edge = 0.03
+slippage_buffer = 0.005
+model_uncertainty_buffer = 0.03
+opportunity_policy = "independent_taker"
+confirmation_policy = "edge_stable"
+confirmation_signals = 3
+maximum_edge_decay = 0.01
 
 [[execution_scenarios]]
 name = "zero"

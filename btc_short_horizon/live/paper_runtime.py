@@ -17,6 +17,7 @@ from btc_short_horizon.config import BtcProjectConfig
 from btc_short_horizon.data import MarketWindow
 from btc_short_horizon.data.collector import RawCollectorEvent
 from btc_short_horizon.data.forward import AdmittedEventBuffer
+from btc_short_horizon.execution_timing import CLOB_DELAYED_TAKER_SERVER_MS
 from btc_short_horizon.data.gamma import GammaMarketClient
 from btc_short_horizon.live.dashboard_state import DashboardSnapshotStore
 from btc_short_horizon.live.paper_execution import PaperExecutionConfig, PaperMarketRules
@@ -52,13 +53,26 @@ _DECISIONS_WITHOUT_PREDICTION = {
 class PublicPaperRulesClient:
     """Read one versioned CLOB market-rule snapshot without credentials."""
 
-    def __init__(self, *, base_url: str = _CLOB_HOST, timeout_seconds: float = 10.0) -> None:
+    def __init__(
+        self,
+        *,
+        base_url: str = _CLOB_HOST,
+        timeout_seconds: float = 10.0,
+        enabled_taker_delay_ms: float = CLOB_DELAYED_TAKER_SERVER_MS,
+        taker_delay_policy_id: str = "clob-itode-250ms-v1",
+    ) -> None:
         if not base_url.startswith("https://"):
             raise ValueError("CLOB rules base_url must use https")
         if not isfinite(timeout_seconds) or timeout_seconds <= 0.0:
             raise ValueError("timeout_seconds must be finite and > 0")
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
+        if not isfinite(enabled_taker_delay_ms) or enabled_taker_delay_ms <= 0.0:
+            raise ValueError("enabled_taker_delay_ms must be finite and > 0")
+        if not taker_delay_policy_id:
+            raise ValueError("taker_delay_policy_id must not be empty")
+        self.enabled_taker_delay_ms = enabled_taker_delay_ms
+        self.taker_delay_policy_id = taker_delay_policy_id
 
     async def fetch(
         self,
@@ -96,6 +110,10 @@ class PublicPaperRulesClient:
         taker_only = fee_details.get("to")
         if taker_only is not True:
             raise ValueError("Research Paper requires a verified taker-only fee schedule")
+        taker_delay_enabled = payload.get("itode")
+        if not isinstance(taker_delay_enabled, bool):
+            raise ValueError("CLOB market rules require a boolean taker delay flag")
+        taker_server_delay_ms = self.enabled_taker_delay_ms if taker_delay_enabled else 0.0
         tick_size = _decimal_text(payload.get("mts"), "minimum tick size")
         minimum_order_size = _positive_number(payload.get("mos"), "minimum order size")
         neg_risk = payload.get("nr", False)
@@ -116,6 +134,9 @@ class PublicPaperRulesClient:
                 taker_fee_rate=taker_fee_rate,
                 taker_fee_exponent=taker_fee_exponent,
                 taker_only=taker_only,
+                taker_server_delay_ms=taker_server_delay_ms,
+                taker_delay_enabled=taker_delay_enabled,
+                taker_delay_policy_id=self.taker_delay_policy_id,
             )
             for token_id in expected
         }

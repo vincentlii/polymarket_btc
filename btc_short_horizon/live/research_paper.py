@@ -45,14 +45,18 @@ from btc_short_horizon.research.opening_evidence import OpeningMarketObservation
 from btc_short_horizon.research.opening_proxy import opening_regime_for_elapsed_seconds
 from btc_short_horizon.strategy import (
     ConsecutiveSignalConfirmation,
+    EdgeStableSignalConfirmation,
     MakerStrategyConfig,
     OrderPlan,
     OutcomeBooks,
     SideBook,
     TokenSide,
+    TakerOrderPlan,
+    TakerPlanDecision,
     VisibleBookLevel,
     evaluate_cancellation,
     plan_opening_mispricing_orders,
+    plan_independent_taker_order,
 )
 
 
@@ -151,11 +155,16 @@ class PaperTradeRecord:
     cancel_requested_at_ns: int | None = None
     cancel_ack_at_ns: int | None = None
     terminal_at_ns: int | None = None
+    fak_request_limit_price: float | None = None
     fak_limit_price: float | None = None
     fak_net_edge_per_share: float | None = None
+    fak_client_latency_ms: float = 0.0
+    fak_server_delay_ms: float = 0.0
+    fak_total_latency_ms: float = 0.0
     outcome: str | None = None
     settled_at_ns: int | None = None
     realized_pnl: float | None = None
+    execution_evidence_valid: bool = True
 
     @property
     def entry_price(self) -> float | None:
@@ -199,11 +208,16 @@ class PaperTradeRecord:
             "cancel_requested_at_ns": self.cancel_requested_at_ns,
             "cancel_ack_at_ns": self.cancel_ack_at_ns,
             "terminal_at_ns": self.terminal_at_ns,
+            "fak_request_limit_price": self.fak_request_limit_price,
             "fak_limit_price": self.fak_limit_price,
             "fak_net_edge_per_share": self.fak_net_edge_per_share,
+            "fak_client_latency_ms": self.fak_client_latency_ms,
+            "fak_server_delay_ms": self.fak_server_delay_ms,
+            "fak_total_latency_ms": self.fak_total_latency_ms,
             "outcome": self.outcome,
             "settled_at_ns": self.settled_at_ns,
             "realized_pnl": self.realized_pnl,
+            "execution_evidence_valid": self.execution_evidence_valid,
         }
 
     @classmethod
@@ -266,13 +280,27 @@ class PaperTradeRecord:
             ),
             cancel_ack_at_ns=_optional_integer(raw.get("cancel_ack_at_ns"), "cancel_ack_at_ns"),
             terminal_at_ns=_optional_integer(raw.get("terminal_at_ns"), "terminal_at_ns"),
+            fak_request_limit_price=_optional_number(
+                raw.get("fak_request_limit_price"), "fak_request_limit_price"
+            ),
             fak_limit_price=_optional_number(raw.get("fak_limit_price"), "fak_limit_price"),
             fak_net_edge_per_share=_optional_number(
                 raw.get("fak_net_edge_per_share"), "fak_net_edge_per_share"
             ),
+            fak_client_latency_ms=_number(
+                raw.get("fak_client_latency_ms", 0.0), "fak_client_latency_ms"
+            ),
+            fak_server_delay_ms=_number(raw.get("fak_server_delay_ms", 0.0), "fak_server_delay_ms"),
+            fak_total_latency_ms=_number(
+                raw.get("fak_total_latency_ms", 0.0), "fak_total_latency_ms"
+            ),
             outcome=_optional_text(raw.get("outcome"), "outcome"),
             settled_at_ns=_optional_integer(raw.get("settled_at_ns"), "settled_at_ns"),
             realized_pnl=_optional_number(raw.get("realized_pnl"), "realized_pnl"),
+            execution_evidence_valid=_boolean(
+                raw.get("execution_evidence_valid"),
+                "execution_evidence_valid",
+            ),
         )
 
 
@@ -495,11 +523,19 @@ class ResearchPaperEngine:
         self._gapped_tokens: set[str] = set()
         self._tick_changed_tokens: set[str] = set()
         self._binance_gap = False
-        self._confirmation = ConsecutiveSignalConfirmation(
-            required_signals=maker_config.confirmation_signals,
-            cadence_seconds=maker_config.signal_cadence_seconds,
-            tolerance_seconds=maker_config.signal_cadence_tolerance_seconds,
-        )
+        if variant.confirmation_policy == "edge_stable":
+            self._confirmation = EdgeStableSignalConfirmation(
+                required_signals=variant.confirmation_signals,
+                cadence_seconds=maker_config.signal_cadence_seconds,
+                tolerance_seconds=maker_config.signal_cadence_tolerance_seconds,
+                maximum_edge_decay=variant.maximum_edge_decay,
+            )
+        else:
+            self._confirmation = ConsecutiveSignalConfirmation(
+                required_signals=variant.confirmation_signals,
+                cadence_seconds=maker_config.signal_cadence_seconds,
+                tolerance_seconds=maker_config.signal_cadence_tolerance_seconds,
+            )
         self._active_placement: PaperPlacement | None = None
         self._active_record: PaperTradeRecord | None = None
         self._latest_prediction: OpeningMispricingPrediction | None = None
@@ -664,11 +700,13 @@ class ResearchPaperEngine:
         unsafe_reason = self._unsafe_execution_reason(now_ts_ns=now_ts_ns)
         if self._active_placement is not None and unsafe_reason is not None:
             if self._active_placement.status == "fak_pending":
-                self.simulator.abort_fak(
-                    self._active_placement,
-                    now_ts_ns=now_ts_ns,
-                    reason=f"fak_{unsafe_reason}",
-                )
+                active_ts_ns = self._active_placement.fak_active_ts_ns
+                if active_ts_ns is not None and now_ts_ns >= active_ts_ns:
+                    self.simulator.invalidate_fak_evidence(
+                        self._active_placement,
+                        now_ts_ns=active_ts_ns,
+                        reason=unsafe_reason,
+                    )
             else:
                 self.simulator.request_cancel(
                     self._active_placement,
@@ -759,20 +797,63 @@ class ResearchPaperEngine:
             self._confirmation.reset()
             self._signal_observations.clear()
             return safety_reason
-        decision = plan_opening_mispricing_orders(
-            market_slug=self.market.slug,
-            p_boundary_up=prediction.p_boundary_up,
-            p_up=prediction.p_up,
-            books=books,
-            decision_ts_ns=now_ts_ns,
-            elapsed_seconds=elapsed,
-            config=self.maker_config,
-        )
+        if self.variant.opportunity_policy == "independent_taker":
+            decision = plan_independent_taker_order(
+                market_slug=self.market.slug,
+                p_boundary_up=prediction.p_boundary_up,
+                p_up=prediction.p_up,
+                books=books,
+                fee_rate_by_side={
+                    TokenSide.UP: self.rules[self.market.up_token_id].taker_fee_rate,
+                    TokenSide.DOWN: self.rules[self.market.down_token_id].taker_fee_rate,
+                },
+                max_shares=self.maker_config.max_shares,
+                minimum_net_edge=self.variant.minimum_taker_net_edge,
+                slippage_buffer=self.variant.slippage_buffer,
+                model_uncertainty_buffer=self.variant.model_uncertainty_buffer,
+                available_balance=self._available_balance(),
+                decision_ts_ns=now_ts_ns,
+            )
+        else:
+            decision = plan_opening_mispricing_orders(
+                market_slug=self.market.slug,
+                p_boundary_up=prediction.p_boundary_up,
+                p_up=prediction.p_up,
+                books=books,
+                decision_ts_ns=now_ts_ns,
+                elapsed_seconds=elapsed,
+                config=self.maker_config,
+            )
         if decision.plan is None:
+            if isinstance(decision, TakerPlanDecision):
+                self._persist_taker_diagnostics(decision, now_ts_ns=now_ts_ns)
             self._confirmation.reset()
             self._signal_observations.clear()
-            return decision.reason
-        confirmed = self._confirmation.observe(decision.plan.side, signal_ts_ns=now_ts_ns)
+            return str(decision.reason)
+        if isinstance(decision, TakerPlanDecision):
+            self._persist_taker_diagnostics(decision, now_ts_ns=now_ts_ns)
+        if isinstance(self._confirmation, EdgeStableSignalConfirmation):
+            net_edge = (
+                decision.plan.net_edge_per_share
+                if isinstance(decision.plan, TakerOrderPlan)
+                else self._signal_observation(
+                    plan=decision.plan,
+                    book=books.for_side(decision.plan.side),
+                    now_ts_ns=now_ts_ns,
+                    signal_number=1,
+                ).taker_net_edge
+            )
+            if net_edge is None:
+                self._confirmation.reset()
+                self._signal_observations.clear()
+                return "edge_below_threshold"
+            confirmed = self._confirmation.observe(
+                decision.plan.side,
+                net_edge=net_edge,
+                signal_ts_ns=now_ts_ns,
+            )
+        else:
+            confirmed = self._confirmation.observe(decision.plan.side, signal_ts_ns=now_ts_ns)
         if self._confirmation.count == 1:
             self._signal_observations.clear()
         side_book = books.for_side(decision.plan.side)
@@ -788,9 +869,13 @@ class ResearchPaperEngine:
             return "confirmation_pending"
         selected_probability = decision.plan.p_fair
         planned_notional = (
-            decision.plan.total_size * selected_probability
-            if self.variant.mode == "immediate_fak"
-            else decision.plan.total_notional
+            decision.plan.total_notional
+            if isinstance(decision.plan, TakerOrderPlan)
+            else (
+                decision.plan.total_size * selected_probability
+                if self.variant.mode == "immediate_fak"
+                else decision.plan.total_notional
+            )
         )
         opportunity_id = f"{decision.plan.market_slug}:{decision.plan.created_ts_ns}"
         try:
@@ -875,6 +960,10 @@ class ResearchPaperEngine:
             signal_observations=list(self._signal_observations),
             execution_route=placement.execution_route,
             active_at_ns=placement.active_ts_ns,
+            fak_request_limit_price=placement.fak_request_limit_price,
+            fak_client_latency_ms=placement.fak_client_latency_ms,
+            fak_server_delay_ms=placement.fak_server_delay_ms,
+            fak_total_latency_ms=placement.fak_total_latency_ms,
             initial_queue_ahead=sum(layer.initial_queue_ahead for layer in placement.layers),
             remaining_queue_ahead=sum(layer.queue_ahead for layer in placement.layers),
         )
@@ -939,6 +1028,8 @@ class ResearchPaperEngine:
         for record in self.records:
             if record.market_slug != market_slug or record.realized_pnl is not None:
                 continue
+            if not record.execution_evidence_valid:
+                continue
             payout = payout_by_side[record.side]
             record.realized_pnl = (
                 0.0 if payout is None else payout * record.filled_shares - record.filled_notional
@@ -991,6 +1082,9 @@ class ResearchPaperEngine:
         record = self._active_record
         before = record.to_json()
         record.execution_status = placement.status
+        if placement.status == "evidence_invalid":
+            record.execution_evidence_valid = False
+            record.settlement_status = "evidence_invalid"
         record.filled_shares = placement.filled_size
         record.filled_notional = placement.filled_notional
         record.cancel_race_filled_shares = placement.cancel_race_filled_size
@@ -1011,8 +1105,12 @@ class ResearchPaperEngine:
         record.cancel_requested_at_ns = placement.cancel_requested_ts_ns
         record.cancel_ack_at_ns = placement.cancel_ack_ts_ns
         record.terminal_at_ns = placement.terminal_ts_ns
+        record.fak_request_limit_price = placement.fak_request_limit_price
         record.fak_limit_price = placement.fak_limit_price
         record.fak_net_edge_per_share = placement.fak_net_edge_per_share
+        record.fak_client_latency_ms = placement.fak_client_latency_ms
+        record.fak_server_delay_ms = placement.fak_server_delay_ms
+        record.fak_total_latency_ms = placement.fak_total_latency_ms
         if record.to_json() != before:
             self._persist()
 
@@ -1050,6 +1148,7 @@ class ResearchPaperEngine:
             minimum_net_edge=self.variant.minimum_taker_net_edge,
             slippage_buffer=self.variant.slippage_buffer,
             model_uncertainty_buffer=self.variant.model_uncertainty_buffer,
+            book=self._books_by_token()[placement.plan.token_id],
         )
 
     def _prediction_safety_reason(
@@ -1073,11 +1172,21 @@ class ResearchPaperEngine:
     def _signal_observation(
         self,
         *,
-        plan: OrderPlan,
+        plan: OrderPlan | TakerOrderPlan,
         book: SideBook,
         now_ts_ns: int,
         signal_number: int,
     ) -> PaperSignalObservation:
+        if isinstance(plan, TakerOrderPlan):
+            return PaperSignalObservation(
+                signal_number=signal_number,
+                observed_at_ns=now_ts_ns,
+                p_fair=plan.p_fair,
+                maker_price=plan.p_market,
+                executable_vwap=plan.executable_vwap,
+                taker_fee_per_share=plan.taker_fees / plan.total_size,
+                taker_net_edge=plan.net_edge_per_share,
+            )
         uses_taker_policy = self.variant.mode != "maker"
         quote = self.simulator.preview_fak(
             token_id=plan.token_id,
@@ -1112,6 +1221,7 @@ class ResearchPaperEngine:
     ) -> None:
         if (
             self.market is None
+            or self.variant.opportunity_policy == "independent_taker"
             or self._active_record is None
             or self._active_placement is None
             or len(self._active_record.signal_observations) >= 3
@@ -1421,6 +1531,87 @@ class ResearchPaperEngine:
                 records=self.records,
             )
         )
+
+    def _persist_taker_diagnostics(
+        self,
+        decision: TakerPlanDecision,
+        *,
+        now_ts_ns: int,
+    ) -> None:
+        assert self.market is not None
+        path = (
+            self.ledger_store.runtime_root
+            / "paper"
+            / "epochs"
+            / self.ledger_store.execution_epoch
+            / "variants"
+            / self.variant.variant_id
+            / "diagnostics"
+            / f"{self.market.slug}.json"
+        )
+        entry = {
+            "decision_ts_ns": now_ts_ns,
+            "decision_reason": str(decision.reason),
+            "selected_side": None if decision.plan is None else decision.plan.side.value,
+            "evaluations": [
+                {
+                    "side": item.side.value,
+                    "token_id": item.token_id,
+                    "fair_probability": item.fair_probability,
+                    "requested_size": item.requested_size,
+                    "filled_size": item.filled_size,
+                    "executable_vwap": item.executable_vwap,
+                    "taker_fee_per_share": item.taker_fee_per_share,
+                    "gross_edge": item.gross_edge,
+                    "total_buffer": item.total_buffer,
+                    "net_edge": item.net_edge,
+                    "reason": str(item.reason),
+                    "limit_price": item.limit_price,
+                }
+                for item in decision.evaluations
+            ],
+        }
+        payload: dict[str, object] = {
+            "schema_version": 1,
+            "execution_epoch": self.ledger_store.execution_epoch,
+            "variant_id": self.variant.variant_id,
+            "market_slug": self.market.slug,
+            "entries": [entry],
+        }
+        if path.exists():
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ValueError("invalid taker decision diagnostic") from exc
+            if not isinstance(existing, Mapping) or any(
+                existing.get(key) != payload[key]
+                for key in ("schema_version", "execution_epoch", "variant_id", "market_slug")
+            ):
+                raise ValueError("taker decision diagnostic identity mismatch")
+            entries = existing.get("entries")
+            if not isinstance(entries, list):
+                raise ValueError("taker decision diagnostic entries must be a list")
+            matching = [
+                item
+                for item in entries
+                if isinstance(item, Mapping) and item.get("decision_ts_ns") == now_ts_ns
+            ]
+            if matching:
+                if len(matching) != 1 or dict(matching[0]) != entry:
+                    raise ValueError("immutable taker decision diagnostic conflict")
+                return
+            payload["entries"] = [*entries, entry]
+        encoded = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+        try:
+            with temporary.open("xb") as handle:
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 class ResearchPaperPortfolio:

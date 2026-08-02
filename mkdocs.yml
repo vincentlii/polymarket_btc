@@ -3,6 +3,9 @@ site_url: https://evan-kolberg.github.io/prediction-market-backtesting/
 repo_url: https://github.com/evan-kolberg/prediction-market-backtesting
 repo_name: evan-kolberg/prediction-market-backtesting
 
+exclude_docs: |
+  superpowers/
+
 theme:
   name: shadcn
   custom_dir: docs_overrides
@@ -34,6 +37,7 @@ nav:
       - BTC Data Durability And Recovery: btc-data-durability-research.md
       - BTC Market-Data Protocol Boundaries: btc-market-data-protocol-research.md
       - BTC Execution And Latency Research: btc-execution-latency-research.md
+      - BTC Strategy Profitability Research: btc-strategy-profitability-research.md
   - Project:
       - Project Status: project-status.md
       - BTC VPS Operations: btc-vps-operations.md

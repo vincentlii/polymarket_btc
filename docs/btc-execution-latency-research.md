@@ -213,6 +213,20 @@ sports 和其他合格类别当前分别使用 20%、15% 和 25% 分成。正式
 逐笔历史回放精确恢复。参考 [Fees](https://docs.polymarket.com/trading/fees) 与
 [Maker Rebates](https://docs.polymarket.com/market-makers/maker-rebates)。
 
+## Venue taker-delay policy
+
+Research Paper now treats CLOB `itode` as a required boolean market rule. The
+enabled value maps through policy `clob-itode-250ms-v1`; the 250 ms value is a
+documented venue policy assumption, not a VPS measurement. Both the flag and
+policy ID are hashed into the immutable rule snapshot. Total simulated FAK
+latency is `client_taker_latency + frozen_market_delay`, and reporting preserves
+both components so they cannot be double-counted.
+
+After POST, feed staleness is not a valid cancellation mechanism for the venue
+delay. A gap or unusable book at the match deadline produces invalid execution
+evidence rather than a fabricated cancel or zero fill. Offline replay extends
+its tail by the same frozen server delay and never queries current rules.
+
 ## 2026-07-21 Live 执行安全契约
 
 当前实现将“尽量少做热路径工作”约束为一组可恢复、可对账的不变量，而不是以

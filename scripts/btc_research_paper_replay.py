@@ -15,6 +15,9 @@ else:
 ensure_repo_root(__file__)
 
 from btc_short_horizon.config import load_btc_project_config  # noqa: E402
+from btc_short_horizon.execution_timing import (  # noqa: E402
+    paper_execution_lifecycle_tail_seconds,
+)
 from btc_short_horizon.data import read_market_catalog  # noqa: E402
 from btc_short_horizon.live.paper_replay import (  # noqa: E402
     PaperReplayRawStream,
@@ -80,16 +83,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     scenario = project.require_scenario("p99_half_volume_book_first").execution
     latency = scenario.latency_model
-    latency_tail_seconds = (
-        latency.base_latency_ms + max(latency.insert_latency_ms, latency.cancel_latency_ms)
-    ) / 1_000
-    replay_end = market.t0 + timedelta(
-        seconds=(
-            project.research_timing.entry_end_seconds
-            + maximum_work_seconds
-            + latency_tail_seconds
-            + 1.0
+    maximum_taker_server_delay_ms = max(rule.taker_server_delay_ms for rule in rules.values())
+    lifecycle_tail_seconds = max(
+        paper_execution_lifecycle_tail_seconds(
+            mode=variant.mode,
+            maker_work_seconds=variant.maker_work_seconds,
+            cancel_latency_ms=latency.base_latency_ms + latency.cancel_latency_ms,
+            taker_latency_ms=latency.base_latency_ms + latency.insert_latency_ms,
+            taker_server_delay_ms=maximum_taker_server_delay_ms,
         )
+        for variant in project.paper_execution_variants
+    )
+    replay_end = market.t0 + timedelta(
+        seconds=(project.research_timing.entry_end_seconds + lifecycle_tail_seconds + 1.0)
     )
     raw_start = market.t0 - timedelta(
         seconds=project.research_timing.max_feature_lookback_seconds + 5
