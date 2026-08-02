@@ -465,6 +465,17 @@ one-hour baseline plus the 180-second decision horizon currently needs 3,782
 rows. See the
 official [Binance Spot REST market-data documentation](https://developers.binance.com/docs/binance-spot-api-docs/rest-api/market-data-endpoints).
 
+Collector transport health and model-input availability are distinct contracts.
+The collector's broad feed-stale threshold only detects an unhealthy stream;
+the five-second model also requires at least one causally available closed
+Binance bar in every frozen feature window at its decision timestamp. A missing
+window raises `CausalFeatureUnavailableError` with the window, decision, and
+available-tail timestamps. Research Paper treats only that typed condition as a
+recoverable `prediction_unavailable` episode; it never fabricates a feature or
+turns an invariant/model error into a data warning. Repeated ticks in one
+episode add one cumulative error, while a successful later prediction clears
+the active error and permits a distinct future episode to be counted.
+
 `scripts/btc_opening_price_edge_proxy.py` is the next lightweight gate. It
 joins OOF/holdout probabilities to sparse one-minute Polymarket token price
 history, applies frozen development-selected thresholds independently by

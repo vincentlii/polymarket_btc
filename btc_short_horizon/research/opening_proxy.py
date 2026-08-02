@@ -23,6 +23,10 @@ _NANOS_PER_SECOND = 1_000_000_000
 _WINDOWS_SECONDS = (5, 15, 30, 60, 180, 300, 900, 1_800, 3_600)
 
 
+class CausalFeatureUnavailableError(ValueError):
+    """Causal kline evidence is temporarily insufficient for one prediction."""
+
+
 class OpeningRegime(StrEnum):
     """Named slices of the frozen post-open three-minute research protocol."""
 
@@ -327,7 +331,10 @@ def opening_proxy_feature_values_at(
     )
     reference_index = int(np.searchsorted(available_ts_ns, market_start_ns, side="right")) - 1
     if reference_index < 0:
-        raise ValueError("no causally available opening reference")
+        raise CausalFeatureUnavailableError(
+            "no causally available opening reference; "
+            f"decision_ts_ns={decision_ns} available_tail_ts_ns={int(available_ts_ns[-1])}"
+        )
     windows = _windows_for_interval(klines.interval_seconds)
     max_window_ns = max(windows) * _NANOS_PER_SECOND
     start = int(np.searchsorted(available_ts_ns, decision_ns - max_window_ns, side="left"))
@@ -343,9 +350,15 @@ def opening_proxy_feature_values_at(
             interval_ns=interval_ns,
         )
     ):
-        raise ValueError("incomplete causal Binance history at decision_time")
+        raise CausalFeatureUnavailableError(
+            "incomplete causal Binance history at decision_time; "
+            f"decision_ts_ns={decision_ns} available_tail_ts_ns={int(available_ts_ns[-1])}"
+        )
     if np.any(np.diff(klines.open_ts_ns[start:end]) != interval_ns):
-        raise ValueError("causal Binance history contains a kline gap")
+        raise CausalFeatureUnavailableError(
+            "causal Binance history contains a kline gap; "
+            f"decision_ts_ns={decision_ns} available_tail_ts_ns={int(available_ts_ns[end - 1])}"
+        )
     schema = opening_proxy_feature_schema(klines.interval_seconds)
     vector = _feature_vector(
         klines=klines,
@@ -388,6 +401,12 @@ def _feature_vector(
                 )
             ),
         )
+        if window_start >= end:
+            raise CausalFeatureUnavailableError(
+                "incomplete causal Binance history for "
+                f"{seconds}s feature window; decision_ts_ns={decision_ns} "
+                f"available_tail_ts_ns={int(available_ts_ns[end - 1])}"
+            )
         close = klines.close[window_start:end]
         volume = klines.volume[window_start:end]
         quote_volume = klines.quote_volume[window_start:end]
@@ -503,6 +522,7 @@ def _datetime_to_ns(value: datetime) -> int:
 
 
 __all__ = [
+    "CausalFeatureUnavailableError",
     "OPENING_REGIMES",
     "OpeningRegime",
     "OpeningProxyDatasetBuild",

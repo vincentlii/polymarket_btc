@@ -42,7 +42,10 @@ from btc_short_horizon.live.paper_execution import (
 from btc_short_horizon.models import OpeningMispricingPrediction
 from btc_short_horizon.research.binance_history import BinanceKlineHistory
 from btc_short_horizon.research.opening_evidence import OpeningMarketObservation
-from btc_short_horizon.research.opening_proxy import opening_regime_for_elapsed_seconds
+from btc_short_horizon.research.opening_proxy import (
+    CausalFeatureUnavailableError,
+    opening_regime_for_elapsed_seconds,
+)
 from btc_short_horizon.strategy import (
     ConsecutiveSignalConfirmation,
     EdgeStableSignalConfirmation,
@@ -1709,7 +1712,7 @@ class ResearchPaperPortfolio:
                     now_ts_ns=now_ts_ns,
                     prediction=prediction,
                 )
-            except ValueError as exc:
+            except CausalFeatureUnavailableError as exc:
                 results[engine.variant.variant_id] = f"prediction_unavailable:{exc}"
         self.last_decisions = results
         if primary_result == "confirmation_pending" or primary_opportunity_created:

@@ -31,6 +31,7 @@ from btc_short_horizon.live.research_paper import (
 )
 from btc_short_horizon.models import OpeningMispricingPrediction
 from btc_short_horizon.research.binance_history import BinanceKlineHistory
+from btc_short_horizon.research.opening_proxy import CausalFeatureUnavailableError
 from btc_short_horizon.strategy import LayerStructure, MakerStrategyConfig
 
 
@@ -1045,7 +1046,10 @@ def test_paper_runtime_surfaces_prediction_failure_until_a_successful_decision()
         def decide(self, *, now_ts_ns: int) -> str:
             assert now_ts_ns >= T0_NS
             if self.fail:
-                raise ValueError("causal Binance history contains a kline gap")
+                raise CausalFeatureUnavailableError(
+                    "causal Binance history contains a kline gap; "
+                    "decision_ts_ns=1 available_tail_ts_ns=0"
+                )
             return self.result
 
     runtime = object.__new__(ResearchPaperRuntime)
@@ -1068,25 +1072,69 @@ def test_paper_runtime_surfaces_prediction_failure_until_a_successful_decision()
 
     assert runtime._prediction_errors == 1
     assert runtime._recoverable_errors == {
-        "prediction": "ValueError: causal Binance history contains a kline gap"
+        "prediction": (
+            "CausalFeatureUnavailableError: causal Binance history contains a kline gap; "
+            "decision_ts_ns=1 available_tail_ts_ns=0"
+        )
     }
     assert runtime._last_prediction_error == {
         "market_slug": _market().slug,
         "observed_at": (T0 + timedelta(seconds=5)).isoformat(),
-        "message": "ValueError: causal Binance history contains a kline gap",
+        "message": (
+            "CausalFeatureUnavailableError: causal Binance history contains a kline gap; "
+            "decision_ts_ns=1 available_tail_ts_ns=0"
+        ),
     }
 
-    runtime.engine.fail = False
     runtime._run_due_decision(T0 + timedelta(seconds=10))
+
+    assert runtime._prediction_errors == 1
+
+    runtime.engine.fail = False
+    runtime._run_due_decision(T0 + timedelta(seconds=15))
 
     assert runtime._last_decision_result == "book_unavailable"
     assert "prediction" in runtime._recoverable_errors
 
     runtime.engine.result = "unsafe_prediction"
-    runtime._run_due_decision(T0 + timedelta(seconds=15))
+    runtime._run_due_decision(T0 + timedelta(seconds=20))
 
     assert runtime._last_decision_result == "unsafe_prediction"
     assert "prediction" not in runtime._recoverable_errors
+    assert runtime._prediction_errors == 1
+    assert runtime._last_prediction_error is None
+
+    runtime.engine.fail = True
+    runtime._run_due_decision(T0 + timedelta(seconds=25))
+
+    assert runtime._prediction_errors == 2
+
+
+def test_paper_runtime_fails_closed_for_a_non_data_prediction_value_error() -> None:
+    class InvariantFailureEngine:
+        market = _market()
+
+        def advance(self, *, now_ts_ns: int) -> None:
+            assert now_ts_ns >= T0_NS
+
+        def decide(self, *, now_ts_ns: int) -> str:
+            assert now_ts_ns >= T0_NS
+            raise ValueError("model artifact invariant failed")
+
+    runtime = object.__new__(ResearchPaperRuntime)
+    runtime.engine = InvariantFailureEngine()
+    runtime.project = SimpleNamespace(
+        maker=SimpleNamespace(
+            entry_end_seconds=180.0,
+            max_work_seconds=15.0,
+            signal_cadence_seconds=5.0,
+        ),
+        paper_execution_variants=(SimpleNamespace(maker_work_seconds=15.0),),
+    )
+    runtime._next_decision_ns = T0_NS + 5_000_000_000
+
+    with pytest.raises(ValueError, match="model artifact invariant failed"):
+        runtime._run_due_decision(T0 + timedelta(seconds=5))
 
 
 def test_paper_runtime_advances_latency_deadlines_between_signal_ticks() -> None:

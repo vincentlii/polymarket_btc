@@ -72,6 +72,9 @@ and reporting plumbing without importing archived BTC strategy logic.
   transitions now execute before later events can reprice them. The read-only
   dashboard exposes the primary-session funnel, execution
   epoch, segment metrics and paginated full schema-validated order history.
+  Causal Binance feature-window shortages are recorded as one recoverable
+  prediction-unavailable episode with decision/tail evidence; model or invariant
+  failures remain fail-closed rather than being misclassified as stale data.
 - Model/research hardening: model inputs and probabilities now reject coercion,
   non-finite values, invalid shapes, and inconsistent lineage. Walk-forward
   tests are non-overlapping and group-safe; LightGBM early stopping, calibration,

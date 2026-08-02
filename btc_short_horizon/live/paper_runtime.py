@@ -30,6 +30,7 @@ from btc_short_horizon.live.runtime import RuntimeStatus, RuntimeStatusStore
 from btc_short_horizon.models import ModelArtifactStore
 from btc_short_horizon.research.binance_history import fetch_binance_spot_kline_history
 from btc_short_horizon.research.opening_proxy import (
+    CausalFeatureUnavailableError,
     opening_proxy_feature_schema,
     opening_proxy_protocol,
     validate_opening_proxy_protocol,
@@ -459,8 +460,9 @@ class ResearchPaperRuntime:
             return
         try:
             self._last_decision_result = self.engine.decide(now_ts_ns=now_ns)
-        except ValueError as exc:
-            self._prediction_errors += 1
+        except CausalFeatureUnavailableError as exc:
+            if "prediction" not in self._recoverable_errors:
+                self._prediction_errors += 1
             self._last_decision_result = f"prediction_unavailable:{exc}"
             message = f"{type(exc).__name__}: {exc}"
             self._recoverable_errors["prediction"] = message
@@ -472,6 +474,7 @@ class ResearchPaperRuntime:
         else:
             if self._last_decision_result not in _DECISIONS_WITHOUT_PREDICTION:
                 self._recoverable_errors.pop("prediction", None)
+                self._last_prediction_error = None
         self._next_decision_ns += round(self.project.maker.signal_cadence_seconds * 1_000_000_000)
 
     async def _settle_resolved_markets(self) -> None:
