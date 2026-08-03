@@ -325,6 +325,12 @@ the input/output contract and operational commands.
 
 ## Recently Fixed
 
+- [x] Forward ingest v15 now detects a half-open Chainlink RTDS or Binance
+  `kline_1s` socket from accepted business-payload inactivity rather than
+  trusting ping/pong health. Each timeout writes exactly one explicit
+  `continuity_gap`, advances the affected logical-stream epoch, and reconnects
+  with bounded exponential backoff. Low-frequency feeds remain exempt unless
+  their protocol guarantees a safe event cadence.
 - [x] Research Paper bootstrap now waits for the first collector-admitted closed
   Binance kline, anchors the bounded REST history immediately before that bar,
   and causally replays the events deferred during the fetch. This removes the

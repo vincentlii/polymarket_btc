@@ -13,6 +13,7 @@ import httpx
 import pyarrow.parquet as pq
 import pytest
 
+from btc_short_horizon.data.collector import BusinessPayloadInactivityError
 from btc_short_horizon.data.forward import (
     AdmittedEventBuffer,
     DEFAULT_BINANCE_FUTURES_MARKET_STREAMS,
@@ -43,6 +44,82 @@ def test_default_forward_collection_is_lightweight_for_bounded_vps_storage() -> 
     assert DEFAULT_BINANCE_FUTURES_MARKET_STREAMS == ()
     assert DEFAULT_BINANCE_FUTURES_PUBLIC_STREAMS == ()
     assert DEFAULT_OKX_SUBSCRIPTIONS == ()
+
+
+@pytest.mark.asyncio
+async def test_business_payload_inactivity_records_one_gap_before_recovered_data(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    collector = BtcForwardCollector(
+        raw_data_root=tmp_path,
+        polymarket_token_ids=("up-token",),
+        flush_size=2,
+        ingest_version="watchdog-test-v1",
+    )
+
+    async def fake_socket_loop(  # type: ignore[no-untyped-def]
+        websocket_collector,
+        *,
+        stop_event: asyncio.Event,
+        on_payload,
+        on_error=None,
+        on_connected=None,
+    ) -> None:
+        del on_connected
+        if "ws-live-data" not in websocket_collector.subscription.endpoint:
+            await stop_event.wait()
+            return
+        assert on_error is not None
+        await on_error(
+            BusinessPayloadInactivityError(
+                endpoint=websocket_collector.subscription.endpoint,
+                timeout_seconds=15.0,
+            )
+        )
+        recovered_at = datetime.now(UTC)
+        accepted = await on_payload(
+            {
+                "topic": "crypto_prices_chainlink",
+                "type": "update",
+                "timestamp": int(recovered_at.timestamp() * 1_000),
+                "payload": {
+                    "symbol": "btc/usd",
+                    "timestamp": int(recovered_at.timestamp() * 1_000),
+                    "value": 100_000.0,
+                },
+            },
+            recovered_at,
+        )
+        assert accepted
+        stop_event.set()
+
+    monkeypatch.setattr(
+        "btc_short_horizon.data.forward.JsonWebSocketCollector.collect_forever",
+        fake_socket_loop,
+    )
+    await asyncio.wait_for(
+        collector.collect_forever(stop_event=asyncio.Event(), binance_streams=()),
+        timeout=1.0,
+    )
+
+    rows = sorted(
+        (
+            row
+            for path in tmp_path.rglob("part-*.parquet")
+            for row in pq.read_table(path).to_pylist()
+            if row["source"] == "polymarket_rtds_chainlink"
+        ),
+        key=lambda row: row["admission_sequence"],
+    )
+
+    assert [row["event_type"] for row in rows] == [
+        "continuity_gap",
+        "crypto_prices_chainlink",
+    ]
+    assert json.loads(rows[0]["payload_json"])["reason"] == ("BusinessPayloadInactivityError")
+    assert rows[0]["epoch_id"] == rows[1]["epoch_id"] == 1
+    assert collector.quality_stats[("polymarket_rtds_chainlink", "btc/usd", "price")].epochs == 2
 
 
 @pytest.mark.asyncio

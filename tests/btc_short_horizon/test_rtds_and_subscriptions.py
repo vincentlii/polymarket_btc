@@ -57,6 +57,7 @@ def test_public_subscription_builders_follow_current_channel_heartbeats() -> Non
     assert market.subscribe_payload is not None
     assert market.subscribe_payload["initial_dump"] is True
     assert rtds.heartbeat_interval_seconds == 5.0
+    assert rtds.business_payload_timeout_seconds == 15.0
     assert (
         "streams=btcusdt@trade/btcusdt@kline_1s/btcusdt@depth@100ms/btcusdt@bookTicker"
         in binance.endpoint
@@ -67,6 +68,11 @@ def test_public_subscription_builders_follow_current_channel_heartbeats() -> Non
     )
     assert futures_market.subscribe_payload is None
     assert futures_public.subscribe_payload is None
+    assert binance.business_payload_timeout_seconds == 10.0
+    assert futures_market.business_payload_timeout_seconds is None
+    assert futures_public.business_payload_timeout_seconds is None
+    assert market.business_payload_timeout_seconds is None
+    assert okx.business_payload_timeout_seconds is None
     assert okx.subscribe_payload == {
         "op": "subscribe",
         "args": [

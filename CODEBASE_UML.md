@@ -1,8 +1,8 @@
 # Codebase UML Inventory
 
 This file is generated from Python AST metadata and excludes `tests/` plus git-ignored private strategy/research directories.
-Generated: 2026-08-02T18:08:55+00:00
-Modules: 220 | Classes: 448 | Functions/methods: 3175
+Generated: 2026-08-03T16:02:44+00:00
+Modules: 220 | Classes: 449 | Functions/methods: 3176
 
 ## Backtesting Data Flow
 
@@ -376,28 +376,30 @@ flowchart TD
 
 ### `btc_short_horizon/data/collector.py`
 - Imports: `__future__, asyncio, btc_short_horizon, collections, dataclasses, datetime, inspect, json, math, pathlib, pyarrow, random, re, types, typing, websockets`
-- Function L406: `async _maybe_await(value: object) -> object`
-- Function L412: `_message_payloads(raw: str | bytes) -> tuple[Mapping[str, object], ...]`
-- Function L429: `normalize_collector_session_id(value: object) -> str`
-- Function L438: `_freeze_json_value(value: object) -> object`
-- Class L34: `RawCollectorEvent`
-  - Method L43: `__post_init__(self) -> None`
-  - Method L77: `estimated_size_bytes(self) -> int`
-  - Method L94: `as_row(self) -> dict[str, object]`
-  - Method L115: `with_admission_sequence(self, value: int) -> RawCollectorEvent`
-- Class L128: `PartitionedRawEventWriter`
-  - Method L131: `__init__(self, root: Path, *, manifest_attributes: Mapping[str, str] | None = None, inventory: PartWriteInventory | None = None) -> None`
-  - Method L150: `write(self, events: Sequence[RawCollectorEvent], *, quality_counts: Mapping[RawPartitionKey, tuple[int, int]] | None = None) -> tuple[DataPartitionManifest, ...]`
-- Class L219: `WebSocketSubscription`
-  - Method L228: `__post_init__(self) -> None`
-- Class L247: `JsonWebSocketCollector`
-  - Method L250: `__init__(self, subscription: WebSocketSubscription, *, jitter_source: Callable[[], float] = random.random) -> None`
-  - Method L259: `async collect_forever(self, *, stop_event: asyncio.Event, on_payload: Callable[[Mapping[str, object], datetime], object | Awaitable[object]], on_error: Callable[[Exception], object | Awaitable[object]] | None = None, on_connected: Callable[[], object | Awaitable[object]] | None = None) -> None`
-  - Method L308: `async _connect_once(self, *, stop_event: asyncio.Event, on_payload: Callable[[Mapping[str, object], datetime], object | Awaitable[object]], on_activity: Callable[[], None], on_connected: Callable[[], object | Awaitable[object]] | None) -> None`
-  - Method L336: `async _collect_connection(self, *, socket, stop_event: asyncio.Event, on_payload: Callable[[Mapping[str, object], datetime], object | Awaitable[object]]) -> None`
-  - Method L375: `async _send_heartbeats(self, *, socket, stop_event: asyncio.Event) -> None`
-  - Method L386: `async _wait_for_stop(self, stop_event: asyncio.Event, delay: float) -> bool`
-  - Method L393: `_reconnect_delay(self, attempt: int) -> float`
+- Function L452: `async _maybe_await(value: object) -> object`
+- Function L458: `_message_payloads(raw: str | bytes) -> tuple[Mapping[str, object], ...]`
+- Function L475: `normalize_collector_session_id(value: object) -> str`
+- Function L484: `_freeze_json_value(value: object) -> object`
+- Class L33: `BusinessPayloadInactivityError(TimeoutError)`
+  - Method L36: `__init__(self, *, endpoint: str, timeout_seconds: float) -> None`
+- Class L45: `RawCollectorEvent`
+  - Method L54: `__post_init__(self) -> None`
+  - Method L88: `estimated_size_bytes(self) -> int`
+  - Method L105: `as_row(self) -> dict[str, object]`
+  - Method L126: `with_admission_sequence(self, value: int) -> RawCollectorEvent`
+- Class L139: `PartitionedRawEventWriter`
+  - Method L142: `__init__(self, root: Path, *, manifest_attributes: Mapping[str, str] | None = None, inventory: PartWriteInventory | None = None) -> None`
+  - Method L161: `write(self, events: Sequence[RawCollectorEvent], *, quality_counts: Mapping[RawPartitionKey, tuple[int, int]] | None = None) -> tuple[DataPartitionManifest, ...]`
+- Class L230: `WebSocketSubscription`
+  - Method L240: `__post_init__(self) -> None`
+- Class L264: `JsonWebSocketCollector`
+  - Method L267: `__init__(self, subscription: WebSocketSubscription, *, jitter_source: Callable[[], float] = random.random) -> None`
+  - Method L276: `async collect_forever(self, *, stop_event: asyncio.Event, on_payload: Callable[[Mapping[str, object], datetime], object | Awaitable[object]], on_error: Callable[[Exception], object | Awaitable[object]] | None = None, on_connected: Callable[[], object | Awaitable[object]] | None = None) -> None`
+  - Method L325: `async _connect_once(self, *, stop_event: asyncio.Event, on_payload: Callable[[Mapping[str, object], datetime], object | Awaitable[object]], on_activity: Callable[[], None], on_connected: Callable[[], object | Awaitable[object]] | None) -> None`
+  - Method L355: `async _collect_connection(self, *, socket, stop_event: asyncio.Event, on_payload: Callable[[Mapping[str, object], datetime], object | Awaitable[object]]) -> None`
+  - Method L421: `async _send_heartbeats(self, *, socket, stop_event: asyncio.Event) -> None`
+  - Method L432: `async _wait_for_stop(self, stop_event: asyncio.Event, delay: float) -> bool`
+  - Method L439: `_reconnect_delay(self, attempt: int) -> float`
 
 ### `btc_short_horizon/data/contracts.py`
 - Imports: `__future__, dataclasses, datetime, enum, re`
@@ -738,13 +740,13 @@ flowchart TD
 
 ### `btc_short_horizon/data/subscriptions.py`
 - Imports: `__future__, btc_short_horizon, json, urllib`
-- Function L18: `polymarket_market_subscription(token_ids: tuple[str, ...]) -> WebSocketSubscription`
-- Function L34: `polymarket_rtds_chainlink_btc_subscription() -> WebSocketSubscription`
-- Function L52: `binance_combined_stream_subscription(streams: tuple[str, ...]) -> WebSocketSubscription`
-- Function L59: `binance_futures_market_stream_subscription(streams: tuple[str, ...]) -> WebSocketSubscription`
-- Function L68: `binance_futures_public_stream_subscription(streams: tuple[str, ...]) -> WebSocketSubscription`
-- Function L77: `_binance_combined_stream_subscription(*, endpoint: str, streams: tuple[str, ...]) -> WebSocketSubscription`
-- Function L92: `okx_public_subscription(arguments: tuple[dict[str, str], ...]) -> WebSocketSubscription`
+- Function L20: `polymarket_market_subscription(token_ids: tuple[str, ...]) -> WebSocketSubscription`
+- Function L36: `polymarket_rtds_chainlink_btc_subscription() -> WebSocketSubscription`
+- Function L55: `binance_combined_stream_subscription(streams: tuple[str, ...]) -> WebSocketSubscription`
+- Function L62: `binance_futures_market_stream_subscription(streams: tuple[str, ...]) -> WebSocketSubscription`
+- Function L71: `binance_futures_public_stream_subscription(streams: tuple[str, ...]) -> WebSocketSubscription`
+- Function L80: `_binance_combined_stream_subscription(*, endpoint: str, streams: tuple[str, ...]) -> WebSocketSubscription`
+- Function L101: `okx_public_subscription(arguments: tuple[dict[str, str], ...]) -> WebSocketSubscription`
 
 ### `btc_short_horizon/execution_timing.py`
 - Imports: `__future__, math`

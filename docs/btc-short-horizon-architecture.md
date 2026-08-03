@@ -136,6 +136,14 @@ the last decision/work/cancel-race evidence and before the next pre-open socket.
 Offline readers continue to treat a session change as a conservative identity
 boundary; timestamp/sequence continuity is still validated and any real missing
 bar remains fail-closed.
+Version v15 adds accepted-business-payload inactivity detection to the
+continuous Chainlink RTDS and Binance `kline_1s` sockets. Transport ping/pong,
+application `PONG`, empty frames, and rejected payloads do not reset the
+deadline. A timeout is persisted through the existing `continuity_gap` path,
+advances that logical stream's epoch, and reconnects with bounded exponential
+backoff. Low-frequency CLOB, OKX, and trade-only subscriptions retain no generic
+payload deadline because their protocols do not guarantee a safe minimum event
+rate.
 Every bounded connection still starts from the venue's
 official initial full-book dump; window-external deltas are neither required
 nor silently treated as collected evidence. A collector restart after a capture

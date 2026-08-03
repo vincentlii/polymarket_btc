@@ -37,7 +37,7 @@ def test_baseline_config_is_path_relative_and_has_explicit_queue_scenarios() -> 
     assert config.collection.max_pending_bytes == 67_108_864
     assert config.collection.polymarket_capture_lead_seconds == 90.0
     assert config.collection.opening_handoff_delay_seconds == 215.0
-    assert config.collection.ingest_version == "btc-short-horizon-v14"
+    assert config.collection.ingest_version == "btc-short-horizon-v15"
     assert config.paper_execution_epoch == "paper-v3-independent-fak"
     assert [variant.variant_id for variant in config.paper_execution_variants] == [
         "maker_15s",
