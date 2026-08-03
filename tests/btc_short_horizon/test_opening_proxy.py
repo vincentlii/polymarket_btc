@@ -11,6 +11,7 @@ import pytest
 from btc_short_horizon.data import BTC_15M_MARKET_FAMILY, MarketOutcome, MarketWindow
 from btc_short_horizon.research.binance_history import BinanceKlineHistory
 from btc_short_horizon.research.opening_proxy import (
+    CausalFeatureUnavailableError,
     OpeningRegime,
     build_opening_proxy_dataset,
     opening_proxy_protocol,
@@ -43,8 +44,9 @@ def test_opening_regimes_cover_the_frozen_three_minute_protocol() -> None:
         OpeningRegime.MID_EARLY,
         OpeningRegime.MID_EARLY,
     ]
-    with pytest.raises(ValueError, match="three-minute"):
-        opening_regime_for_elapsed_seconds(181)
+    for gap_value in (31, 34.999, 90.001, 94.999, 181):
+        with pytest.raises(ValueError, match="three-minute"):
+            opening_regime_for_elapsed_seconds(gap_value)
 
 
 def test_opening_proxy_protocol_rejects_an_early_30_second_artifact() -> None:
@@ -175,6 +177,91 @@ def test_single_runtime_feature_vector_matches_the_training_dataset() -> None:
     )
 
     assert build.dataset.schema.vector_from(values) == pytest.approx(build.dataset.vectors[0])
+
+
+def test_runtime_feature_vector_rejects_a_stale_tail_without_a_shortest_window_bar() -> None:
+    start = datetime(2026, 1, 1, 2, tzinfo=UTC)
+    complete = _history(start)
+    end = int(
+        np.searchsorted(
+            complete.open_ts_ns,
+            int((start - timedelta(seconds=2)).timestamp() * _SECOND),
+            side="left",
+        )
+    )
+    history = BinanceKlineHistory(
+        open_ts_ns=complete.open_ts_ns[:end],
+        close=complete.close[:end],
+        volume=complete.volume[:end],
+        quote_volume=complete.quote_volume[:end],
+        taker_buy_volume=complete.taker_buy_volume[:end],
+    )
+
+    with pytest.raises(CausalFeatureUnavailableError, match="5s feature window"):
+        opening_proxy_feature_values_at(
+            klines=history,
+            market_start=start,
+            decision_time=start + timedelta(seconds=5),
+        )
+
+
+def test_runtime_feature_vector_accepts_the_boundary_with_one_shortest_window_bar() -> None:
+    start = datetime(2026, 1, 1, 2, tzinfo=UTC)
+    complete = _history(start)
+    end = int(
+        np.searchsorted(
+            complete.open_ts_ns,
+            int((start - timedelta(seconds=1)).timestamp() * _SECOND),
+            side="right",
+        )
+    )
+    history = BinanceKlineHistory(
+        open_ts_ns=complete.open_ts_ns[:end],
+        close=complete.close[:end],
+        volume=complete.volume[:end],
+        quote_volume=complete.quote_volume[:end],
+        taker_buy_volume=complete.taker_buy_volume[:end],
+    )
+
+    values = opening_proxy_feature_values_at(
+        klines=history,
+        market_start=start,
+        decision_time=start + timedelta(seconds=5),
+    )
+
+    assert np.isfinite(values["binance_spot_return_5s"])
+
+
+def test_runtime_feature_vector_rejects_a_stale_minute_tail_with_window_context() -> None:
+    start = datetime(2026, 1, 1, 2, tzinfo=UTC)
+    minute = 60 * _SECOND
+    opens = np.arange(
+        int((start - timedelta(hours=2)).timestamp() * _SECOND),
+        int((start - timedelta(minutes=1)).timestamp() * _SECOND),
+        minute,
+        dtype=np.int64,
+    )
+    close = 100_000.0 + np.arange(len(opens), dtype=float)
+    history = BinanceKlineHistory(
+        open_ts_ns=opens,
+        close=close,
+        volume=np.ones(len(opens)),
+        quote_volume=close,
+        taker_buy_volume=np.full(len(opens), 0.6),
+        interval_seconds=60,
+    )
+
+    with pytest.raises(CausalFeatureUnavailableError, match="60s feature window") as exc:
+        opening_proxy_feature_values_at(
+            klines=history,
+            market_start=start,
+            decision_time=start + timedelta(seconds=5),
+        )
+
+    assert f"decision_ts_ns={int((start + timedelta(seconds=5)).timestamp() * _SECOND)}" in str(
+        exc.value
+    )
+    assert "available_tail_ts_ns=" in str(exc.value)
 
 
 def test_opening_proxy_excludes_a_market_with_a_lookback_gap() -> None:

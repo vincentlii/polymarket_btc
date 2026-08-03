@@ -30,6 +30,17 @@ type RawPartitionKey = tuple[str, str, str, str, str, str, str]
 _COLLECTOR_SESSION_ID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 
+class BusinessPayloadInactivityError(TimeoutError):
+    """Raised when a live socket stops yielding accepted business payloads."""
+
+    def __init__(self, *, endpoint: str, timeout_seconds: float) -> None:
+        self.endpoint = endpoint
+        self.timeout_seconds = timeout_seconds
+        super().__init__(
+            f"no accepted business payload received for {timeout_seconds:g}s from {endpoint}"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class RawCollectorEvent:
     timing: TimedMarketEvent
@@ -221,6 +232,7 @@ class WebSocketSubscription:
     subscribe_payload: Mapping[str, object] | None = None
     heartbeat_payload: str | Mapping[str, object] | None = None
     heartbeat_interval_seconds: float = 5.0
+    business_payload_timeout_seconds: float | None = None
     reconnect_delay_seconds: float = 1.0
     reconnect_max_delay_seconds: float = 30.0
     reconnect_jitter_ratio: float = 0.2
@@ -237,6 +249,11 @@ class WebSocketSubscription:
             or self.reconnect_max_delay_seconds < self.reconnect_delay_seconds
         ):
             raise ValueError("heartbeat and reconnect intervals must be finite and > 0")
+        if self.business_payload_timeout_seconds is not None and (
+            not isfinite(self.business_payload_timeout_seconds)
+            or self.business_payload_timeout_seconds <= 0.0
+        ):
+            raise ValueError("business_payload_timeout_seconds must be finite and > 0")
         if (
             not isfinite(self.reconnect_jitter_ratio)
             or not 0.0 <= self.reconnect_jitter_ratio < 1.0
@@ -322,10 +339,12 @@ class JsonWebSocketCollector:
             async def on_connection_payload(
                 payload: Mapping[str, object],
                 received_at: datetime,
-            ) -> None:
+            ) -> bool:
                 accepted = await _maybe_await(on_payload(payload, received_at))
                 if accepted is not False:
                     on_activity()
+                    return True
+                return False
 
             await self._collect_connection(
                 socket=socket,
@@ -346,6 +365,11 @@ class JsonWebSocketCollector:
             if self.subscription.heartbeat_payload is not None
             else None
         )
+        loop = asyncio.get_running_loop()
+        inactivity_timeout = self.subscription.business_payload_timeout_seconds
+        inactivity_deadline = (
+            None if inactivity_timeout is None else loop.time() + inactivity_timeout
+        )
         recv_task: asyncio.Task[object] | None = None
         try:
             while True:
@@ -353,16 +377,38 @@ class JsonWebSocketCollector:
                 wait_tasks = {recv_task, stop_task}
                 if heartbeat_task is not None:
                     wait_tasks.add(heartbeat_task)
-                done, _ = await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
+                remaining = (
+                    None
+                    if inactivity_deadline is None
+                    else max(0.0, inactivity_deadline - loop.time())
+                )
+                done, _ = await asyncio.wait(
+                    wait_tasks,
+                    timeout=remaining,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
                 if stop_task in done:
                     return
+                if not done:
+                    if stop_event.is_set():
+                        return
+                    if inactivity_timeout is None:  # pragma: no cover - asyncio invariant
+                        raise RuntimeError("WebSocket wait returned without a timeout")
+                    raise BusinessPayloadInactivityError(
+                        endpoint=self.subscription.endpoint,
+                        timeout_seconds=inactivity_timeout,
+                    )
                 if heartbeat_task is not None and heartbeat_task in done:
                     heartbeat_task.result()
                     return
                 raw = recv_task.result()
                 recv_task = None
+                accepted_business_payload = False
                 for payload in _message_payloads(raw):
-                    await _maybe_await(on_payload(payload, datetime.now(UTC)))
+                    accepted = await _maybe_await(on_payload(payload, datetime.now(UTC)))
+                    accepted_business_payload = accepted_business_payload or accepted is not False
+                if accepted_business_payload and inactivity_timeout is not None:
+                    inactivity_deadline = loop.time() + inactivity_timeout
         finally:
             tasks = tuple(
                 task for task in (recv_task, heartbeat_task, stop_task) if task is not None
@@ -444,6 +490,7 @@ def _freeze_json_value(value: object) -> object:
 
 
 __all__ = [
+    "BusinessPayloadInactivityError",
     "JsonWebSocketCollector",
     "PartitionedRawEventWriter",
     "RawCollectorEvent",

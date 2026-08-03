@@ -125,6 +125,7 @@ class MakerOrderLayer:
     price: float
     size: float
     visible_size: float
+    queue_ahead: float | None = None
 
     def __post_init__(self) -> None:
         _require_probability("price", self.price)
@@ -132,6 +133,11 @@ class MakerOrderLayer:
         _require_positive("visible_size", self.visible_size)
         if self.size > self.visible_size + 1e-12:
             raise ValueError("order size cannot exceed visible same-side depth")
+        queue_ahead = self.visible_size if self.queue_ahead is None else self.queue_ahead
+        _require_nonnegative("queue_ahead", queue_ahead)
+        if queue_ahead > self.visible_size + 1e-12:
+            raise ValueError("queue_ahead cannot exceed the visible capacity reference")
+        object.__setattr__(self, "queue_ahead", queue_ahead)
 
     @property
     def notional(self) -> float:
@@ -187,3 +193,60 @@ class OrderPlan:
 
     def net_edge(self, price: float) -> float:
         return self.p_fair - price - self.safety_buffer
+
+
+@dataclass(frozen=True, slots=True)
+class TakerOrderPlan:
+    """One independent, immediately executable taker opportunity."""
+
+    market_slug: str
+    token_id: str
+    side: TokenSide
+    p_boundary: float
+    p_fair: float
+    p_market: float
+    created_ts_ns: int
+    total_size: float
+    filled_notional: float
+    taker_fees: float
+    slippage_buffer: float
+    model_uncertainty_buffer: float
+    minimum_edge: float
+    limit_price: float
+
+    def __post_init__(self) -> None:
+        if not self.market_slug or not self.token_id:
+            raise ValueError("market_slug and token_id are required")
+        for name in ("p_boundary", "p_fair", "p_market", "limit_price"):
+            _require_probability(name, getattr(self, name))
+        if self.created_ts_ns < 0:
+            raise ValueError("created_ts_ns must be non-negative")
+        _require_positive("total_size", self.total_size)
+        _require_positive("filled_notional", self.filled_notional)
+        for name in (
+            "taker_fees",
+            "slippage_buffer",
+            "model_uncertainty_buffer",
+            "minimum_edge",
+        ):
+            _require_nonnegative(name, getattr(self, name))
+        if self.net_edge_per_share + 1e-12 < self.minimum_edge:
+            raise ValueError("taker plan must satisfy minimum_edge")
+
+    @property
+    def executable_vwap(self) -> float:
+        return self.filled_notional / self.total_size
+
+    @property
+    def total_notional(self) -> float:
+        return self.filled_notional + self.taker_fees
+
+    @property
+    def net_edge_per_share(self) -> float:
+        return (
+            self.p_fair
+            - self.executable_vwap
+            - self.taker_fees / self.total_size
+            - self.slippage_buffer
+            - self.model_uncertainty_buffer
+        )

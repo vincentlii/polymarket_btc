@@ -125,6 +125,12 @@ class OrderPerformance:
     taker_fees: float = 0.0
     initial_queue_ahead: float = 0.0
     remaining_queue_ahead: float = 0.0
+    opportunity_id: str | None = None
+    entry_regime: str | None = None
+    price_bucket: str | None = None
+    go_eligible: bool | None = None
+    decision_best_ask: float | None = None
+    signal_edge_decay: float | None = None
 
     def __post_init__(self) -> None:
         _require_identifier(self.variant_id, "variant_id")
@@ -155,6 +161,17 @@ class OrderPerformance:
         _nonnegative(self.taker_fees, "taker_fees")
         _nonnegative(self.initial_queue_ahead, "initial_queue_ahead")
         _nonnegative(self.remaining_queue_ahead, "remaining_queue_ahead")
+        for name in ("opportunity_id", "entry_regime", "price_bucket"):
+            value = getattr(self, name)
+            if value is not None:
+                _require_text(value, name)
+        if self.go_eligible is not None and not isinstance(self.go_eligible, bool):
+            raise ValueError("go_eligible must be bool when provided")
+        if self.decision_best_ask is not None and (
+            not isfinite(self.decision_best_ask) or not 0.0 < self.decision_best_ask < 1.0
+        ):
+            raise ValueError("decision_best_ask must be in (0, 1) when provided")
+        _optional_finite(self.signal_edge_decay, "signal_edge_decay")
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -178,6 +195,12 @@ class OrderPerformance:
             "taker_fees": self.taker_fees,
             "initial_queue_ahead": self.initial_queue_ahead,
             "remaining_queue_ahead": self.remaining_queue_ahead,
+            "opportunity_id": self.opportunity_id,
+            "entry_regime": self.entry_regime,
+            "price_bucket": self.price_bucket,
+            "go_eligible": self.go_eligible,
+            "decision_best_ask": self.decision_best_ask,
+            "signal_edge_decay": self.signal_edge_decay,
         }
 
     @classmethod
@@ -208,6 +231,59 @@ class OrderPerformance:
             remaining_queue_ahead=_float(
                 value.get("remaining_queue_ahead", 0.0), "remaining_queue_ahead"
             ),
+            opportunity_id=_optional_text(value.get("opportunity_id"), "opportunity_id"),
+            entry_regime=_optional_text(value.get("entry_regime"), "entry_regime"),
+            price_bucket=_optional_text(value.get("price_bucket"), "price_bucket"),
+            go_eligible=_optional_bool(value.get("go_eligible"), "go_eligible"),
+            decision_best_ask=_optional_float(value.get("decision_best_ask"), "decision_best_ask"),
+            signal_edge_decay=_optional_float(value.get("signal_edge_decay"), "signal_edge_decay"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionSegmentPerformance:
+    dimension: str
+    key: str
+    opportunity_count: int
+    resolved_count: int
+    fill_count: int
+    realized_pnl: float
+    paired_ev_per_opportunity: float | None
+
+    def __post_init__(self) -> None:
+        _require_identifier(self.dimension, "segment dimension")
+        _require_identifier(self.key, "segment key")
+        for name in ("opportunity_count", "resolved_count", "fill_count"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        _finite(self.realized_pnl, "segment realized_pnl")
+        _optional_finite(self.paired_ev_per_opportunity, "paired_ev_per_opportunity")
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "dimension": self.dimension,
+            "key": self.key,
+            "opportunity_count": self.opportunity_count,
+            "resolved_count": self.resolved_count,
+            "fill_count": self.fill_count,
+            "realized_pnl": self.realized_pnl,
+            "paired_ev_per_opportunity": self.paired_ev_per_opportunity,
+        }
+
+    @classmethod
+    def from_json(cls, raw: object) -> ExecutionSegmentPerformance:
+        value = _mapping(raw, "execution segment performance")
+        return cls(
+            dimension=_text(value.get("dimension"), "segment dimension"),
+            key=_text(value.get("key"), "segment key"),
+            opportunity_count=_integer(value.get("opportunity_count"), "opportunity_count"),
+            resolved_count=_integer(value.get("resolved_count"), "resolved_count"),
+            fill_count=_integer(value.get("fill_count"), "fill_count"),
+            realized_pnl=_float(value.get("realized_pnl"), "segment realized_pnl"),
+            paired_ev_per_opportunity=_optional_float(
+                value.get("paired_ev_per_opportunity"), "paired_ev_per_opportunity"
+            ),
         )
 
 
@@ -223,6 +299,14 @@ class ExecutionVariantPerformance:
     order_count: int
     fill_count: int
     taker_fees: float
+    resolved_opportunity_count: int = 0
+    core_resolved_opportunity_count: int = 0
+    tail_resolved_opportunity_count: int = 0
+    paired_ev_per_opportunity: float | None = None
+    core_paired_ev_per_opportunity: float | None = None
+    tail_paired_ev_per_opportunity: float | None = None
+    conditional_ev_per_filled_share: float | None = None
+    segment_summaries: tuple[ExecutionSegmentPerformance, ...] = ()
 
     def __post_init__(self) -> None:
         _require_identifier(self.variant_id, "variant_id")
@@ -237,6 +321,28 @@ class ExecutionVariantPerformance:
         for name, value in (("order_count", self.order_count), ("fill_count", self.fill_count)):
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"{name} must be a non-negative integer")
+        for name in (
+            "resolved_opportunity_count",
+            "core_resolved_opportunity_count",
+            "tail_resolved_opportunity_count",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        _optional_finite(self.paired_ev_per_opportunity, "paired_ev_per_opportunity")
+        _optional_finite(
+            self.core_paired_ev_per_opportunity,
+            "core_paired_ev_per_opportunity",
+        )
+        _optional_finite(
+            self.tail_paired_ev_per_opportunity,
+            "tail_paired_ev_per_opportunity",
+        )
+        _optional_finite(
+            self.conditional_ev_per_filled_share,
+            "conditional_ev_per_filled_share",
+        )
+        object.__setattr__(self, "segment_summaries", tuple(self.segment_summaries))
 
     @property
     def fill_rate(self) -> float | None:
@@ -255,6 +361,14 @@ class ExecutionVariantPerformance:
             "fill_count": self.fill_count,
             "fill_rate": self.fill_rate,
             "taker_fees": self.taker_fees,
+            "resolved_opportunity_count": self.resolved_opportunity_count,
+            "core_resolved_opportunity_count": self.core_resolved_opportunity_count,
+            "tail_resolved_opportunity_count": self.tail_resolved_opportunity_count,
+            "paired_ev_per_opportunity": self.paired_ev_per_opportunity,
+            "core_paired_ev_per_opportunity": self.core_paired_ev_per_opportunity,
+            "tail_paired_ev_per_opportunity": self.tail_paired_ev_per_opportunity,
+            "conditional_ev_per_filled_share": self.conditional_ev_per_filled_share,
+            "segment_summaries": [item.to_json() for item in self.segment_summaries],
         }
 
     @classmethod
@@ -271,6 +385,97 @@ class ExecutionVariantPerformance:
             order_count=_integer(value.get("order_count"), "order_count"),
             fill_count=_integer(value.get("fill_count"), "fill_count"),
             taker_fees=_float(value.get("taker_fees", 0.0), "taker_fees"),
+            resolved_opportunity_count=_integer(
+                value.get("resolved_opportunity_count", 0), "resolved_opportunity_count"
+            ),
+            core_resolved_opportunity_count=_integer(
+                value.get("core_resolved_opportunity_count", 0),
+                "core_resolved_opportunity_count",
+            ),
+            tail_resolved_opportunity_count=_integer(
+                value.get("tail_resolved_opportunity_count", 0),
+                "tail_resolved_opportunity_count",
+            ),
+            paired_ev_per_opportunity=_optional_float(
+                value.get("paired_ev_per_opportunity"), "paired_ev_per_opportunity"
+            ),
+            core_paired_ev_per_opportunity=_optional_float(
+                value.get("core_paired_ev_per_opportunity"),
+                "core_paired_ev_per_opportunity",
+            ),
+            tail_paired_ev_per_opportunity=_optional_float(
+                value.get("tail_paired_ev_per_opportunity"),
+                "tail_paired_ev_per_opportunity",
+            ),
+            conditional_ev_per_filled_share=_optional_float(
+                value.get("conditional_ev_per_filled_share"),
+                "conditional_ev_per_filled_share",
+            ),
+            segment_summaries=tuple(
+                ExecutionSegmentPerformance.from_json(item)
+                for item in _sequence(value.get("segment_summaries", ()), "segment_summaries")
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionFunnelSnapshot:
+    scope: str
+    decision_ticks: int
+    predictions: int
+    eligible_signal_ticks: int
+    confirmation_pending: int
+    opportunities: int
+    placements: int
+    working: int
+    rejected: int
+    canceled: int
+    fills: int
+    resolved: int
+
+    def __post_init__(self) -> None:
+        _require_identifier(self.scope, "funnel scope")
+        for name in (
+            "decision_ticks",
+            "predictions",
+            "eligible_signal_ticks",
+            "confirmation_pending",
+            "opportunities",
+            "placements",
+            "working",
+            "rejected",
+            "canceled",
+            "fills",
+            "resolved",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+
+    def to_json(self) -> dict[str, object]:
+        return {name: getattr(self, name) for name in self.__dataclass_fields__}
+
+    @classmethod
+    def from_json(cls, raw: object) -> DecisionFunnelSnapshot:
+        value = _mapping(raw, "decision funnel")
+        return cls(
+            scope=_text(value.get("scope"), "funnel scope"),
+            **{
+                name: _integer(value.get(name), name)
+                for name in (
+                    "decision_ticks",
+                    "predictions",
+                    "eligible_signal_ticks",
+                    "confirmation_pending",
+                    "opportunities",
+                    "placements",
+                    "working",
+                    "rejected",
+                    "canceled",
+                    "fills",
+                    "resolved",
+                )
+            },
         )
 
 
@@ -292,6 +497,8 @@ class PerformanceSnapshot:
     primary_variant_id: str | None = None
     variant_summaries: tuple[ExecutionVariantPerformance, ...] = ()
     recent_orders: tuple[OrderPerformance, ...] = ()
+    paper_execution_epoch: str | None = None
+    decision_funnel: DecisionFunnelSnapshot | None = None
 
     def __post_init__(self) -> None:
         _require_identifier(self.currency, "currency")
@@ -321,6 +528,8 @@ class PerformanceSnapshot:
             _require_identifier(self.primary_variant_id, "primary_variant_id")
         summaries = tuple(self.variant_summaries)
         orders = tuple(self.recent_orders)
+        if self.paper_execution_epoch is not None:
+            _require_identifier(self.paper_execution_epoch, "paper_execution_epoch")
         if summaries:
             primary_ids = {item.variant_id for item in summaries if item.primary}
             if primary_ids != {self.primary_variant_id}:
@@ -349,6 +558,10 @@ class PerformanceSnapshot:
             "primary_variant_id": self.primary_variant_id,
             "variant_summaries": [item.to_json() for item in self.variant_summaries],
             "recent_orders": [order.to_json() for order in self.recent_orders],
+            "paper_execution_epoch": self.paper_execution_epoch,
+            "decision_funnel": (
+                None if self.decision_funnel is None else self.decision_funnel.to_json()
+            ),
         }
 
     @classmethod
@@ -381,6 +594,14 @@ class PerformanceSnapshot:
             recent_orders=tuple(
                 OrderPerformance.from_json(item)
                 for item in _sequence(value.get("recent_orders", ()), "recent_orders")
+            ),
+            paper_execution_epoch=_optional_text(
+                value.get("paper_execution_epoch"), "paper_execution_epoch"
+            ),
+            decision_funnel=(
+                None
+                if value.get("decision_funnel") is None
+                else DecisionFunnelSnapshot.from_json(value.get("decision_funnel"))
             ),
         )
 
@@ -627,6 +848,14 @@ def _text(value: object, name: str) -> str:
 
 def _optional_text(value: object, name: str) -> str | None:
     return None if value is None else _text(value, name)
+
+
+def _optional_bool(value: object, name: str) -> bool | None:
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be bool")
+    return value
 
 
 def _finite(value: float, name: str) -> None:

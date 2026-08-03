@@ -17,6 +17,7 @@ from btc_short_horizon.config import BtcProjectConfig
 from btc_short_horizon.data import MarketWindow
 from btc_short_horizon.data.collector import RawCollectorEvent
 from btc_short_horizon.data.forward import AdmittedEventBuffer
+from btc_short_horizon.execution_timing import CLOB_DELAYED_TAKER_SERVER_MS
 from btc_short_horizon.data.gamma import GammaMarketClient
 from btc_short_horizon.live.dashboard_state import DashboardSnapshotStore
 from btc_short_horizon.live.paper_execution import PaperExecutionConfig, PaperMarketRules
@@ -29,6 +30,7 @@ from btc_short_horizon.live.runtime import RuntimeStatus, RuntimeStatusStore
 from btc_short_horizon.models import ModelArtifactStore
 from btc_short_horizon.research.binance_history import fetch_binance_spot_kline_history
 from btc_short_horizon.research.opening_proxy import (
+    CausalFeatureUnavailableError,
     opening_proxy_feature_schema,
     opening_proxy_protocol,
     validate_opening_proxy_protocol,
@@ -52,13 +54,26 @@ _DECISIONS_WITHOUT_PREDICTION = {
 class PublicPaperRulesClient:
     """Read one versioned CLOB market-rule snapshot without credentials."""
 
-    def __init__(self, *, base_url: str = _CLOB_HOST, timeout_seconds: float = 10.0) -> None:
+    def __init__(
+        self,
+        *,
+        base_url: str = _CLOB_HOST,
+        timeout_seconds: float = 10.0,
+        enabled_taker_delay_ms: float = CLOB_DELAYED_TAKER_SERVER_MS,
+        taker_delay_policy_id: str = "clob-itode-250ms-v1",
+    ) -> None:
         if not base_url.startswith("https://"):
             raise ValueError("CLOB rules base_url must use https")
         if not isfinite(timeout_seconds) or timeout_seconds <= 0.0:
             raise ValueError("timeout_seconds must be finite and > 0")
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
+        if not isfinite(enabled_taker_delay_ms) or enabled_taker_delay_ms <= 0.0:
+            raise ValueError("enabled_taker_delay_ms must be finite and > 0")
+        if not taker_delay_policy_id:
+            raise ValueError("taker_delay_policy_id must not be empty")
+        self.enabled_taker_delay_ms = enabled_taker_delay_ms
+        self.taker_delay_policy_id = taker_delay_policy_id
 
     async def fetch(
         self,
@@ -96,6 +111,10 @@ class PublicPaperRulesClient:
         taker_only = fee_details.get("to")
         if taker_only is not True:
             raise ValueError("Research Paper requires a verified taker-only fee schedule")
+        taker_delay_enabled = payload.get("itode")
+        if not isinstance(taker_delay_enabled, bool):
+            raise ValueError("CLOB market rules require a boolean taker delay flag")
+        taker_server_delay_ms = self.enabled_taker_delay_ms if taker_delay_enabled else 0.0
         tick_size = _decimal_text(payload.get("mts"), "minimum tick size")
         minimum_order_size = _positive_number(payload.get("mos"), "minimum order size")
         neg_risk = payload.get("nr", False)
@@ -116,6 +135,9 @@ class PublicPaperRulesClient:
                 taker_fee_rate=taker_fee_rate,
                 taker_fee_exponent=taker_fee_exponent,
                 taker_only=taker_only,
+                taker_server_delay_ms=taker_server_delay_ms,
+                taker_delay_enabled=taker_delay_enabled,
+                taker_delay_policy_id=self.taker_delay_policy_id,
             )
             for token_id in expected
         }
@@ -153,6 +175,50 @@ class ModelPaperPredictor:
         )
 
 
+def build_research_paper_portfolio(
+    *,
+    project: BtcProjectConfig,
+    predictor: ModelPaperPredictor,
+    runtime_root: Path,
+    starting_balance: float,
+) -> ResearchPaperPortfolio:
+    """Build the one execution-policy portfolio shared by live and replay."""
+
+    scenario = project.require_scenario("p99_half_volume_book_first").execution
+    latency = scenario.latency_model
+    execution_config = PaperExecutionConfig(
+        insert_latency_ms=latency.base_latency_ms + latency.insert_latency_ms,
+        cancel_latency_ms=latency.base_latency_ms + latency.cancel_latency_ms,
+        taker_latency_ms=latency.base_latency_ms + latency.insert_latency_ms,
+        trade_volume_multiplier=scenario.trade_execution_size_multiplier,
+    )
+    return ResearchPaperPortfolio(
+        tuple(
+            ResearchPaperEngine(
+                predictor=predictor,
+                model_id=predictor.model_id,
+                maker_config=replace(
+                    project.maker,
+                    max_work_seconds=(
+                        variant.maker_work_seconds
+                        if variant.mode == "maker"
+                        else project.maker.max_work_seconds
+                    ),
+                ),
+                execution_config=execution_config,
+                variant=variant,
+                ledger_store=PaperLedgerStore(
+                    runtime_root,
+                    project.paper_execution_epoch,
+                    variant.variant_id,
+                ),
+                starting_balance=starting_balance,
+            )
+            for variant in project.paper_execution_variants
+        )
+    )
+
+
 class ResearchPaperRuntime:
     """Keep Paper failures isolated while preserving real-time causal decisions."""
 
@@ -169,34 +235,12 @@ class ResearchPaperRuntime:
         gamma_client: GammaMarketClient | None = None,
     ) -> None:
         predictor = ModelPaperPredictor(project=project, model_directory=model_directory)
-        scenario = project.require_scenario("p99_half_volume_book_first").execution
-        latency = scenario.latency_model
-        execution_config = PaperExecutionConfig(
-            insert_latency_ms=latency.base_latency_ms + latency.insert_latency_ms,
-            cancel_latency_ms=latency.base_latency_ms + latency.cancel_latency_ms,
-            taker_latency_ms=latency.base_latency_ms + latency.insert_latency_ms,
-            trade_volume_multiplier=scenario.trade_execution_size_multiplier,
+        self.engine = build_research_paper_portfolio(
+            project=project,
+            predictor=predictor,
+            runtime_root=runtime_root,
+            starting_balance=starting_balance,
         )
-        engines = tuple(
-            ResearchPaperEngine(
-                predictor=predictor,
-                model_id=predictor.model_id,
-                maker_config=replace(
-                    project.maker,
-                    max_work_seconds=(
-                        variant.maker_work_seconds
-                        if variant.mode == "maker"
-                        else project.maker.max_work_seconds
-                    ),
-                ),
-                execution_config=execution_config,
-                variant=variant,
-                ledger_store=PaperLedgerStore(runtime_root, variant.variant_id),
-                starting_balance=starting_balance,
-            )
-            for variant in project.paper_execution_variants
-        )
-        self.engine = ResearchPaperPortfolio(engines)
         self.project = project
         self.runtime_root = runtime_root
         self.rule_epoch = rule_epoch
@@ -396,10 +440,11 @@ class ResearchPaperRuntime:
             self._next_decision_ns = first_ns + steps * cadence_ns
 
     def _run_due_decision(self, now: datetime) -> None:
-        if self._next_decision_ns is None or self.engine.market is None:
+        if self.engine.market is None:
             return
         now_ns = int(now.timestamp() * 1_000_000_000)
-        if now_ns < self._next_decision_ns:
+        self.engine.advance(now_ts_ns=now_ns)
+        if self._next_decision_ns is None or now_ns < self._next_decision_ns:
             return
         end_ns = int(self.engine.market.t0.timestamp() * 1_000_000_000) + round(
             (
@@ -411,13 +456,13 @@ class ResearchPaperRuntime:
             * 1_000_000_000
         )
         if self._next_decision_ns > end_ns:
-            self.engine.advance(now_ts_ns=now_ns)
             self._next_decision_ns = None
             return
         try:
             self._last_decision_result = self.engine.decide(now_ts_ns=now_ns)
-        except ValueError as exc:
-            self._prediction_errors += 1
+        except CausalFeatureUnavailableError as exc:
+            if "prediction" not in self._recoverable_errors:
+                self._prediction_errors += 1
             self._last_decision_result = f"prediction_unavailable:{exc}"
             message = f"{type(exc).__name__}: {exc}"
             self._recoverable_errors["prediction"] = message
@@ -429,6 +474,7 @@ class ResearchPaperRuntime:
         else:
             if self._last_decision_result not in _DECISIONS_WITHOUT_PREDICTION:
                 self._recoverable_errors.pop("prediction", None)
+                self._last_prediction_error = None
         self._next_decision_ns += round(self.project.maker.signal_cadence_seconds * 1_000_000_000)
 
     async def _settle_resolved_markets(self) -> None:
@@ -474,6 +520,7 @@ class ResearchPaperRuntime:
     def _publish(self, *, now: datetime, state: str, healthy: bool) -> None:
         details = {
             "model_id": self.model_id,
+            "paper_execution_epoch": self.project.paper_execution_epoch,
             "active_market": self._active_slug,
             "ready": self._ready,
             "last_decision_result": self._last_decision_result,

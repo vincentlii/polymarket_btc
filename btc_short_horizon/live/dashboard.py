@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import base64
+import binascii
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from math import isfinite
+import os
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from btc_short_horizon.live.dashboard_page import dashboard_html
 from btc_short_horizon.live.dashboard_state import BotDashboardSnapshot, DashboardSnapshotStore
@@ -21,6 +24,19 @@ from btc_short_horizon.live.runtime import (
     RuntimeStatusStore,
     check_runtime_health,
 )
+
+
+_ORDER_HISTORY_DEFAULT_LIMIT = 50
+_ORDER_HISTORY_MAX_LIMIT = 100
+_ORDER_HISTORY_ERROR_MESSAGE = "订单历史账本无效，已拒绝返回不完整结果。"
+
+
+class _OrderHistoryDataError(ValueError):
+    """Ledger data is unsafe or invalid; details must not cross the HTTP boundary."""
+
+
+class _OrderHistoryRequestError(ValueError):
+    """The caller supplied an invalid pagination request."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +127,446 @@ def build_dashboard_payload(
     }
 
 
+def build_order_history_payload(
+    config: DashboardConfig,
+    *,
+    limit: int = _ORDER_HISTORY_DEFAULT_LIMIT,
+    cursor: str | None = None,
+    variant: str | None = None,
+) -> dict[str, object]:
+    """Read a deterministic, credential-free page from all Research Paper ledgers."""
+
+    if (
+        isinstance(limit, bool)
+        or not isinstance(limit, int)
+        or not 1 <= limit <= _ORDER_HISTORY_MAX_LIMIT
+    ):
+        raise _OrderHistoryRequestError(
+            f"limit 必须是 1 到 {_ORDER_HISTORY_MAX_LIMIT} 之间的整数。"
+        )
+    if variant is not None:
+        _validate_variant_id(variant)
+
+    records, available_variants = _read_order_history(config.runtime_root)
+    filtered = records if variant is None else [item for item in records if item[0][2] == variant]
+    start = 0
+    if cursor is not None:
+        cursor_key = _decode_order_cursor(cursor)
+        try:
+            start = next(index for index, item in enumerate(filtered) if item[0] == cursor_key) + 1
+        except StopIteration as exc:
+            raise _OrderHistoryRequestError("cursor 已失效或不属于当前筛选结果。") from exc
+
+    page = filtered[start : start + limit]
+    has_more = start + len(page) < len(filtered)
+    return {
+        "items": [item[1] for item in page],
+        "next_cursor": _encode_order_cursor(page[-1][0]) if page and has_more else None,
+        "has_more": has_more,
+        "limit": limit,
+        "variant": variant,
+        "available_variants": available_variants,
+        "total_records": len(filtered),
+    }
+
+
+def _read_order_history(
+    runtime_root: Path,
+) -> tuple[list[tuple[tuple[int, str, str, str], dict[str, object]]], list[str]]:
+    records: list[tuple[tuple[int, str, str, str], dict[str, object]]] = []
+    seen: set[tuple[str, str, str]] = set()
+    variants: set[str] = set()
+    paper_root = runtime_root / "paper"
+    try:
+        ledger_paths = _paper_ledger_paths(runtime_root)
+        for ledger_path in ledger_paths:
+            raw = json.loads(
+                ledger_path.read_text(encoding="utf-8"),
+                parse_constant=_reject_nonfinite_json,
+            )
+            if not isinstance(raw, Mapping):
+                raise _OrderHistoryDataError
+            schema_version = raw.get("schema_version")
+            if isinstance(schema_version, bool) or schema_version not in {2, 3, 4}:
+                raise _OrderHistoryDataError
+            raw_records = raw.get("records")
+            if not isinstance(raw_records, list):
+                raise _OrderHistoryDataError
+            if _data_number(raw.get("starting_balance"), minimum=0.0) <= 0.0:
+                raise _OrderHistoryDataError
+
+            ledger_variant = "legacy_paper"
+            execution_epoch = "legacy_schema2"
+            relative_parts = ledger_path.relative_to(paper_root).parts
+            if schema_version == 2:
+                if relative_parts != ("ledger.json",):
+                    raise _OrderHistoryDataError
+            elif schema_version == 3:
+                ledger_variant = _data_variant_id(raw.get("variant_id"))
+                execution_epoch = "legacy_schema3"
+                if relative_parts != ("variants", ledger_variant, "ledger.json"):
+                    raise _OrderHistoryDataError
+            else:
+                ledger_variant = _data_variant_id(raw.get("variant_id"))
+                execution_epoch = _data_variant_id(raw.get("execution_epoch"))
+                if relative_parts != (
+                    "epochs",
+                    execution_epoch,
+                    "variants",
+                    ledger_variant,
+                    "ledger.json",
+                ):
+                    raise _OrderHistoryDataError
+            for raw_record in raw_records:
+                record_variant = ledger_variant
+                if schema_version in {3, 4}:
+                    record_variant = _data_variant_id(
+                        raw_record.get("variant_id") if isinstance(raw_record, Mapping) else None
+                    )
+                    if record_variant != ledger_variant:
+                        raise _OrderHistoryDataError
+                key, projected = _project_order_record(
+                    raw_record,
+                    schema_version=schema_version,
+                    variant_id=record_variant,
+                    execution_epoch=execution_epoch,
+                )
+                identity = (execution_epoch, record_variant, key[3])
+                if identity in seen:
+                    raise _OrderHistoryDataError
+                seen.add(identity)
+                variants.add(record_variant)
+                records.append((key, projected))
+    except _OrderHistoryDataError:
+        raise
+    except (
+        OSError,
+        OverflowError,
+        UnicodeError,
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise _OrderHistoryDataError from exc
+
+    records.sort(key=lambda item: item[0], reverse=True)
+    return records, sorted(variants)
+
+
+def _paper_ledger_paths(runtime_root: Path) -> list[Path]:
+    paper_root = runtime_root / "paper"
+    if not paper_root.exists():
+        return []
+    if not paper_root.is_dir() or paper_root.is_symlink():
+        raise _OrderHistoryDataError
+    resolved_root = paper_root.resolve(strict=True)
+    paths: list[Path] = []
+
+    def fail_walk(_error: OSError) -> None:
+        raise _OrderHistoryDataError
+
+    for directory, directory_names, file_names in os.walk(
+        paper_root,
+        followlinks=False,
+        onerror=fail_walk,
+    ):
+        current = Path(directory)
+        for name in tuple(directory_names):
+            if (current / name).is_symlink():
+                raise _OrderHistoryDataError
+        if "ledger.json" not in file_names:
+            continue
+        candidate = current / "ledger.json"
+        if candidate.is_symlink() or not candidate.is_file():
+            raise _OrderHistoryDataError
+        resolved = candidate.resolve(strict=True)
+        try:
+            resolved.relative_to(resolved_root)
+        except ValueError as exc:
+            raise _OrderHistoryDataError from exc
+        paths.append(candidate)
+    return sorted(paths, key=lambda item: item.as_posix())
+
+
+def _project_order_record(
+    raw: object,
+    *,
+    schema_version: int,
+    variant_id: str,
+    execution_epoch: str,
+) -> tuple[tuple[int, str, str, str], dict[str, object]]:
+    if not isinstance(raw, Mapping):
+        raise _OrderHistoryDataError
+    placement_id = _data_text(raw.get("placement_id"), maximum=160)
+    market_slug = _data_text(raw.get("market_slug"), maximum=320)
+    _data_text(raw.get("token_id"), maximum=320)
+    side = _data_text(raw.get("side"), maximum=32)
+    placed_at_ns = _data_integer(raw.get("placed_at_ns"), minimum=1)
+    shares = _data_number(raw.get("shares"), minimum=0.0)
+    filled_shares = _data_number(raw.get("filled_shares"), minimum=0.0)
+    filled_notional = _data_number(raw.get("filled_notional"), minimum=0.0)
+    _data_number(raw.get("planned_notional"), minimum=0.0)
+    if filled_shares > shares + 1e-9 or filled_notional > filled_shares + 1e-9:
+        raise _OrderHistoryDataError
+    p_fair = _data_number(raw.get("p_fair"), minimum=0.0, maximum=1.0)
+    market_price = _data_number(raw.get("market_price"), minimum=0.0, maximum=1.0)
+    execution_status = _data_text(
+        raw.get("execution_status") if schema_version >= 3 else raw.get("status"),
+        maximum=80,
+    )
+    if schema_version >= 3:
+        settlement_status = _data_text(raw.get("settlement_status"), maximum=80)
+        execution_route = _data_text(raw.get("execution_route"), maximum=80)
+    else:
+        settlement_status = None
+        execution_route = None
+    realized_pnl = _data_optional_number(raw.get("realized_pnl"))
+    terminal_reason = _data_optional_text(raw.get("terminal_reason"), maximum=160)
+    active_at_ns = _data_optional_integer(raw.get("active_at_ns"), minimum=1)
+    _data_optional_text(raw.get("outcome"), maximum=32)
+    _data_optional_integer(raw.get("settled_at_ns"), minimum=1)
+    opportunity_id: str | None = None
+    entry_regime: str | None = None
+    price_bucket: str | None = None
+    go_eligible: bool | None = None
+    decision_best_ask: float | None = None
+    signal_observations: list[dict[str, object]] = []
+    if schema_version == 2:
+        _data_number(raw.get("cancel_race_filled_shares", 0.0), minimum=0.0)
+    else:
+        if schema_version == 4:
+            opportunity_id = _data_text(raw.get("opportunity_id"), maximum=160)
+            entry_regime = _data_text(raw.get("entry_regime"), maximum=80)
+            price_bucket = _data_text(raw.get("price_bucket"), maximum=80)
+            go_eligible = _data_boolean(raw.get("go_eligible"))
+            decision_best_ask = _data_number(raw.get("decision_best_ask"), minimum=0.0, maximum=1.0)
+            observations = raw.get("signal_observations")
+            if not isinstance(observations, list) or len(observations) > 3:
+                raise _OrderHistoryDataError
+            signal_observations = [
+                _project_signal_observation(observation) for observation in observations
+            ]
+        for field in (
+            "cancel_race_filled_shares",
+            "maker_filled_shares",
+            "taker_filled_shares",
+            "maker_filled_notional",
+            "taker_filled_notional",
+            "initial_queue_ahead",
+            "remaining_queue_ahead",
+            "raw_eligible_sell_volume",
+            "stressed_eligible_sell_volume",
+        ):
+            _data_number(raw.get(field), minimum=0.0)
+        for field in (
+            "cancel_requested_at_ns",
+            "cancel_ack_at_ns",
+            "terminal_at_ns",
+        ):
+            _data_optional_integer(raw.get(field), minimum=1)
+        _data_optional_number(raw.get("fak_limit_price"))
+        _data_optional_number(raw.get("fak_net_edge_per_share"))
+    order_latency_ms = None
+    if active_at_ns is not None:
+        if active_at_ns < placed_at_ns:
+            raise _OrderHistoryDataError
+        order_latency_ms = (active_at_ns - placed_at_ns) / 1_000_000
+    entry_price = None if filled_shares == 0.0 else filled_notional / filled_shares
+    placed_at = datetime.fromtimestamp(placed_at_ns / 1e9, tz=UTC).isoformat()
+    projected: dict[str, object] = {
+        "order_id": placement_id,
+        "variant_id": variant_id,
+        "execution_epoch": execution_epoch,
+        "market_slug": market_slug,
+        "side": side,
+        "placed_at": placed_at,
+        "shares": shares,
+        "filled_shares": filled_shares,
+        "entry_price": entry_price,
+        "p_fair": p_fair,
+        "market_price": market_price,
+        "execution_status": execution_status,
+        "settlement_status": settlement_status,
+        "terminal_reason": terminal_reason,
+        "execution_route": execution_route,
+        "realized_pnl": realized_pnl,
+        "unrealized_pnl": None,
+        "order_latency_ms": order_latency_ms,
+        "taker_fees": (
+            _data_number(raw.get("taker_fees"), minimum=0.0) if schema_version >= 3 else None
+        ),
+        "opportunity_id": opportunity_id,
+        "entry_regime": entry_regime,
+        "price_bucket": price_bucket,
+        "go_eligible": go_eligible,
+        "decision_best_ask": decision_best_ask,
+        "signal_observations": signal_observations,
+    }
+    return (placed_at_ns, execution_epoch, variant_id, placement_id), projected
+
+
+def _encode_order_cursor(key: tuple[int, str, str, str]) -> str:
+    encoded = json.dumps(key, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(encoded).decode("ascii").rstrip("=")
+
+
+def _decode_order_cursor(value: str) -> tuple[int, str, str, str]:
+    if not isinstance(value, str) or not value or len(value) > 1_024:
+        raise _OrderHistoryRequestError("cursor 格式无效。")
+    try:
+        padding = "=" * (-len(value) % 4)
+        decoded = base64.b64decode(value + padding, altchars=b"-_", validate=True)
+        raw = json.loads(decoded.decode("utf-8"))
+    except (binascii.Error, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise _OrderHistoryRequestError("cursor 格式无效。") from exc
+    if not isinstance(raw, list) or len(raw) != 4:
+        raise _OrderHistoryRequestError("cursor 格式无效。")
+    placed_at_ns = _request_integer(raw[0], "cursor timestamp")
+    execution_epoch = _request_variant_id(raw[1])
+    variant_id = _request_variant_id(raw[2])
+    placement_id = raw[3]
+    if not isinstance(placement_id, str) or not placement_id or len(placement_id) > 160:
+        raise _OrderHistoryRequestError("cursor 格式无效。")
+    return placed_at_ns, execution_epoch, variant_id, placement_id
+
+
+def _history_query(raw_query: str) -> tuple[int, str | None, str | None]:
+    values = parse_qs(raw_query, keep_blank_values=True)
+    if set(values) - {"limit", "cursor", "variant"} or any(
+        len(items) != 1 for items in values.values()
+    ):
+        raise _OrderHistoryRequestError("查询参数无效。")
+    raw_limit = values.get("limit", [str(_ORDER_HISTORY_DEFAULT_LIMIT)])[0]
+    try:
+        limit = int(raw_limit)
+    except ValueError as exc:
+        raise _OrderHistoryRequestError("limit 必须是整数。") from exc
+    cursor = values.get("cursor", [None])[0]
+    variant = values.get("variant", [None])[0]
+    if cursor == "" or variant == "":
+        raise _OrderHistoryRequestError("cursor 与 variant 不得为空。")
+    return limit, cursor, variant
+
+
+def _validate_variant_id(value: str) -> None:
+    _request_variant_id(value)
+
+
+def _request_variant_id(value: object) -> str:
+    try:
+        return _data_variant_id(value)
+    except _OrderHistoryDataError as exc:
+        raise _OrderHistoryRequestError("variant 格式无效。") from exc
+
+
+def _data_variant_id(value: object) -> str:
+    text = _data_text(value, maximum=64)
+    if (
+        not text[0].isascii()
+        or not text[0].isalnum()
+        or any(
+            not character.isascii() or not (character.isalnum() or character in {"_", "-"})
+            for character in text
+        )
+    ):
+        raise _OrderHistoryDataError
+    return text
+
+
+def _data_text(value: object, *, maximum: int) -> str:
+    if not isinstance(value, str) or not value or len(value) > maximum:
+        raise _OrderHistoryDataError
+    return value
+
+
+def _data_optional_text(value: object, *, maximum: int) -> str | None:
+    if value is None:
+        return None
+    return _data_text(value, maximum=maximum)
+
+
+def _data_integer(value: object, *, minimum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise _OrderHistoryDataError
+    return value
+
+
+def _data_optional_integer(value: object, *, minimum: int) -> int | None:
+    if value is None:
+        return None
+    return _data_integer(value, minimum=minimum)
+
+
+def _data_number(
+    value: object,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise _OrderHistoryDataError
+    number = float(value)
+    if (
+        not isfinite(number)
+        or (minimum is not None and number < minimum)
+        or (maximum is not None and number > maximum)
+    ):
+        raise _OrderHistoryDataError
+    return number
+
+
+def _data_optional_number(value: object) -> float | None:
+    if value is None:
+        return None
+    return _data_number(value)
+
+
+def _data_boolean(value: object) -> bool:
+    if not isinstance(value, bool):
+        raise _OrderHistoryDataError
+    return value
+
+
+def _project_signal_observation(raw: object) -> dict[str, object]:
+    if not isinstance(raw, Mapping):
+        raise _OrderHistoryDataError
+    signal_number = _data_integer(raw.get("signal_number"), minimum=1)
+    if signal_number > 3:
+        raise _OrderHistoryDataError
+    observed_at_ns = _data_integer(raw.get("observed_at_ns"), minimum=0)
+    p_fair = _data_number(raw.get("p_fair"), minimum=0.0, maximum=1.0)
+    maker_price = _data_number(raw.get("maker_price"), minimum=0.0, maximum=1.0)
+    if p_fair in {0.0, 1.0} or maker_price in {0.0, 1.0}:
+        raise _OrderHistoryDataError
+    executable_vwap = _data_optional_number(raw.get("executable_vwap"))
+    taker_fee = _data_optional_number(raw.get("taker_fee_per_share"))
+    taker_net_edge = _data_optional_number(raw.get("taker_net_edge"))
+    if executable_vwap is not None and not 0.0 <= executable_vwap <= 1.0:
+        raise _OrderHistoryDataError
+    if taker_fee is not None and taker_fee < 0.0:
+        raise _OrderHistoryDataError
+    return {
+        "signal_number": signal_number,
+        "observed_at_ns": observed_at_ns,
+        "p_fair": p_fair,
+        "maker_price": maker_price,
+        "executable_vwap": executable_vwap,
+        "taker_fee_per_share": taker_fee,
+        "taker_net_edge": taker_net_edge,
+    }
+
+
+def _request_integer(value: object, label: str) -> int:
+    try:
+        return _data_integer(value, minimum=1)
+    except _OrderHistoryDataError as exc:
+        raise _OrderHistoryRequestError(f"{label} 格式无效。") from exc
+
+
+def _reject_nonfinite_json(_value: str) -> None:
+    raise _OrderHistoryDataError
+
+
 def _snapshot_health(
     snapshot: BotDashboardSnapshot | None,
     *,
@@ -164,9 +620,36 @@ def create_dashboard_server(
 
     class DashboardHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
-            path = urlparse(self.path).path
+            parsed = urlparse(self.path)
+            path = parsed.path
             if path == "/":
                 self._send_html(dashboard_html())
+                return
+            if path == "/api/orders":
+                try:
+                    limit, cursor, variant = _history_query(parsed.query)
+                    history = build_order_history_payload(
+                        config,
+                        limit=limit,
+                        cursor=cursor,
+                        variant=variant,
+                    )
+                except _OrderHistoryRequestError as exc:
+                    self._send_json(
+                        {"error": "invalid_request", "message": str(exc)},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
+                    return
+                except _OrderHistoryDataError:
+                    self._send_json(
+                        {
+                            "error": "invalid_order_history",
+                            "message": _ORDER_HISTORY_ERROR_MESSAGE,
+                        },
+                        status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                    )
+                    return
+                self._send_json(history, status=HTTPStatus.OK)
                 return
             payload = build_dashboard_payload(config, now=now())
             if path == "/api/status":

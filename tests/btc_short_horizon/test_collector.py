@@ -6,7 +6,11 @@ import json
 
 import pytest
 
-from btc_short_horizon.data.collector import JsonWebSocketCollector, WebSocketSubscription
+from btc_short_horizon.data.collector import (
+    BusinessPayloadInactivityError,
+    JsonWebSocketCollector,
+    WebSocketSubscription,
+)
 
 
 class _FakeSocket:
@@ -47,6 +51,19 @@ class _BlockingSocket:
 
     async def send(self, payload: str) -> None:
         self.sent.append(payload)
+
+
+class _DelayedSocket:
+    def __init__(self, *, delay_seconds: float, frame: str) -> None:
+        self.delay_seconds = delay_seconds
+        self.frame = frame
+
+    async def recv(self) -> str:
+        await asyncio.sleep(self.delay_seconds)
+        return self.frame
+
+    async def send(self, _payload: str) -> None:
+        return None
 
 
 class _FailingSocket:
@@ -173,6 +190,197 @@ def test_websocket_collector_without_heartbeat_stops_without_sending() -> None:
         return socket.sent
 
     assert asyncio.run(collect()) == []
+
+
+def test_websocket_collector_raises_when_business_payloads_are_silent() -> None:
+    async def collect() -> None:
+        collector = JsonWebSocketCollector(
+            WebSocketSubscription(
+                endpoint="wss://example.test/market",
+                business_payload_timeout_seconds=0.01,
+            )
+        )
+
+        with pytest.raises(BusinessPayloadInactivityError) as caught:
+            await asyncio.wait_for(
+                collector._collect_connection(
+                    socket=_BlockingSocket(),
+                    stop_event=asyncio.Event(),
+                    on_payload=lambda _payload, _received: True,
+                ),
+                timeout=0.1,
+            )
+
+        assert caught.value.timeout_seconds == pytest.approx(0.01)
+        assert caught.value.endpoint == "wss://example.test/market"
+
+    asyncio.run(collect())
+
+
+def test_websocket_collector_control_frames_do_not_mask_business_inactivity() -> None:
+    async def collect() -> None:
+        collector = JsonWebSocketCollector(
+            WebSocketSubscription(
+                endpoint="wss://example.test/market",
+                business_payload_timeout_seconds=0.01,
+            )
+        )
+
+        with pytest.raises(BusinessPayloadInactivityError):
+            await asyncio.wait_for(
+                collector._collect_connection(
+                    socket=_DelayedSocket(delay_seconds=0.002, frame="PONG"),
+                    stop_event=asyncio.Event(),
+                    on_payload=lambda _payload, _received: True,
+                ),
+                timeout=0.1,
+            )
+
+    asyncio.run(collect())
+
+
+@pytest.mark.parametrize("timeout", [0.0, -1.0, float("inf"), float("nan")])
+def test_websocket_subscription_rejects_invalid_business_payload_timeout(timeout: float) -> None:
+    with pytest.raises(ValueError, match="business_payload_timeout_seconds"):
+        WebSocketSubscription(
+            endpoint="wss://example.test/market",
+            business_payload_timeout_seconds=timeout,
+        )
+
+
+def test_websocket_collector_business_payloads_keep_connection_active() -> None:
+    async def collect() -> int:
+        stop_event = asyncio.Event()
+        socket = _ActiveSocket()
+        collector = JsonWebSocketCollector(
+            WebSocketSubscription(
+                endpoint="wss://example.test/market",
+                business_payload_timeout_seconds=0.01,
+            )
+        )
+        accepted = 0
+
+        def on_payload(_payload: dict[str, object], _received: datetime) -> bool:
+            nonlocal accepted
+            accepted += 1
+            if accepted == 5:
+                stop_event.set()
+            return True
+
+        await asyncio.wait_for(
+            collector._collect_connection(
+                socket=socket,
+                stop_event=stop_event,
+                on_payload=on_payload,
+            ),
+            timeout=0.1,
+        )
+        return accepted
+
+    assert asyncio.run(collect()) == 5
+
+
+def test_websocket_collector_allows_payload_within_low_frequency_threshold() -> None:
+    async def collect() -> list[dict[str, object]]:
+        stop_event = asyncio.Event()
+        collector = JsonWebSocketCollector(
+            WebSocketSubscription(
+                endpoint="wss://example.test/market",
+                business_payload_timeout_seconds=0.05,
+            )
+        )
+        received: list[dict[str, object]] = []
+
+        def on_payload(payload: dict[str, object], _received: datetime) -> bool:
+            received.append(payload)
+            stop_event.set()
+            return True
+
+        await asyncio.wait_for(
+            collector._collect_connection(
+                socket=_DelayedSocket(delay_seconds=0.02, frame='{"event_type":"book"}'),
+                stop_event=stop_event,
+                on_payload=on_payload,
+            ),
+            timeout=0.1,
+        )
+        return received
+
+    assert asyncio.run(collect()) == [{"event_type": "book"}]
+
+
+def test_websocket_collector_stop_wins_before_inactivity_timeout() -> None:
+    async def collect() -> None:
+        stop_event = asyncio.Event()
+        collector = JsonWebSocketCollector(
+            WebSocketSubscription(
+                endpoint="wss://example.test/market",
+                business_payload_timeout_seconds=0.05,
+            )
+        )
+        task = asyncio.create_task(
+            collector._collect_connection(
+                socket=_BlockingSocket(),
+                stop_event=stop_event,
+                on_payload=lambda _payload, _received: True,
+            )
+        )
+        await asyncio.sleep(0.01)
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=0.1)
+
+    asyncio.run(collect())
+
+
+def test_websocket_collector_reconnects_after_business_payload_inactivity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def collect() -> tuple[list[Exception], int]:
+        stop_event = asyncio.Event()
+        sockets = iter(
+            (
+                _BlockingSocket(),
+                _DelayedSocket(delay_seconds=0.0, frame='{"event_type":"book"}'),
+            )
+        )
+        connections = 0
+
+        def connect(_endpoint: str) -> _SocketContext:
+            nonlocal connections
+            connections += 1
+            return _SocketContext(next(sockets))
+
+        monkeypatch.setattr("btc_short_horizon.data.collector.websockets.connect", connect)
+        errors: list[Exception] = []
+        collector = JsonWebSocketCollector(
+            WebSocketSubscription(
+                endpoint="wss://example.test/market",
+                business_payload_timeout_seconds=0.01,
+                reconnect_delay_seconds=0.001,
+                reconnect_max_delay_seconds=0.001,
+                reconnect_jitter_ratio=0.0,
+            )
+        )
+
+        def on_payload(_payload: dict[str, object], _received: datetime) -> bool:
+            stop_event.set()
+            return True
+
+        await asyncio.wait_for(
+            collector.collect_forever(
+                stop_event=stop_event,
+                on_payload=on_payload,
+                on_error=errors.append,
+            ),
+            timeout=0.1,
+        )
+        return errors, connections
+
+    errors, connections = asyncio.run(collect())
+
+    assert len(errors) == 1
+    assert isinstance(errors[0], BusinessPayloadInactivityError)
+    assert connections == 2
 
 
 def test_websocket_collector_reports_connection_after_subscription_is_sent(

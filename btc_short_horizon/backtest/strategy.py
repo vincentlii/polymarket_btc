@@ -498,6 +498,7 @@ class BtcOpeningMispricingStrategy(Strategy):
                 price=actual_price,
                 size=actual_size,
                 visible_size=layer.visible_size,
+                queue_ahead=layer.queue_ahead,
             )
             if (
                 materialized.visible_depth_fraction
@@ -564,6 +565,7 @@ class BtcOpeningMispricingStrategy(Strategy):
                 net_edge=plan.net_edge(layer.price),
                 visible_size=layer.visible_size,
                 visible_depth_fraction=layer.visible_depth_fraction,
+                initial_queue_ahead=layer.queue_ahead,
                 post_only=True,
                 time_in_force=TimeInForce.GTC.name,
             )

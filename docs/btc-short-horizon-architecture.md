@@ -136,6 +136,14 @@ the last decision/work/cancel-race evidence and before the next pre-open socket.
 Offline readers continue to treat a session change as a conservative identity
 boundary; timestamp/sequence continuity is still validated and any real missing
 bar remains fail-closed.
+Version v15 adds accepted-business-payload inactivity detection to the
+continuous Chainlink RTDS and Binance `kline_1s` sockets. Transport ping/pong,
+application `PONG`, empty frames, and rejected payloads do not reset the
+deadline. A timeout is persisted through the existing `continuity_gap` path,
+advances that logical stream's epoch, and reconnects with bounded exponential
+backoff. Low-frequency CLOB, OKX, and trade-only subscriptions retain no generic
+payload deadline because their protocols do not guarantee a safe minimum event
+rate.
 Every bounded connection still starts from the venue's
 official initial full-book dump; window-external deltas are neither required
 nor silently treated as collected evidence. A collector restart after a capture
@@ -394,6 +402,14 @@ fair-probability model. This prevents a Binance-only historical proxy from
 quietly learning a feature unavailable in that proxy. A later residual model
 may use synchronized CLOB history only after its own held-out validation.
 
+The market-relative MVP remains research-only. Its development run freezes the
+paired dataset, schema and split/model protocol hashes, and sealed holdout
+rejects any lineage substitution. Its metadata contract is not a runtime model
+artifact: the current observation schema lacks a pair-level CLOB session
+identity, while per-token numeric epoch IDs are local stream values and cannot
+prove synchronization by numeric equality. P2b must add that causal identity,
+spread, executable-depth and microstructure fields before runtime promotion.
+
 The walk-forward protocol keeps every snapshot of one market in the same
 group. A train/calibration/test/holdout boundary may never split a market,
 because doing so would leak the shared final label across partitions. Each
@@ -456,6 +472,17 @@ only, verifies continuity, and builds the exact training feature schema. The
 one-hour baseline plus the 180-second decision horizon currently needs 3,782
 rows. See the
 official [Binance Spot REST market-data documentation](https://developers.binance.com/docs/binance-spot-api-docs/rest-api/market-data-endpoints).
+
+Collector transport health and model-input availability are distinct contracts.
+The collector's broad feed-stale threshold only detects an unhealthy stream;
+the five-second model also requires at least one causally available closed
+Binance bar in every frozen feature window at its decision timestamp. A missing
+window raises `CausalFeatureUnavailableError` with the window, decision, and
+available-tail timestamps. Research Paper treats only that typed condition as a
+recoverable `prediction_unavailable` episode; it never fabricates a feature or
+turns an invariant/model error into a data warning. Repeated ticks in one
+episode add one cumulative error, while a successful later prediction clears
+the active error and permits a distinct future episode to be counted.
 
 `scripts/btc_opening_price_edge_proxy.py` is the next lightweight gate. It
 joins OOF/holdout probabilities to sparse one-minute Polymarket token price
@@ -855,3 +882,104 @@ all four Gamma-verified BTC 15m conditions in the local archive file. The
 archive may become usable for other windows only after the per-market coverage
 audit succeeds; this project does not substitute PMXT v1 or treat an empty
 hour as a tradable historical replay.
+
+## Research Paper execution epoch v2
+
+`paper-v2-direct-fak` is a new evidence epoch. It does not migrate or rewrite
+older ledgers. Every variant receives the same model prediction, decision
+timestamp, two-signal confirmation and deterministic opportunity ID, then owns
+an isolated balance and execution ledger:
+
+- `maker_15s` remains the primary passive policy. It may improve the best bid by
+  one tick only when the spread is at least two ticks, the price remains
+  post-only and the configured edge survives. An empty improved level starts
+  with zero queue ahead; visible best-bid depth is retained only as a sizing
+  reference.
+- `immediate_fak` replaces the uninformative 30-second maker control. After the
+  shared confirmation it waits the configured P99 taker latency, consumes the
+  complete then-visible ask ladder once, applies the documented fee curve at
+  every level, and requires edge after the 0.5c slippage, 3c model-uncertainty
+  and 3c minimum-net-edge buffers. Partial fill is valid; the remainder is
+  canceled and never retried.
+- `maker_5s_then_fak` keeps the five-second maker comparison. It can convert
+  only after cancel acknowledgement and only if the maker leg filled zero
+  shares, then uses the same one-shot FAK estimator as the direct route.
+
+The unit for paired route comparison is one independent opportunity. Rejected,
+canceled and unfilled routes contribute zero PnL to EV per opportunity; EV per
+filled share is reported separately and must not replace it. Results are also
+partitioned by the frozen `3--30s`, `35--90s`, `95--180s` regimes and by price
+bucket. Prices below 0.20 or above 0.80 remain recorded for research but carry
+`go_eligible=false`; only the 0.20--0.80 core can support an initial promotion
+decision.
+
+Each record preserves up to three signal observations containing fair
+probability, maker price, executable ask VWAP, taker fee and net taker edge.
+The decision funnel counts the primary process session from decision ticks
+through prediction, confirmation, opportunity, placement, fill and resolution.
+These diagnostics explain low conversion without changing the frozen strategy.
+
+Latency transitions are causal. If insert, cancel or FAK latency expires before
+the next admitted market event, the transition is executed against the last
+book available at that deadline; a later book event cannot reprice an earlier
+execution. Events at the exact deadline are applied first as the conservative
+same-timestamp tie break. A continuity gap is distinct from a quiet connection:
+without an observed connection-state proof the one-second book-age gate remains
+strict and reports `book_stale_connection_unobserved` instead of silently
+loosening freshness. The watchdog runs after the admitted-event queue is drained,
+not between two same-timestamp Up/Down rows, so a transient half-applied pair
+cannot trigger a false cancel. During a genuinely quiet connection, the 50 ms
+runtime clock continues advancing the watchdog and latency state.
+
+Terminal simulator placements are retired when the next market activates so the
+50 ms loop remains constant-time across long-running market rotations. A new
+market is rejected while any prior placement is still pending, working,
+cancel-pending or FAK-pending; rotation cannot silently orphan an order cycle.
+
+Activation atomically stores the exact CLOB tick, minimum size, fee and token
+rules under the execution epoch. `scripts/btc_research_paper_replay.py` reads
+those frozen rules and immutable raw events, reconstructs a contiguous Binance
+bootstrap, and drives the same `ResearchPaperPortfolio` used by the live
+runtime in `available_ts` order. This is the only supported offline Paper replay
+path; it does not substitute a second strategy implementation.
+
+```bash
+uv run python scripts/btc_research_paper_replay.py \
+  --market-catalog data/catalogs/<market>.json \
+  --market-slug <btc-updown-15m-slug> \
+  --model-directory output/models/opening-proxy \
+  --raw-data-root data/forward \
+  --rules-runtime-root output/runtime \
+  --output-root output/replays/<market>
+```
+
+The output root must be new. Replay refuses to append to an existing epoch so
+reruns cannot overwrite or silently blend prior evidence.
+
+## Research Paper execution epoch v3
+
+`paper-v3-independent-fak` changes execution evidence semantics and therefore
+never reads or rewrites v2 ledgers. The CLOB `itode` flag is required and frozen
+with a versioned delay policy in every market-rule snapshot. Client submission
+latency and the documented 250 ms venue taker delay are recorded separately;
+FAK eligibility occurs only after both have elapsed. A submitted FAK cannot be
+retroactively canceled because the local feed becomes stale. If its match-time
+book evidence is not trustworthy, the placement becomes `evidence_invalid` and
+is excluded from settlement PnL and Go/No-Go statistics.
+
+The v2 routes remain controls. Two new routes use an independent taker planner
+which evaluates both outcome-token ask ladders, per-level fees and frozen safety
+buffers without requiring a maker plan. `independent_fak_2x5s` uses the deployed
+model's two five-second confirmations. `independent_fak_stable_3x5s` requires
+three five-second observations and limits peak-to-current net-edge decay to one
+cent. The cadence remains five seconds because the current model artifact is
+trained and validated for that cadence.
+
+Rule snapshots are immutable per `(execution_epoch, market identity)`, but a
+process restart during the same market must not create a second observation-time
+variant. Activation therefore loads and validates an existing snapshot before
+attempting atomic creation; it reuses the stored rules for the restarted
+process. A malformed snapshot, schema mismatch, market-identity mismatch, or
+rules-hash mismatch remains fail-closed. Concurrent first activations retain
+the same atomic link creation boundary: the loser reads and validates the
+winner's snapshot rather than overwriting it.

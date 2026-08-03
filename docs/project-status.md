@@ -52,6 +52,29 @@ and reporting plumbing without importing archived BTC strategy logic.
   Active prediction failures now make Paper unhealthy with the exact market,
   timestamp and reason until a later decision succeeds; a cumulative error
   counter can no longer coexist with a misleading healthy status.
+  Execution epoch `paper-v3-independent-fak` retains the v2 controls and adds
+  independent 2x5s and edge-stable 3x5s FAK challengers. They evaluate both
+  outcome-token ask ladders without requiring a maker opportunity. Frozen CLOB
+  `itode` rules add the versioned 250 ms venue delay separately from client
+  latency; post-submit gaps become invalid execution evidence instead of a
+  fabricated cancellation. The existing controls compare 15-second maker, immediate
+  one-shot FAK and 5-second maker-to-FAK on the same confirmed opportunity.
+  Direct and hybrid FAK use complete ask depth, P99 latency, per-level taker
+  fees and frozen safety buffers with no retry. Maker may improve one tick only
+  inside a two-tick spread while keeping correct zero queue at the empty level.
+  Paired EV counts every resolved opportunity, including rejected/unfilled
+  routes as zero, while filled-share EV, time regime and core/tail price buckets
+  remain separate. New ledgers are isolated from legacy evidence; per-market
+  rules are frozen atomically for deterministic raw replay through the same live
+  portfolio. A restart in the same market reloads that validated immutable
+  snapshot rather than attempting to replace it with a new observation timestamp;
+  malformed, schema, identity, and hash conflicts remain fail-closed. Latency
+  transitions now execute before later events can reprice them. The read-only
+  dashboard exposes the primary-session funnel, execution
+  epoch, segment metrics and paginated full schema-validated order history.
+  Causal Binance feature-window shortages are recorded as one recoverable
+  prediction-unavailable episode with decision/tail evidence; model or invariant
+  failures remain fail-closed rather than being misclassified as stale data.
 - Model/research hardening: model inputs and probabilities now reject coercion,
   non-finite values, invalid shapes, and inconsistent lineage. Walk-forward
   tests are non-overlapping and group-safe; LightGBM early stopping, calibration,
@@ -61,6 +84,11 @@ and reporting plumbing without importing archived BTC strategy logic.
   schema/config/source/code hashes. Price-proxy persistence resets on an
   intervening failed signal, and stress tests discard prices at or above one
   instead of fabricating an executable price.
+  A research-only market-relative pipeline builds exact paired control and
+  challenger datasets, freezes four Logistic factor ablations, runs grouped OOF
+  comparisons with paired block-bootstrap intervals, and keeps sealed holdout
+  unavailable until the development gate passes. Insufficient causal CLOB
+  coverage returns a structured No-Go and cannot publish or activate a model.
 - Replay/execution hardening: the BTC runner now consumes current dual-token L2
   books, requires exchange-valid post-only prices and minimum sizes, caps each
   layer to 5% of displayed same-side depth, and confirms two exact five-second
@@ -297,6 +325,12 @@ the input/output contract and operational commands.
 
 ## Recently Fixed
 
+- [x] Forward ingest v15 now detects a half-open Chainlink RTDS or Binance
+  `kline_1s` socket from accepted business-payload inactivity rather than
+  trusting ping/pong health. Each timeout writes exactly one explicit
+  `continuity_gap`, advances the affected logical-stream epoch, and reconnects
+  with bounded exponential backoff. Low-frequency feeds remain exempt unless
+  their protocol guarantees a safe event cadence.
 - [x] Research Paper bootstrap now waits for the first collector-admitted closed
   Binance kline, anchors the bounded REST history immediately before that bar,
   and causally replays the events deferred during the fetch. This removes the

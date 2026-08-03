@@ -71,6 +71,45 @@ artifact，并使用与训练/回放相同的五秒 cadence 和两次连续信�
 PnL 可以产生新的 forward OOS 诊断证据，但不能补足少于 2,500 个 sealed holdout
 市场、缺失的因果 Polymarket baseline，也不能替代正式 queue/latency BookReplay。
 
+## Market-relative challenger protocol
+
+The deployed Binance/Gamma Logistic model remains the unchanged control. The
+market-relative path is a research-only challenger built on the exact subset of
+markets with complete causal dual-token CLOB observations at every frozen
+decision timestamp. Missing, future, stale, gapped or structurally invalid
+observations remove the whole market from both control and challenger; values
+are never filled with 0.5 or forward-filled trades.
+
+Four Logistic candidates are pre-registered: paired control, market-logit
+anchor, anchor plus boundary-market logit residual, and all available
+time/quality interactions. Market logit is a feature rather than a claimed
+fixed offset because the current sklearn/artifact boundary has no offset
+contract. All candidates share identical grouped walk-forward partitions and
+weights. Selection uses development OOF log loss, Brier, calibration error,
+calibration slope and paired UTC-day block-bootstrap confidence intervals.
+Sealed holdout is callable only after one challenger passes the development
+gate and still requires at least 2,500 markets by default.
+
+No runtime model is switched by this implementation. A research contract can
+be produced only from the accepted typed sealed-holdout result associated with
+the accepted development run. Development freezes deterministic hashes for the
+complete paired dataset, control/challenger schemas and split/model protocol;
+sealed evaluation rejects any replacement dataset or protocol. The contract
+also binds the CLOB source hash, rule epoch, ingest version, factor families,
+cadence and opening protocol.
+
+This MVP cannot publish a runtime-loadable model. `OpeningMarketObservation`
+does not yet carry a pair-level collector-session identity, and numeric epoch
+IDs from independently reconstructed token streams are not comparable. The
+contract is therefore marked `runtime_promotion_eligible=false` with
+`pair_session_identity_not_proven`. P2b must add a causal pair-session contract
+before runtime promotion; it must not require unrelated epoch integers to be
+equal and call that synchronization evidence.
+
+PM spread, imbalance and full-depth factors remain a later P2b extension
+because the current `OpeningMarketObservation` does not causally persist those
+fields.
+
 ## 验收标准
 
 - 浮点/布尔/非有限标签无法进入训练。

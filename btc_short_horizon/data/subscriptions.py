@@ -13,6 +13,8 @@ BINANCE_SPOT_STREAM_WS = "wss://stream.binance.com:9443/stream"
 BINANCE_FUTURES_MARKET_STREAM_WS = "wss://fstream.binance.com/market/stream"
 BINANCE_FUTURES_PUBLIC_STREAM_WS = "wss://fstream.binance.com/public/stream"
 OKX_PUBLIC_WS = "wss://ws.okx.com:8443/ws/v5/public"
+_CHAINLINK_BTC_PAYLOAD_TIMEOUT_SECONDS = 15.0
+_BINANCE_KLINE_PAYLOAD_TIMEOUT_SECONDS = 10.0
 
 
 def polymarket_market_subscription(token_ids: tuple[str, ...]) -> WebSocketSubscription:
@@ -46,6 +48,7 @@ def polymarket_rtds_chainlink_btc_subscription() -> WebSocketSubscription:
         },
         heartbeat_payload="PING",
         heartbeat_interval_seconds=5.0,
+        business_payload_timeout_seconds=_CHAINLINK_BTC_PAYLOAD_TIMEOUT_SECONDS,
     )
 
 
@@ -84,8 +87,14 @@ def _binance_combined_stream_subscription(
             "Binance stream names must be non-empty strings without surrounding whitespace"
         )
     stream_path = "/".join(streams)
+    payload_timeout_seconds = (
+        _BINANCE_KLINE_PAYLOAD_TIMEOUT_SECONDS
+        if any("@kline_1s" in stream.casefold() for stream in streams)
+        else None
+    )
     return WebSocketSubscription(
         endpoint=f"{endpoint}?streams={quote(stream_path, safe='/@')}",
+        business_payload_timeout_seconds=payload_timeout_seconds,
     )
 
 

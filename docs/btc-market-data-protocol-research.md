@@ -203,6 +203,18 @@ whose default is `true` in the
   only after the current `t0+200s` CLOB handoff and a complete flush. The
   Binance/Chainlink socket tasks and their quality validators remain alive, so
   rotation does not create the former transport-level one-second data gap.
+- In ingest v15, continuous high-frequency subscriptions must detect business
+  payload inactivity independently of WebSocket keepalive. Polymarket's
+  [official RTDS documentation](https://docs.polymarket.com/market-data/websocket/rtds)
+  describes crypto updates as sub-second and requires application `PING` every
+  five seconds; Binance's
+  [official Spot stream documentation](https://github.com/binance/binance-spot-api-docs/blob/master/web-socket-streams.md#klinecandlestick-streams-for-utc)
+  documents `kline_1s` updates every second. The collector uses
+  conservative 15-second and 10-second accepted-payload deadlines respectively.
+  Control frames and rejected payloads do not extend those deadlines. Expiry
+  enters the normal explicit-gap/epoch and exponential-reconnect path. Market
+  CLOB, OKX, and trade-only feeds have no generic deadline because normal quiet
+  periods are not bounded by their public protocols.
 - A bounded CLOB interval must begin with a new physical subscription and the
   official `initial_dump=true` snapshot. Do not implement storage reduction by
   dropping pre-window deltas from an already-running socket: offline replay

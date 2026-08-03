@@ -213,6 +213,20 @@ sports 和其他合格类别当前分别使用 20%、15% 和 25% 分成。正式
 逐笔历史回放精确恢复。参考 [Fees](https://docs.polymarket.com/trading/fees) 与
 [Maker Rebates](https://docs.polymarket.com/market-makers/maker-rebates)。
 
+## Venue taker-delay policy
+
+Research Paper now treats CLOB `itode` as a required boolean market rule. The
+enabled value maps through policy `clob-itode-250ms-v1`; the 250 ms value is a
+documented venue policy assumption, not a VPS measurement. Both the flag and
+policy ID are hashed into the immutable rule snapshot. Total simulated FAK
+latency is `client_taker_latency + frozen_market_delay`, and reporting preserves
+both components so they cannot be double-counted.
+
+After POST, feed staleness is not a valid cancellation mechanism for the venue
+delay. A gap or unusable book at the match deadline produces invalid execution
+evidence rather than a fabricated cancel or zero fill. Offline replay extends
+its tail by the same frozen server delay and never queries current rules.
+
 ## 2026-07-21 Live 执行安全契约
 
 当前实现将“尽量少做热路径工作”约束为一组可恢复、可对账的不变量，而不是以
@@ -248,11 +262,23 @@ sports 和其他合格类别当前分别使用 20%、15% 和 25% 分成。正式
 8. 撤单请求、撤单响应、cancel-before/after-fill race 与 heartbeat failure 都是
    独立状态边界。任何未知提交、User channel gap、terminal trade failure、规则
    变化或对账失败都会进入只撤单/停机状态，而不是继续接收新 placement cycle。
-9. Research Paper 的 maker-to-FAK 只用于比较成交策略。它必须等待 maker cancel
-   ack，且 maker fill 必须为零；随后使用当时 ask depth 执行一次 FAK，并在每个价位
-   计入官方曲线 taker fee、滑点与模型不确定性缓冲。FAK 可部分立即成交，剩余量
-   取消，不得追单或自动重试。[Create Order](https://docs.polymarket.com/trading/orders/create)、
+9. Research Paper 同时比较直接 FAK 与 maker-to-FAK。直接 FAK 在共享的两次信号
+   确认后等待 P99 taker latency；maker-to-FAK 必须先等待 maker cancel ack，且
+   maker fill 必须为零。两者随后都只使用当时完整 ask depth 执行一次 FAK，并在
+   每个价位计入官方曲线 taker fee、0.5c 滑点、3c 模型不确定性和 3c 最低净 edge。
+   FAK 可部分立即成交，剩余量取消，不得追单或自动重试。
+   [Create Order](https://docs.polymarket.com/trading/orders/create)、
    [Fees](https://docs.polymarket.com/trading/fees)
+10. 模拟时间不能由下一条行情倒推。若 insert、cancel ack 或 FAK deadline 早于
+    下一条 admitted event，先使用 deadline 当时最后可用的 book 完成状态迁移，
+    再处理后来事件；恰好同 timestamp 时先应用事件，作为保守 tie-break。这样未来
+    的盘口不能改变过去本应发生的 post-only rejection 或 FAK VWAP。同 timestamp
+    的 Up/Down 事件先全部排空，再运行 freshness watchdog，避免中间态误判一腿陈旧；
+    无事件时 50 ms runtime clock 仍持续执行一秒陈旧门槛。
+11. 每个新 execution epoch 都原子保存逐市场 CLOB rule snapshot，包括 token、tick、
+    minimum size、fee curve、observed time 与内容 hash。离线 Paper replay 必须读取该
+    snapshot 和 immutable raw event，并复用实时 `ResearchPaperPortfolio`；不得用当前
+    规则猜测历史执行，也不得另写一套简化策略。
 
 这个实现缩短了正常请求链，但不宣称已经得到真实 VPS P99。订单 build/sign、两次
 WAL `fsync`、socket/HTTP、venue ack、User WebSocket 与 cancel ack 仍需在 Shadow
