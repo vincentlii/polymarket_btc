@@ -110,6 +110,34 @@ PM spread, imbalance and full-depth factors remain a later P2b extension
 because the current `OpeningMarketObservation` does not causally persist those
 fields.
 
+## Lightweight opening-factor challenger
+
+The lightweight challenger reuses the frozen protocol-v2 materialized dataset
+and adds four causal families: boundary/time interactions, multi-horizon path
+state, flow/value interactions, and Spot/Perpetual 1-minute cross-market state.
+External minute bars become usable only after `close_time + 1s <= decision_ts`.
+Spot and Perpetual must have the same latest `open_ts`, and each 15-minute
+lookback must be independently contiguous; otherwise the whole market is
+removed from control and every challenger exactly once.
+
+The pre-registered development family contains six comparisons against
+`control_logistic` plus one LightGBM replacement comparison against the
+data-selected best Logistic. All seven use the conservative Bonferroni budget
+`alpha=0.05/7`. The second comparison is calculated from the actual paired OOF
+predictions; a LightGBM interval against control is never reused as evidence
+against the best Logistic. Candidate progress is published atomically, but the
+statistics and selection protocol remain unchanged by progress reporting.
+
+The 2026-04-27 through 2026-07-12 development run retained no challenger. It
+covered all 7,295 markets and 48,348 OOF predictions per candidate. Control
+log loss/Brier/ECE were `0.648506/0.228951/0.016447`. `state_logistic` had the
+best Logistic point loss (`0.648390/0.228871`) but worse ECE and both adjusted
+loss intervals crossed zero. `all_lightgbm` had the best point loss
+(`0.647788/0.228298`), but its adjusted log-loss/Brier intervals crossed zero
+both versus control and versus `state_logistic`. This is a development No-Go:
+sealed holdout was not opened, no runtime artifact was produced, and the VPS
+champion remains unchanged.
+
 ## 验收标准
 
 - 浮点/布尔/非有限标签无法进入训练。

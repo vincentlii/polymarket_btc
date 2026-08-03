@@ -76,6 +76,17 @@ def binance_spot_kline_url(*, day: str, symbol: str = "BTCUSDT", interval: str =
     )
 
 
+def binance_um_futures_kline_url(*, day: str, symbol: str = "BTCUSDT", interval: str = "1m") -> str:
+    """Return the public Binance USD-M daily Kline archive URL."""
+
+    if not day or not symbol or interval not in _INTERVAL_SECONDS:
+        raise ValueError("day and symbol are required; interval must be 1s or 1m")
+    return (
+        "https://data.binance.vision/data/futures/um/daily/klines/"
+        f"{symbol}/{interval}/{symbol}-{interval}-{day}.zip"
+    )
+
+
 def load_binance_kline_archives(
     paths: Sequence[Path], *, interval: str = "1m"
 ) -> BinanceKlineHistory:
@@ -91,11 +102,15 @@ def load_binance_kline_archives(
             names = [name for name in archive.namelist() if name.endswith(".csv")]
             if len(names) != 1:
                 raise ValueError(f"{path} must contain exactly one CSV kline file")
+            with archive.open(names[0]) as csv_file:
+                first_field = csv_file.readline().lstrip(b"\xef\xbb\xbf").split(b",", 1)[0].strip()
+            skiprows = 0 if first_field.isdigit() else 1
         frames.append(
             pd.read_csv(
                 path,
                 compression="zip",
                 header=None,
+                skiprows=skiprows,
                 usecols=list(_KLINE_COLUMNS),
                 names=("open_time", "close", "volume", "quote_volume", "taker_buy_volume"),
                 dtype={
@@ -283,6 +298,7 @@ def _epoch_to_ns(values: np.ndarray) -> np.ndarray:
 __all__ = [
     "BinanceKlineHistory",
     "binance_spot_kline_url",
+    "binance_um_futures_kline_url",
     "fetch_binance_spot_kline_history",
     "load_binance_kline_archives",
 ]

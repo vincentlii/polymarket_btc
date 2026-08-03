@@ -1,8 +1,8 @@
 # Codebase UML Inventory
 
 This file is generated from Python AST metadata and excludes `tests/` plus git-ignored private strategy/research directories.
-Generated: 2026-07-31T17:47:39+00:00
-Modules: 220 | Classes: 447 | Functions/methods: 3174
+Generated: 2026-08-03T14:23:20+00:00
+Modules: 224 | Classes: 452 | Functions/methods: 3213
 
 ## Backtesting Data Flow
 
@@ -1739,12 +1739,13 @@ flowchart TD
 ### `btc_short_horizon/research/binance_history.py`
 - Imports: `__future__, dataclasses, datetime, hashlib, httpx, math, numpy, pandas, pathlib, typing, zipfile`
 - Function L70: `binance_spot_kline_url(*, day: str, symbol: str = 'BTCUSDT', interval: str = '1m') -> str`
-- Function L79: `load_binance_kline_archives(paths: Sequence[Path], *, interval: str = '1m') -> BinanceKlineHistory`
-- Function L124: `async fetch_binance_spot_kline_history(*, start_time: datetime, end_time: datetime, symbol: str = 'BTCUSDT', interval: str = '1s', maximum_bars: int = _MAX_BOOTSTRAP_BARS, timeout_seconds: float = 10.0, client: httpx.AsyncClient | None = None) -> BinanceKlineHistory`
-- Function L224: `_parse_rest_klines(*, rows: Sequence[Sequence[object]], start_ms: int, end_ms: int, interval_ms: int) -> list[tuple[int, float, float, float, float]]`
-- Function L251: `_integer_field(value: object, *, name: str) -> int`
-- Function L263: `_finite_float(value: object, *, name: str, positive: bool = False) -> float`
-- Function L274: `_epoch_to_ns(values: np.ndarray) -> np.ndarray`
+- Function L79: `binance_um_futures_kline_url(*, day: str, symbol: str = 'BTCUSDT', interval: str = '1m') -> str`
+- Function L90: `load_binance_kline_archives(paths: Sequence[Path], *, interval: str = '1m') -> BinanceKlineHistory`
+- Function L139: `async fetch_binance_spot_kline_history(*, start_time: datetime, end_time: datetime, symbol: str = 'BTCUSDT', interval: str = '1s', maximum_bars: int = _MAX_BOOTSTRAP_BARS, timeout_seconds: float = 10.0, client: httpx.AsyncClient | None = None) -> BinanceKlineHistory`
+- Function L239: `_parse_rest_klines(*, rows: Sequence[Sequence[object]], start_ms: int, end_ms: int, interval_ms: int) -> list[tuple[int, float, float, float, float]]`
+- Function L266: `_integer_field(value: object, *, name: str) -> int`
+- Function L278: `_finite_float(value: object, *, name: str, positive: bool = False) -> float`
+- Function L289: `_epoch_to_ns(values: np.ndarray) -> np.ndarray`
 - Class L26: `BinanceKlineHistory`
   - Method L36: `__post_init__(self) -> None`
   - Method L57: `source_hash(self) -> str`
@@ -1768,6 +1769,16 @@ flowchart TD
   - Method L96: `__post_init__(self) -> None`
 - Class L101: `MakerGateEvidence`
   - Method L118: `__post_init__(self) -> None`
+
+### `btc_short_horizon/research/materialized_dataset.py`
+- Imports: `__future__, btc_short_horizon, collections, datetime, numbers, numpy, pandas, pathlib, pyarrow`
+- Function L22: `read_materialized_direction_dataset(path: Path, *, expected_schema: FeatureSchema | None = None, market_stride: int = 1, expected_offsets: Sequence[int] | None = None) -> DirectionDataset`
+- Function L161: `_schema_from_parquet(parquet: pq.ParquetFile) -> FeatureSchema`
+- Function L169: `_normalize_offsets(values: Sequence[int] | None) -> tuple[int, ...] | None`
+- Function L182: `_sample_group_id(sample_id: str) -> str`
+- Function L189: `_strict_integer_array(values: object, *, name: str) -> np.ndarray`
+- Function L203: `_require_aware(value: datetime, *, name: str) -> None`
+- Function L208: `_ns(value: datetime) -> int`
 
 ### `btc_short_horizon/research/opening_dataset.py`
 - Imports: `__future__, btc_short_horizon, collections, dataclasses, datetime, numbers, numpy`
@@ -1813,6 +1824,38 @@ flowchart TD
   - Method L140: `__post_init__(self) -> None`
 - Class L156: `ForwardRawEvent`
 - Class L177: `ForwardRawEventLoad`
+
+### `btc_short_horizon/research/opening_factor_challenge.py`
+- Imports: `__future__, btc_short_horizon, collections, dataclasses, datetime, enum, math, numpy`
+- Function L74: `opening_factor_feature_schema(*, base_schema: FeatureSchema, families: Sequence[OpeningFactorFamily]) -> FeatureSchema`
+- Function L85: `build_opening_factor_dataset(*, control: DirectionDataset, spot_klines: BinanceKlineHistory | None = None, perp_klines: BinanceKlineHistory | None = None, families: Sequence[OpeningFactorFamily] = tuple(OpeningFactorFamily)) -> OpeningFactorDatasetBuild`
+- Function L172: `_normalize_families(families: Sequence[OpeningFactorFamily]) -> tuple[OpeningFactorFamily, ...]`
+- Function L179: `_base_features(family: OpeningFactorFamily) -> tuple[str, ...]`
+- Function L218: `_factor_values(*, base: np.ndarray, names: dict[str, int], cross: tuple[float, ...] | None) -> dict[OpeningFactorFamily, tuple[float, ...]]`
+- Function L255: `_ratio(numerator: float, denominator: float) -> float`
+- Function L259: `_cross_market_values(*, sample_ts: datetime, spot: BinanceKlineHistory, perp: BinanceKlineHistory) -> tuple[float, ...] | None`
+- Function L313: `_last_available_index(history: BinanceKlineHistory, decision_ns: int) -> int | None`
+- Function L319: `_contiguous(history: BinanceKlineHistory, start: int, end: int) -> bool`
+- Function L325: `_datetime_ns(value: datetime) -> int`
+- Class L58: `OpeningFactorFamily(StrEnum)`
+- Class L66: `OpeningFactorDatasetBuild`
+
+### `btc_short_horizon/research/opening_factor_research.py`
+- Imports: `__future__, btc_short_horizon, collections, dataclasses, math, numpy, typing`
+- Function L84: `adjusted_alpha(challenger_count: int) -> float`
+- Function L90: `run_opening_factor_development(*, build: OpeningFactorDatasetBuild, split_config: WalkForwardConfig, bootstrap_iterations: int = 10000, minimum_eligible_markets: int = 1, progress_callback: Callable[[FactorCandidateResult], None] | None = None) -> OpeningFactorDevelopmentRun`
+- Function L175: `development_report(run: OpeningFactorDevelopmentRun) -> dict[str, object]`
+- Function L230: `_candidate_dataset(build: OpeningFactorDatasetBuild, candidate: FactorCandidate) -> DirectionDataset`
+- Function L248: `_model_config(kind: str) -> DirectionModelConfig`
+- Function L260: `_result(candidate: FactorCandidate, predictions: Sequence[OofPrediction], dataset: DirectionDataset) -> FactorCandidateResult`
+- Function L287: `_validate_prediction_lineage(control: Sequence[OofPrediction], challenger: Sequence[OofPrediction]) -> None`
+- Function L300: `_select(results: tuple[FactorCandidateResult, ...], build: OpeningFactorDatasetBuild) -> OpeningFactorDevelopmentRun`
+- Function L338: `_improves(candidate: FactorCandidateResult, baseline: FactorCandidateResult) -> bool`
+- Function L350: `_replaces(candidate: FactorCandidateResult, baseline: FactorCandidateResult) -> bool`
+- Class L32: `FactorCandidate`
+- Class L51: `FactorCandidateResult`
+- Class L70: `OpeningFactorDevelopmentRun`
+  - Method L79: `__post_init__(self) -> None`
 
 ### `btc_short_horizon/research/opening_features.py`
 - Imports: `__future__, btc_short_horizon, collections, dataclasses, datetime, pathlib`
@@ -3814,6 +3857,19 @@ flowchart TD
 - Function L66: `async discover(args: argparse.Namespace) -> int`
 - Function L81: `main(argv: Sequence[str] | None = None) -> int`
 
+### `scripts/btc_opening_factor_challenge.py`
+- Imports: `__future__, argparse, btc_short_horizon, datetime, hashlib, httpx, json, pandas, pathlib, uuid`
+- Function L40: `parse_args(argv: list[str] | None = None) -> argparse.Namespace`
+- Function L54: `run(args: argparse.Namespace) -> dict[str, object]`
+- Function L168: `_archives(directory: Path, dates: tuple[date, ...], *, url, download: bool) -> dict[str, object]`
+- Function L194: `_archive_manifest(payload: dict[str, object]) -> dict[str, object]`
+- Function L213: `_write_atomic_output(output: Path, *, report: dict[str, object], lineage: dict[str, object], rows: list[dict[str, object]], progress: dict[str, object]) -> None`
+- Function L242: `_write_progress_atomic(path: Path, payload: dict[str, object]) -> None`
+- Function L254: `_dates(start: date, end: date) -> Any`
+- Function L261: `_sha256(path: Path) -> str`
+- Function L269: `_canonical_hash(value: object) -> str`
+- Function L273: `main(argv: list[str] | None = None) -> int`
+
 ### `scripts/btc_opening_feature_audit.py`
 - Imports: `__future__, argparse, btc_short_horizon, collections, dataclasses, datetime, json, pathlib, pyarrow`
 - Function L36: `parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace`
@@ -3835,33 +3891,33 @@ flowchart TD
 
 ### `scripts/btc_opening_mispricing_proxy.py`
 - Imports: `__future__, argparse, asyncio, btc_short_horizon, collections, dataclasses, datetime, hashlib, httpx, json, numpy, pandas, pathlib, pyarrow`
-- Function L68: `parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace`
-- Function L112: `async discover_closed_markets(*, start: datetime, end: datetime, rule_epoch: str) -> MarketCatalog`
-- Function L129: `download_binance_archives(*, directory: Path, start: date, end: date, interval: str) -> tuple[Path, ...]`
-- Function L155: `existing_binance_archives(*, directory: Path, start: date, end: date, interval: str) -> tuple[Path, ...]`
-- Function L171: `run(args: argparse.Namespace) -> dict[str, object]`
-- Function L546: `load_materialized_opening_proxy_dataset(*, path: Path, interval_seconds: int, snapshot_seconds: int, entry_start_seconds: int, entry_end_seconds: int, market_stride: int = 1, expected_market_group_ids: Sequence[str] | None = None) -> DirectionDataset`
-- Function L618: `_materialized_selected_row_count(*, parquet: pq.ParquetFile, expected_offsets: tuple[int, ...], market_stride: int) -> int`
-- Function L650: `_load_materialized_proxy_batches(*, parquet: pq.ParquetFile, schema: FeatureSchema, expected_offsets: tuple[int, ...], market_stride: int, vectors: np.ndarray) -> tuple[list[ResearchSample], list[float]]`
-- Function L754: `_sample_group_id(sample_id: str) -> str`
-- Function L761: `_strict_integer_array(values: object, *, name: str) -> np.ndarray`
-- Function L775: `_candidate_configs() -> tuple[tuple[str, DirectionModelConfig], ...]`
-- Function L800: `_catalog_for_study(*, catalog_path: Path | None, start: datetime, end: datetime, rule_epoch: str) -> tuple[MarketCatalog, int]`
-- Function L817: `_split_config(profile: str) -> WalkForwardConfig`
-- Function L830: `_prediction_metrics(predictions: Iterable[object], *, weights: np.ndarray) -> dict[str, object]`
-- Function L840: `_prediction_metrics_by_regime(predictions: Iterable[object], *, dataset: DirectionDataset) -> dict[str, dict[str, object]]`
-- Function L852: `_constant_probability_metrics_by_regime(predictions: Iterable[object], *, dataset: DirectionDataset, probability: float) -> dict[str, dict[str, object]]`
-- Function L870: `_prediction_items_by_regime(predictions: Iterable[object], *, dataset: DirectionDataset) -> dict[object, tuple[object, ...]]`
-- Function L881: `_probability_metrics(*, labels: np.ndarray, probabilities: np.ndarray, weights: np.ndarray) -> dict[str, object]`
-- Function L950: `_write_dataset(*, path: Path, dataset: object) -> None`
-- Function L960: `_write_predictions(*, path: Path, development: Sequence[object], holdout: Sequence[object], weights: np.ndarray) -> None`
-- Function L987: `_market_slugs(*, start: datetime, end: datetime) -> Iterable[str]`
-- Function L994: `_batches(values: Sequence[str], size: int) -> Iterable[tuple[str, ...]]`
-- Function L999: `_dates(start: date, end: date) -> Iterable[date]`
-- Function L1006: `_data_hash(*, archives: Sequence[Path], catalog_path: Path) -> str`
-- Function L1019: `_date(value: str) -> date`
-- Function L1026: `_ns(value: datetime) -> int`
-- Function L1035: `main(argv: Sequence[str] | None = None) -> int`
+- Function L71: `parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace`
+- Function L115: `async discover_closed_markets(*, start: datetime, end: datetime, rule_epoch: str) -> MarketCatalog`
+- Function L132: `download_binance_archives(*, directory: Path, start: date, end: date, interval: str) -> tuple[Path, ...]`
+- Function L158: `existing_binance_archives(*, directory: Path, start: date, end: date, interval: str) -> tuple[Path, ...]`
+- Function L174: `run(args: argparse.Namespace) -> dict[str, object]`
+- Function L549: `load_materialized_opening_proxy_dataset(*, path: Path, interval_seconds: int, snapshot_seconds: int, entry_start_seconds: int, entry_end_seconds: int, market_stride: int = 1, expected_market_group_ids: Sequence[str] | None = None) -> DirectionDataset`
+- Function L591: `_materialized_selected_row_count(*, parquet: pq.ParquetFile, expected_offsets: tuple[int, ...], market_stride: int) -> int`
+- Function L623: `_load_materialized_proxy_batches(*, parquet: pq.ParquetFile, schema: FeatureSchema, expected_offsets: tuple[int, ...], market_stride: int, vectors: np.ndarray) -> tuple[list[ResearchSample], list[float]]`
+- Function L727: `_sample_group_id(sample_id: str) -> str`
+- Function L734: `_strict_integer_array(values: object, *, name: str) -> np.ndarray`
+- Function L748: `_candidate_configs() -> tuple[tuple[str, DirectionModelConfig], ...]`
+- Function L773: `_catalog_for_study(*, catalog_path: Path | None, start: datetime, end: datetime, rule_epoch: str) -> tuple[MarketCatalog, int]`
+- Function L790: `_split_config(profile: str) -> WalkForwardConfig`
+- Function L803: `_prediction_metrics(predictions: Iterable[object], *, weights: np.ndarray) -> dict[str, object]`
+- Function L813: `_prediction_metrics_by_regime(predictions: Iterable[object], *, dataset: DirectionDataset) -> dict[str, dict[str, object]]`
+- Function L825: `_constant_probability_metrics_by_regime(predictions: Iterable[object], *, dataset: DirectionDataset, probability: float) -> dict[str, dict[str, object]]`
+- Function L843: `_prediction_items_by_regime(predictions: Iterable[object], *, dataset: DirectionDataset) -> dict[object, tuple[object, ...]]`
+- Function L854: `_probability_metrics(*, labels: np.ndarray, probabilities: np.ndarray, weights: np.ndarray) -> dict[str, object]`
+- Function L923: `_write_dataset(*, path: Path, dataset: object) -> None`
+- Function L933: `_write_predictions(*, path: Path, development: Sequence[object], holdout: Sequence[object], weights: np.ndarray) -> None`
+- Function L960: `_market_slugs(*, start: datetime, end: datetime) -> Iterable[str]`
+- Function L967: `_batches(values: Sequence[str], size: int) -> Iterable[tuple[str, ...]]`
+- Function L972: `_dates(start: date, end: date) -> Iterable[date]`
+- Function L979: `_data_hash(*, archives: Sequence[Path], catalog_path: Path) -> str`
+- Function L992: `_date(value: str) -> date`
+- Function L999: `_ns(value: datetime) -> int`
+- Function L1008: `main(argv: Sequence[str] | None = None) -> int`
 
 ### `scripts/btc_opening_price_edge_proxy.py`
 - Imports: `__future__, argparse, asyncio, btc_short_horizon, collections, dataclasses, httpx, json, math, numbers, numpy, pandas, pathlib, uuid`

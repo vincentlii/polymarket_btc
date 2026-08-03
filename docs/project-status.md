@@ -155,6 +155,17 @@ and reporting plumbing without importing archived BTC strategy logic.
   `output/btc_short_horizon/research/opening-proxy-protocol-v2-clean-20260428-20260713/`.
   It is acceptable for research Shadow only; the failed direction gate blocks
   Canary and Live promotion.
+- Current lightweight factor challenge: the frozen 7,295-market protocol-v2
+  control was augmented with causal boundary/time, path-state, flow/value and
+  Spot/Perpetual 1-minute factors. Six challenger-vs-control comparisons plus
+  the LightGBM-vs-best-Logistic replacement comparison all used 10,000
+  UTC-day block-bootstrap draws and Bonferroni `alpha=0.05/7`. No candidate
+  passed. Control log loss/Brier/ECE were 0.648506/0.228951/0.016447;
+  `state_logistic` improved point loss slightly but worsened calibration and
+  had adjusted intervals crossing zero. `all_lightgbm` reached the best point
+  loss/Brier at 0.647788/0.228298, but adjusted intervals crossed zero versus
+  both control and `state_logistic`. This development No-Go did not open the
+  sealed holdout, publish a runtime artifact, or change the VPS champion.
 - Current sparse Polymarket price-history proxy: frozen development thresholds,
   a 1c entry-price buffer and a 15-second maximum price age produced 945 holdout
   entries at 2.53c/share (95% CI 0.70c to 4.39c). Adding another 1c cost and

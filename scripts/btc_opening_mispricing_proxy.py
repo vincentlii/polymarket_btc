@@ -61,6 +61,9 @@ from btc_short_horizon.research.opening_model_gate import (  # noqa: E402
     target_confidence_bands,
     weighted_calibration_error,
 )
+from btc_short_horizon.research.materialized_dataset import (  # noqa: E402
+    read_materialized_direction_dataset,
+)
 from btc_short_horizon.research.provenance import git_provenance  # noqa: E402
 from btc_short_horizon.research.walk_forward import ResearchSample  # noqa: E402
 
@@ -562,38 +565,13 @@ def load_materialized_opening_proxy_dataset(
     expected_offsets = tuple(range(first_offset, entry_end_seconds + 1, snapshot_seconds))
     if not expected_offsets:
         raise ValueError("materialized proxy timing produces no snapshots")
-    if market_stride < 1:
-        raise ValueError("materialized market_stride must be >= 1")
-    metadata_columns = (
-        "sample_id",
-        "feature_ts",
-        "label_available_ts",
-        "label",
-        "elapsed_seconds",
-    )
-    required_columns = (*metadata_columns, *schema.names)
-    try:
-        parquet = pq.ParquetFile(path)
-    except (OSError, ValueError) as exc:
-        raise ValueError("materialized proxy dataset has an incompatible schema") from exc
-    if not set(required_columns).issubset(parquet.schema_arrow.names):
-        raise ValueError("materialized proxy dataset has an incompatible schema")
-    selected_count = _materialized_selected_row_count(
-        parquet=parquet,
-        expected_offsets=expected_offsets,
+    dataset = read_materialized_direction_dataset(
+        path,
+        expected_schema=schema,
         market_stride=market_stride,
-    )
-    if selected_count == 0:
-        raise ValueError("materialized proxy dataset has no samples in the entry window")
-    vectors = np.empty((selected_count, len(schema.names)), dtype=float)
-    samples, weights = _load_materialized_proxy_batches(
-        parquet=parquet,
-        schema=schema,
         expected_offsets=expected_offsets,
-        market_stride=market_stride,
-        vectors=vectors,
     )
-    observed_group_ids = tuple(dict.fromkeys(sample.group_id for sample in samples))
+    observed_group_ids = tuple(dict.fromkeys(sample.group_id for sample in dataset.samples))
     if expected_market_group_ids is not None:
         expected = tuple(expected_market_group_ids)
         if not expected or any(
@@ -604,12 +582,7 @@ def load_materialized_opening_proxy_dataset(
             raise ValueError("expected materialized market group IDs must be unique")
         if observed_group_ids != expected:
             raise ValueError("materialized proxy market sequence does not match the study catalog")
-    return DirectionDataset(
-        samples=tuple(samples),
-        vectors=vectors,
-        schema=schema,
-        sample_weights=np.asarray(weights, dtype=float),
-    )
+    return dataset
 
 
 _MATERIALIZED_BATCH_SIZE = 8_192

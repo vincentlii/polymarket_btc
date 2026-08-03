@@ -4,7 +4,7 @@
 
 在不等待新的 Polymarket 历史样本、也不下载新的大批量 1 秒数据的前提下，
 使用本机已有的 BTCUSDT 1 秒 opening-proxy 数据训练并比较可解释的新增因子。
-只补充体积较小的 Binance USD-M BTCUSDT 1 分钟 Kline，用于 spot/perp
+只补充体积较小的 Binance Spot 与 USD-M BTCUSDT 1 分钟 Kline，用于 spot/perp
 跨市场因子。结果仅作为 development challenger，不替换 VPS champion。
 
 ## Fixed Evidence Boundary
@@ -15,6 +15,8 @@
 - 本轮只运行 development OOF，不打开 sealed holdout，不生成 runtime model artifact。
 - 不从 forward Polymarket 数据补值，不将 Binance proxy 结果解释为可成交收益。
 - 不新增 dependency，不启用真实订单，不改动 `paper-v3-independent-fak` VPS champion。
+- 本轮仅允许补下载缺失的 Spot 与 USD-M BTCUSDT 1 分钟日归档；必须记录计划/实际
+  字节数、SHA-256 与按日覆盖率，且不得下载 1 秒、aggTrades 或 depth 数据。
 
 ## Factor Families
 
@@ -52,8 +54,10 @@
 - `all_logistic`: control + 全部家族。
 - `all_lightgbm`: 与 `all_logistic` 相同 features，仅使用当前受限 small LightGBM 配置。
 
-所有 challenger 相对 control 使用同一组 paired UTC-day block bootstrap；
-development family-wise alpha 按实际 challenger 数 Bonferroni 调整。LightGBM
+所有 6 个 challenger 相对 control 使用同一组 paired UTC-day block bootstrap；
+LightGBM 对数据依赖选择的最佳 Logistic 另作第 7 个 replacement comparison。
+全部 7 个预注册比较统一使用 Bonferroni `alpha=0.05/7`，确保 development
+family-wise error rate 不超过 0.05。LightGBM
 只有在 log loss、Brier、calibration error 和 paired confidence lower bounds
 全部优于最佳 Logistic 时才可成为 development winner。
 

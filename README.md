@@ -185,6 +185,7 @@ Detailed guides have been filed away in the [docs index](https://evan-kolberg.gi
   - [最小验收标准](https://evan-kolberg.github.io/prediction-market-backtesting/btc-strategy-profitability-research/#最小验收标准)
 - [BTC Model Validation Research](https://evan-kolberg.github.io/prediction-market-backtesting/btc-model-validation-research/)
   - [Market-relative Challenger Protocol](https://evan-kolberg.github.io/prediction-market-backtesting/btc-model-validation-research/#market-relative-challenger-protocol)
+  - [Lightweight Opening-factor Challenger](https://evan-kolberg.github.io/prediction-market-backtesting/btc-model-validation-research/#lightweight-opening-factor-challenger)
   - [结论](https://evan-kolberg.github.io/prediction-market-backtesting/btc-model-validation-research/#结论)
   - [因果时间切分](https://evan-kolberg.github.io/prediction-market-backtesting/btc-model-validation-research/#因果时间切分)
   - [校准与独立样本](https://evan-kolberg.github.io/prediction-market-backtesting/btc-model-validation-research/#校准与独立样本)

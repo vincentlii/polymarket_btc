@@ -62,7 +62,7 @@
 - Test: `tests/btc_short_horizon/test_btc_opening_factor_challenge_script.py`
 
 **Interfaces:**
-- Produces the seven fixed candidates from the design, paired metrics, Bonferroni-adjusted confidence intervals and a development-only verdict.
+- Produces the seven fixed candidates from the design, paired metrics, seven pre-registered Bonferroni-adjusted comparisons at `alpha=0.05/7`, and a development-only verdict.
 - CLI consumes one materialized protocol-v2 dataset plus optional spot/perp minute archive directories and writes atomic report artifacts.
 
 - [ ] Write tests for candidate immutability, paired lineage, adjusted alpha, Logistic-first selection, LightGBM replacement rules, no sealed-holdout call, provenance and atomic output failure.
@@ -80,7 +80,7 @@
 
 **Interfaces:**
 - Uses `D:/polymarket_btc/output/btc_short_horizon/research/opening-proxy-protocol-v2-clean-20260428-20260713/dataset.parquet` as the frozen control dataset.
-- Uses existing local spot 1-minute archives and downloads only missing Binance USD-M BTCUSDT 1-minute daily archives for 2026-04-27 through 2026-07-12.
+- Uses existing local archives and downloads only missing Binance Spot and USD-M BTCUSDT 1-minute daily archives for 2026-04-27 through 2026-07-12; records planned/actual bytes, SHA-256, and daily coverage. No 1-second, aggTrades, or depth archive is downloaded.
 
 - [ ] Run the challenge into a new timestamped local output directory; never overwrite an earlier result.
 - [ ] Record actual coverage, candidate metrics, adjusted intervals and development verdict without claiming profit.

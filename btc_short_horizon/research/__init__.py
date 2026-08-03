@@ -80,6 +80,13 @@ from btc_short_horizon.research.opening_market_relative_research import (
     run_market_relative_development,
     run_market_relative_sealed_holdout,
 )
+from btc_short_horizon.research.materialized_dataset import read_materialized_direction_dataset
+from btc_short_horizon.research.opening_factor_challenge import (
+    OpeningFactorDatasetBuild,
+    OpeningFactorFamily,
+    build_opening_factor_dataset,
+    opening_factor_feature_schema,
+)
 
 __all__ = [
     "MARKET_RELATIVE_LOGISTIC_ABLATIONS",
@@ -97,6 +104,8 @@ __all__ = [
     "MarketRelativeDevelopmentRun",
     "MarketRelativeSealedHoldoutRun",
     "MarketRelativeFeatureFamily",
+    "OpeningFactorDatasetBuild",
+    "OpeningFactorFamily",
     "OofPrediction",
     "OpeningMispricingGateEvidence",
     "OpeningMarketObservation",
@@ -118,6 +127,7 @@ __all__ = [
     "build_walk_forward_plan",
     "build_opening_market_observations",
     "build_opening_market_relative_datasets",
+    "build_opening_factor_dataset",
     "build_market_relative_artifact_contract",
     "build_opening_proxy_prediction",
     "build_opening_direction_dataset",
@@ -142,6 +152,8 @@ __all__ = [
     "target_confidence_bands",
     "weighted_calibration_error",
     "opening_market_relative_feature_schema",
+    "opening_factor_feature_schema",
+    "read_materialized_direction_dataset",
     "run_market_relative_development",
     "run_market_relative_sealed_holdout",
 ]
