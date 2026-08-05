@@ -280,13 +280,15 @@ Grafana建议刷新频率应匹配数据变化速度，并为 panel 添加说明
 
 这一顺序优先满足“打开后几秒内知道是否正常、是否赚钱、是否该行动”，同时为后续 Shadow、Canary 和 Live 逐步补齐真实数据留出稳定接口。
 
-Research Paper 的首页显示三张紧凑执行策略卡：15 秒 maker、确认后立即提交的一次性
-FAK、5 秒 maker 后转一次性 FAK。三者共享同一模型概率、决策时刻、两次确认与
-opportunity ID，但资金、订单、成交与 PnL 账本完全隔离；主资金曲线仍只采用标记为
-primary 的策略。卡片同时显示全样本 PnL、仅核心价格样本的 paired EV、全样本
-paired EV、按已成交份额计算的 conditional EV、成交率、核心/尾部样本和 taker
-fee，并按 3--30 秒、35--90 秒、95--180 秒及价格区间分层。Promotion 只读取核心
-paired EV；尾部研究样本不能靠较大的偶然 PnL 抬高 Go 指标。
+Research Paper 的首页默认只显示启用中的三张策略卡：首次合格信号立即提交的 1x5
+对照、两次五秒确认的 2x5 主策略，以及带 edge 稳定约束的 Stable 3x5 对照。三个
+暂停的 maker-gated 历史策略仍保留在状态与账本中，但只有用户切换到“全部”筛选后
+才显示。筛选只影响前端展示，不删除历史数据，也不改变 runtime 决策。各变体资金、
+订单、成交与 PnL 账本完全隔离；主资金曲线只采用标记为 primary 的 2x5。卡片显示
+全样本 PnL、核心与全样本已结算机会 EV、按已成交份额计算的 conditional EV、
+成交率、评估/合格信号、核心/尾部样本和 taker fee，并按 3--30 秒、35--90 秒、
+95--180 秒及价格区间分层。Promotion 只读取核心样本 EV；尾部研究样本不能靠较大
+的偶然 PnL 抬高 Go 指标。
 
 策略卡下方显示主策略本进程的决策漏斗：decision tick、有效预测、候选信号、独立
 机会、提交、拒绝、成交、结算。该漏斗只用于解释为什么没有订单或没有成交，不能跨重启
@@ -299,3 +301,8 @@ variant 筛选的 `/api/orders` 显式加载。历史读取递归发现各 execu
 “已结算但未成交”显示成一笔收益为零的交易。完整历史保留 opportunity、执行阶段、
 core/tail、Go eligibility、decision ask 以及最多三次 fair/VWAP/fee/net-edge 观察；
 终止原因、queue ahead、可消费卖盘量、执行路径和 taker fee 继续保留供逐单诊断。
+看板必须区分四个不同口径：`evaluation` 是一次 planner 计算，`qualified signal`
+是通过 edge/价格/数据 gate 的信号，`opportunity` 是完成确认并创建不可变交易记录，
+`fill` 是正成交份额。用户可见的“机会 / 成交”只能使用后两者；被拒绝的五秒评估
+不得进入机会分母。跨 execution epoch 的账本可在完整历史中筛选和汇总，但不同
+策略版本的 starting balance 与资金曲线不得拼接为同一账户曲线。

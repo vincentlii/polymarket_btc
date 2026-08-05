@@ -248,7 +248,7 @@ class ExecutionSegmentPerformance:
     resolved_count: int
     fill_count: int
     realized_pnl: float
-    paired_ev_per_opportunity: float | None
+    resolved_ev_per_opportunity: float | None
 
     def __post_init__(self) -> None:
         _require_identifier(self.dimension, "segment dimension")
@@ -258,7 +258,7 @@ class ExecutionSegmentPerformance:
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"{name} must be a non-negative integer")
         _finite(self.realized_pnl, "segment realized_pnl")
-        _optional_finite(self.paired_ev_per_opportunity, "paired_ev_per_opportunity")
+        _optional_finite(self.resolved_ev_per_opportunity, "resolved_ev_per_opportunity")
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -268,7 +268,7 @@ class ExecutionSegmentPerformance:
             "resolved_count": self.resolved_count,
             "fill_count": self.fill_count,
             "realized_pnl": self.realized_pnl,
-            "paired_ev_per_opportunity": self.paired_ev_per_opportunity,
+            "resolved_ev_per_opportunity": self.resolved_ev_per_opportunity,
         }
 
     @classmethod
@@ -281,8 +281,8 @@ class ExecutionSegmentPerformance:
             resolved_count=_integer(value.get("resolved_count"), "resolved_count"),
             fill_count=_integer(value.get("fill_count"), "fill_count"),
             realized_pnl=_float(value.get("realized_pnl"), "segment realized_pnl"),
-            paired_ev_per_opportunity=_optional_float(
-                value.get("paired_ev_per_opportunity"), "paired_ev_per_opportunity"
+            resolved_ev_per_opportunity=_optional_float(
+                value.get("resolved_ev_per_opportunity"), "resolved_ev_per_opportunity"
             ),
         )
 
@@ -301,12 +301,14 @@ class ExecutionVariantPerformance:
     taker_fees: float
     enabled: bool = True
     opportunity_count: int = 0
+    evaluation_count: int = 0
+    qualified_signal_count: int = 0
     resolved_opportunity_count: int = 0
     core_resolved_opportunity_count: int = 0
     tail_resolved_opportunity_count: int = 0
-    paired_ev_per_opportunity: float | None = None
-    core_paired_ev_per_opportunity: float | None = None
-    tail_paired_ev_per_opportunity: float | None = None
+    resolved_ev_per_opportunity: float | None = None
+    core_resolved_ev_per_opportunity: float | None = None
+    tail_resolved_ev_per_opportunity: float | None = None
     conditional_ev_per_filled_share: float | None = None
     segment_summaries: tuple[ExecutionSegmentPerformance, ...] = ()
 
@@ -318,12 +320,12 @@ class ExecutionVariantPerformance:
             raise ValueError("variant primary must be bool")
         if not isinstance(self.enabled, bool):
             raise ValueError("variant enabled must be bool")
-        if (
-            isinstance(self.opportunity_count, bool)
-            or not isinstance(self.opportunity_count, int)
-            or self.opportunity_count < 0
-        ):
-            raise ValueError("variant opportunity_count must be non-negative")
+        for name in ("opportunity_count", "evaluation_count", "qualified_signal_count"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"variant {name} must be non-negative")
+        if self.qualified_signal_count > self.evaluation_count:
+            raise ValueError("qualified signals cannot exceed evaluations")
         _nonnegative(self.starting_balance, "starting_balance")
         _nonnegative(self.equity, "equity")
         _finite(self.realized_pnl, "realized_pnl")
@@ -339,14 +341,14 @@ class ExecutionVariantPerformance:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"{name} must be a non-negative integer")
-        _optional_finite(self.paired_ev_per_opportunity, "paired_ev_per_opportunity")
+        _optional_finite(self.resolved_ev_per_opportunity, "resolved_ev_per_opportunity")
         _optional_finite(
-            self.core_paired_ev_per_opportunity,
-            "core_paired_ev_per_opportunity",
+            self.core_resolved_ev_per_opportunity,
+            "core_resolved_ev_per_opportunity",
         )
         _optional_finite(
-            self.tail_paired_ev_per_opportunity,
-            "tail_paired_ev_per_opportunity",
+            self.tail_resolved_ev_per_opportunity,
+            "tail_resolved_ev_per_opportunity",
         )
         _optional_finite(
             self.conditional_ev_per_filled_share,
@@ -366,6 +368,8 @@ class ExecutionVariantPerformance:
             "primary": self.primary,
             "enabled": self.enabled,
             "opportunity_count": self.opportunity_count,
+            "evaluation_count": self.evaluation_count,
+            "qualified_signal_count": self.qualified_signal_count,
             "starting_balance": self.starting_balance,
             "equity": self.equity,
             "realized_pnl": self.realized_pnl,
@@ -376,9 +380,9 @@ class ExecutionVariantPerformance:
             "resolved_opportunity_count": self.resolved_opportunity_count,
             "core_resolved_opportunity_count": self.core_resolved_opportunity_count,
             "tail_resolved_opportunity_count": self.tail_resolved_opportunity_count,
-            "paired_ev_per_opportunity": self.paired_ev_per_opportunity,
-            "core_paired_ev_per_opportunity": self.core_paired_ev_per_opportunity,
-            "tail_paired_ev_per_opportunity": self.tail_paired_ev_per_opportunity,
+            "resolved_ev_per_opportunity": self.resolved_ev_per_opportunity,
+            "core_resolved_ev_per_opportunity": self.core_resolved_ev_per_opportunity,
+            "tail_resolved_ev_per_opportunity": self.tail_resolved_ev_per_opportunity,
             "conditional_ev_per_filled_share": self.conditional_ev_per_filled_share,
             "segment_summaries": [item.to_json() for item in self.segment_summaries],
         }
@@ -403,6 +407,10 @@ class ExecutionVariantPerformance:
                 else True
             ),
             opportunity_count=_integer(value.get("opportunity_count", 0), "opportunity_count"),
+            evaluation_count=_integer(value.get("evaluation_count", 0), "evaluation_count"),
+            qualified_signal_count=_integer(
+                value.get("qualified_signal_count", 0), "qualified_signal_count"
+            ),
             resolved_opportunity_count=_integer(
                 value.get("resolved_opportunity_count", 0), "resolved_opportunity_count"
             ),
@@ -414,16 +422,16 @@ class ExecutionVariantPerformance:
                 value.get("tail_resolved_opportunity_count", 0),
                 "tail_resolved_opportunity_count",
             ),
-            paired_ev_per_opportunity=_optional_float(
-                value.get("paired_ev_per_opportunity"), "paired_ev_per_opportunity"
+            resolved_ev_per_opportunity=_optional_float(
+                value.get("resolved_ev_per_opportunity"), "resolved_ev_per_opportunity"
             ),
-            core_paired_ev_per_opportunity=_optional_float(
-                value.get("core_paired_ev_per_opportunity"),
-                "core_paired_ev_per_opportunity",
+            core_resolved_ev_per_opportunity=_optional_float(
+                value.get("core_resolved_ev_per_opportunity"),
+                "core_resolved_ev_per_opportunity",
             ),
-            tail_paired_ev_per_opportunity=_optional_float(
-                value.get("tail_paired_ev_per_opportunity"),
-                "tail_paired_ev_per_opportunity",
+            tail_resolved_ev_per_opportunity=_optional_float(
+                value.get("tail_resolved_ev_per_opportunity"),
+                "tail_resolved_ev_per_opportunity",
             ),
             conditional_ev_per_filled_share=_optional_float(
                 value.get("conditional_ev_per_filled_share"),
@@ -441,7 +449,8 @@ class DecisionFunnelSnapshot:
     scope: str
     decision_ticks: int
     predictions: int
-    eligible_signal_ticks: int
+    evaluations: int
+    qualified_signals: int
     confirmation_pending: int
     opportunities: int
     placements: int
@@ -456,7 +465,8 @@ class DecisionFunnelSnapshot:
         for name in (
             "decision_ticks",
             "predictions",
-            "eligible_signal_ticks",
+            "evaluations",
+            "qualified_signals",
             "confirmation_pending",
             "opportunities",
             "placements",
@@ -469,6 +479,18 @@ class DecisionFunnelSnapshot:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"{name} must be a non-negative integer")
+        if not (
+            self.decision_ticks
+            >= self.predictions
+            >= self.evaluations
+            >= self.qualified_signals
+            >= self.opportunities
+            >= self.placements
+            >= self.fills
+        ):
+            raise ValueError("decision funnel conversion counts must be monotonic")
+        if self.resolved > self.opportunities:
+            raise ValueError("resolved opportunities cannot exceed confirmed opportunities")
 
     def to_json(self) -> dict[str, object]:
         return {name: getattr(self, name) for name in self.__dataclass_fields__}
@@ -483,7 +505,8 @@ class DecisionFunnelSnapshot:
                 for name in (
                     "decision_ticks",
                     "predictions",
-                    "eligible_signal_ticks",
+                    "evaluations",
+                    "qualified_signals",
                     "confirmation_pending",
                     "opportunities",
                     "placements",

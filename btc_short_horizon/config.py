@@ -362,7 +362,6 @@ def _stage_policy(value: object) -> StagePolicyConfig:
                 minimum_net_edge=_nonnegative_float(item, "minimum_net_edge"),
                 minimum_price=_probability_excluding_zero_default(item, "minimum_price", 0.20),
                 maximum_price=_probability_excluding_zero_default(item, "maximum_price", 0.80),
-                confirmation_signals=_positive_int_default(item, "confirmation_signals", 2),
                 enabled=_bool_default(item, "enabled", True),
             )
         )

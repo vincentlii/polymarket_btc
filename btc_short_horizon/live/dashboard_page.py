@@ -87,6 +87,12 @@ h1 { margin:9px 0 12px; max-width:720px; font-size:clamp(2rem,4.2vw,3.65rem); li
 .panel-head { display:flex; align-items:flex-start; justify-content:space-between; gap:18px; padding:18px 20px 14px; border-bottom:1px solid var(--line-soft); }
 .panel-head h2 { margin:4px 0 0; font-size:1rem; font-weight:570; letter-spacing:-.015em; }
 .panel-meta { color:var(--quiet); font-size:.67rem; text-align:right; }
+.panel-actions { display:flex; align-items:center; justify-content:flex-end; gap:10px; flex-wrap:wrap; }
+.segmented { display:inline-flex; padding:3px; border:1px solid var(--line); border-radius:9px; background:#0f1411; }
+.segmented button { min-height:27px; padding:4px 10px; border:0; border-radius:6px; background:transparent; color:var(--quiet); cursor:pointer; font-size:.66rem; }
+.segmented button:hover { color:var(--text); }
+.segmented button[aria-pressed="true"] { background:var(--surface-2); color:var(--accent); box-shadow:0 0 0 1px #3c493e; }
+.segmented button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .chart-wrap { min-height:276px; padding:12px 18px 5px; display:grid; align-items:center; }
 #equity-chart { width:100%; height:228px; overflow:visible; }
 .chart-grid { stroke:#253028; stroke-width:1; }
@@ -222,7 +228,7 @@ footer { display:flex; align-items:center; justify-content:space-between; gap:20
   </section>
 
   <section class="panel section">
-    <div class="panel-head"><div><div class="section-kicker">EXECUTION RACE</div><h2>三种成交策略对比</h2></div><div id="execution-epoch" class="panel-meta">同一信号 · 独立模拟账本</div></div>
+    <div class="panel-head"><div><div class="section-kicker">EXECUTION RACE</div><h2>成交策略对比</h2></div><div class="panel-actions"><div id="execution-epoch" class="panel-meta">同一信号 · 独立模拟账本</div><div class="segmented" role="group" aria-label="策略显示范围"><button type="button" data-variant-filter="enabled" aria-pressed="true">启用中</button><button type="button" data-variant-filter="all" aria-pressed="false">全部</button></div></div></div>
     <div id="variant-grid" class="variant-grid"><div class="table-empty">等待策略数据</div></div>
     <div class="funnel-shell">
       <div class="funnel-head"><span>主策略本进程决策漏斗</span><span id="funnel-scope">等待数据</span></div>
@@ -244,6 +250,7 @@ footer { display:flex; align-items:center; justify-content:space-between; gap:20
     </div>
     <div id="history-panel" class="history-panel" hidden>
       <div class="history-toolbar">
+        <label class="history-filter">策略版本<select id="history-epoch" class="control"><option value="">全部版本</option></select></label>
         <label class="history-filter">策略筛选<select id="history-variant" class="control"><option value="">全部策略</option></select></label>
         <div id="history-state" class="history-state" aria-live="polite">尚未读取完整账本</div>
       </div>
@@ -265,7 +272,8 @@ const runtimeModeLabels = {forward_collection:'实时采集',post_window_shadow:
 const tradeSideLabels = {up:'看涨',down:'看跌'};
 const tradeStatusLabels = {insert_pending:'等待生效',working:'挂单中',cancel_pending:'撤单中',fak_pending:'FAK 提交中',partially_filled:'部分成交',filled:'已成交',canceled:'已撤单',recovery_canceled:'重启撤单',rejected:'已拒绝',pending:'待结算',resolved:'已结算',void:'作废'};
 const regimeLabels = {early_3s_to_30s:'3–30s',price_discovery_35s_to_90s:'35–90s',mid_early_95s_to_180s:'95–180s',core:'核心价 20–80%',tail_low:'低价尾部 <20%',tail_high:'高价尾部 >80%'};
-const history = {cursor:null,variant:'',loaded:0,currency:'USDC',loading:false};
+const history = {cursor:null,variant:'',epoch:'',loaded:0,currency:'USDC',loading:false};
+const variantView = {filter:'enabled',variants:[],currency:'USDC'};
 
 function finite(value) { return typeof value === 'number' && Number.isFinite(value); }
 function money(value,currency='USDC',signed=false) { if(!finite(value)) return '—'; const prefix=signed&&value>0?'+':''; return `${prefix}${value.toFixed(2)} ${currency}`; }
@@ -305,16 +313,18 @@ function renderSummary(snapshot) {
 }
 
 function renderVariants(variants,currency) {
+  variantView.variants=variants||[]; variantView.currency=currency;
   const grid=byId('variant-grid'); grid.replaceChildren();
-  if(!(variants||[]).length) { const empty=document.createElement('div'); empty.className='table-empty'; empty.textContent='当前快照没有并行执行策略。'; grid.append(empty); return; }
-  for(const item of variants) { const card=document.createElement('article'); card.className=`variant-card ${item.primary?'primary':''}`; const title=document.createElement('div'); title.className='variant-title'; const name=document.createElement('strong'); name.textContent=item.label; const badge=document.createElement('span'); badge.textContent=item.enabled===false?'暂停':(item.primary?'主策略':'对照'); title.append(name,badge); const policy=document.createElement('div'); policy.className='variant-policy'; policy.textContent=readableIdentifier(item.policy); const values=document.createElement('div'); values.className='variant-values'; for(const [label,value,tone] of [['全样本 PnL',money(item.realized_pnl,currency,true),pnlTone(item.realized_pnl)],['核心 EV / 机会',money(item.core_paired_ev_per_opportunity,currency,true),pnlTone(item.core_paired_ev_per_opportunity)],['全样本 EV / 机会',money(item.paired_ev_per_opportunity,currency,true),pnlTone(item.paired_ev_per_opportunity)],['EV / 成交份额',money(item.conditional_ev_per_filled_share,currency,true),pnlTone(item.conditional_ev_per_filled_share)],['成交率',percent(item.fill_rate),'neutral'],['机会 / 成交',`${item.opportunity_count||0} / ${item.fill_count||0}`,'neutral'],['核心 / 尾部',`${item.core_resolved_opportunity_count||0} / ${item.tail_resolved_opportunity_count||0}`,'neutral'],['Taker fee',money(item.taker_fees,currency),'neutral']]) { const cell=document.createElement('div'); const caption=document.createElement('span'); caption.textContent=label; const strong=document.createElement('strong'); strong.textContent=value; strong.className=tone; cell.append(caption,strong); values.append(cell); } const segments=document.createElement('div'); segments.className='variant-segments'; const resolved=(item.segment_summaries||[]).filter(segment=>(segment.resolved_count||0)>0); segments.textContent=resolved.length?resolved.map(segment=>`${regimeLabels[segment.key]||readableIdentifier(segment.key)} ${segment.resolved_count}次 · EV ${money(segment.paired_ev_per_opportunity,currency,true)}`).join(' ｜ '):'阶段与价格分层将在机会结算后显示'; card.append(title,policy,values,segments); grid.append(card); }
+  const visible=variantView.filter==='all'?variantView.variants:variantView.variants.filter(item=>item.enabled!==false);
+  if(!visible.length) { const empty=document.createElement('div'); empty.className='table-empty'; empty.textContent=variantView.filter==='enabled'?'当前没有启用中的策略。':'当前快照没有并行执行策略。'; grid.append(empty); return; }
+  for(const item of visible) { const card=document.createElement('article'); card.className=`variant-card ${item.primary?'primary':''}`; const title=document.createElement('div'); title.className='variant-title'; const name=document.createElement('strong'); name.textContent=item.label; const badge=document.createElement('span'); badge.textContent=item.enabled===false?'暂停':(item.primary?'主策略':'对照'); title.append(name,badge); const policy=document.createElement('div'); policy.className='variant-policy'; policy.textContent=readableIdentifier(item.policy); const values=document.createElement('div'); values.className='variant-values'; for(const [label,value,tone] of [['全样本 PnL',money(item.realized_pnl,currency,true),pnlTone(item.realized_pnl)],['核心 EV / 已结算机会',money(item.core_resolved_ev_per_opportunity,currency,true),pnlTone(item.core_resolved_ev_per_opportunity)],['全样本 EV / 已结算机会',money(item.resolved_ev_per_opportunity,currency,true),pnlTone(item.resolved_ev_per_opportunity)],['EV / 成交份额',money(item.conditional_ev_per_filled_share,currency,true),pnlTone(item.conditional_ev_per_filled_share)],['成交率',percent(item.fill_rate),'neutral'],['机会 / 成交',`${item.opportunity_count||0} / ${item.fill_count||0}`,'neutral'],['评估 / 合格信号',`${item.evaluation_count||0} / ${item.qualified_signal_count||0}`,'neutral'],['核心 / 尾部',`${item.core_resolved_opportunity_count||0} / ${item.tail_resolved_opportunity_count||0}`,'neutral'],['Taker fee',money(item.taker_fees,currency),'neutral']]) { const cell=document.createElement('div'); const caption=document.createElement('span'); caption.textContent=label; const strong=document.createElement('strong'); strong.textContent=value; strong.className=tone; cell.append(caption,strong); values.append(cell); } const segments=document.createElement('div'); segments.className='variant-segments'; const resolved=(item.segment_summaries||[]).filter(segment=>(segment.resolved_count||0)>0); segments.textContent=resolved.length?resolved.map(segment=>`${regimeLabels[segment.key]||readableIdentifier(segment.key)} ${segment.resolved_count}次 · EV ${money(segment.resolved_ev_per_opportunity,currency,true)}`).join(' ｜ '):'阶段与价格分层将在机会结算后显示'; card.append(title,policy,values,segments); grid.append(card); }
 }
 
 function renderFunnel(funnel,epoch) {
   byId('execution-epoch').textContent=epoch?`同一信号 · epoch ${readableIdentifier(epoch)}`:'同一信号 · 独立模拟账本';
   const track=byId('decision-funnel'); track.replaceChildren(); byId('funnel-scope').textContent=funnel?readableIdentifier(funnel.scope):'等待数据';
   if(!funnel) { const node=document.createElement('div'); node.className='funnel-step'; node.innerHTML='<span>尚未开始</span><strong>—</strong>'; track.append(node); return; }
-  const stages=[['决策 tick',funnel.decision_ticks],['有效预测',funnel.predictions],['候选信号',funnel.eligible_signal_ticks],['独立机会',funnel.opportunities],['已提交',funnel.placements],['被拒绝',funnel.rejected],['有成交',funnel.fills],['已结算',funnel.resolved]];
+  const stages=[['决策 tick',funnel.decision_ticks],['有效预测',funnel.predictions],['盘口评估',funnel.evaluations],['合格信号',funnel.qualified_signals],['确认机会',funnel.opportunities],['已提交',funnel.placements],['有成交',funnel.fills],['已结算',funnel.resolved]];
   for(const [label,value] of stages) { const node=document.createElement('div'); node.className='funnel-step'; const caption=document.createElement('span'); caption.textContent=label; const strong=document.createElement('strong'); strong.textContent=String(value||0); node.append(caption,strong); track.append(node); }
 }
 
@@ -390,26 +400,34 @@ function updateHistoryVariants(variants) {
   if([...select.options].some(option=>option.value===current)) select.value=current;
 }
 
+function updateHistoryEpochs(epochs) {
+  const select=byId('history-epoch'),current=select.value; select.replaceChildren(); const all=document.createElement('option'); all.value=''; all.textContent='全部版本'; select.append(all);
+  for(const epoch of epochs||[]) { const option=document.createElement('option'); option.value=epoch; option.textContent=readableIdentifier(epoch); select.append(option); }
+  if([...select.options].some(option=>option.value===current)) select.value=current;
+}
+
 async function loadHistory({reset=false}={}) {
   if(history.loading) return;
-  history.loading=true; const more=byId('history-more'),variantSelect=byId('history-variant'); more.disabled=true; variantSelect.disabled=true; byId('history-state').textContent='正在读取完整账本…';
+  history.loading=true; const more=byId('history-more'),variantSelect=byId('history-variant'),epochSelect=byId('history-epoch'); more.disabled=true; variantSelect.disabled=true; epochSelect.disabled=true; byId('history-state').textContent='正在读取完整账本…';
   if(reset) { history.cursor=null; history.loaded=0; }
-  const params=new URLSearchParams({limit:'50'}); if(history.cursor) params.set('cursor',history.cursor); if(history.variant) params.set('variant',history.variant);
+  const params=new URLSearchParams({limit:'50'}); if(history.cursor) params.set('cursor',history.cursor); if(history.variant) params.set('variant',history.variant); if(history.epoch) params.set('epoch',history.epoch);
   try {
     const response=await fetch(`/api/orders?${params}`,{cache:'no-store'}); const payload=await response.json(); if(!response.ok) throw new Error(payload.message||'完整账本读取失败');
     renderOrderRows(byId('history-rows'),payload.items||[],history.currency,{append:!reset,emptyText:'当前筛选没有订单记录。'});
-    history.loaded+=Array.isArray(payload.items)?payload.items.length:0; history.cursor=payload.next_cursor||null; updateHistoryVariants(payload.available_variants);
-    byId('history-state').textContent=`已加载 ${history.loaded} / ${payload.total_records||0} 条 · 只读模拟账本`;
+    history.loaded+=Array.isArray(payload.items)?payload.items.length:0; history.cursor=payload.next_cursor||null; updateHistoryVariants(payload.available_variants); updateHistoryEpochs(payload.available_epochs);
+    const pnlSummary=finite(payload.total_realized_pnl)?` · 当前策略筛选 PnL ${money(payload.total_realized_pnl,history.currency,true)}`:' · 选择单个策略后显示 PnL 合计'; byId('history-state').textContent=`已加载 ${history.loaded} / ${payload.total_records||0} 条 · ${payload.execution_epoch_count||0} 个策略版本${pnlSummary}`;
     more.hidden=!payload.has_more;
   } catch(error) {
     if(reset) renderOrderRows(byId('history-rows'),[],history.currency,{emptyText:'完整历史暂不可用。'});
     byId('history-state').textContent=`读取失败：${error instanceof Error?error.message:'未知错误'}`; more.hidden=true;
-  } finally { history.loading=false; more.disabled=false; variantSelect.disabled=false; }
+  } finally { history.loading=false; more.disabled=false; variantSelect.disabled=false; epochSelect.disabled=false; }
 }
 
 byId('history-toggle').addEventListener('click',()=>{ const panel=byId('history-panel'),opening=panel.hidden; panel.hidden=!opening; byId('history-toggle').textContent=opening?'收起完整历史':'查看完整历史'; byId('history-toggle').setAttribute('aria-expanded',String(opening)); if(opening&&history.loaded===0) loadHistory({reset:true}); });
 byId('history-more').addEventListener('click',()=>loadHistory());
 byId('history-variant').addEventListener('change',event=>{ history.variant=event.target.value; loadHistory({reset:true}); });
+byId('history-epoch').addEventListener('change',event=>{ history.epoch=event.target.value; loadHistory({reset:true}); });
+for(const button of document.querySelectorAll('[data-variant-filter]')) button.addEventListener('click',()=>{ variantView.filter=button.dataset.variantFilter; for(const peer of document.querySelectorAll('[data-variant-filter]')) peer.setAttribute('aria-pressed',String(peer===button)); renderVariants(variantView.variants,variantView.currency); });
 
 function renderAlerts(payload,snapshot) {
   const target=byId('alerts'); target.replaceChildren(); const items=[]; for(const error of payload.errors||[]) items.push({state:'error',message:error}); if(payload.stop_request) items.push({state:'warning',message:`已请求停止：${payload.stop_request.reason}`}); for(const alert of (snapshot&&snapshot.alerts)||[]) items.push(alert);

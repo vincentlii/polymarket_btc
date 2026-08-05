@@ -1,4 +1,4 @@
-paper_execution_epoch = "paper-v4-stage-aware-taker-v2"
+paper_execution_epoch = "paper-v5-stage-integrity"
 
 data_sources = [
   "local:../../data/pmxt_raw",
@@ -41,7 +41,6 @@ end_seconds = 30.0
 minimum_net_edge = 0.04
 minimum_price = 0.20
 maximum_price = 0.80
-confirmation_signals = 2
 enabled = true
 
 [[stage_policy.rules]]
@@ -51,7 +50,6 @@ end_seconds = 90.0
 minimum_net_edge = 0.035
 minimum_price = 0.20
 maximum_price = 0.80
-confirmation_signals = 2
 enabled = true
 
 [[stage_policy.rules]]
@@ -61,7 +59,6 @@ end_seconds = 180.0
 minimum_net_edge = 0.03
 minimum_price = 0.20
 maximum_price = 0.80
-confirmation_signals = 3
 enabled = true
 
 [collection]
@@ -143,11 +140,26 @@ confirmation_signals = 2
 maximum_edge_decay = 0.0
 
 [[paper_execution_variants]]
-id = "independent_fak_2x5s"
-label = "Independent FAK 2x5s"
+id = "independent_fak_1x5s"
+label = "Independent FAK 1x5s Control"
 mode = "immediate_fak"
 maker_work_seconds = 0.0
 primary = false
+enabled = true
+minimum_taker_net_edge = 0.03
+slippage_buffer = 0.005
+model_uncertainty_buffer = 0.03
+opportunity_policy = "independent_taker"
+confirmation_policy = "side_only"
+confirmation_signals = 1
+maximum_edge_decay = 0.0
+
+[[paper_execution_variants]]
+id = "independent_fak_2x5s"
+label = "Independent FAK 2x5s Main"
+mode = "immediate_fak"
+maker_work_seconds = 0.0
+primary = true
 enabled = true
 minimum_taker_net_edge = 0.03
 slippage_buffer = 0.005
@@ -159,10 +171,10 @@ maximum_edge_decay = 0.0
 
 [[paper_execution_variants]]
 id = "independent_fak_stable_3x5s"
-label = "Independent FAK Stable 3x5s"
+label = "Independent FAK Stable 3x5s Control"
 mode = "immediate_fak"
 maker_work_seconds = 0.0
-primary = true
+primary = false
 enabled = true
 minimum_taker_net_edge = 0.03
 slippage_buffer = 0.005

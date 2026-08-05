@@ -18,6 +18,12 @@ flush 后轮换 raw session，
 runtime ledger 类别。重启时无法证明仍在场内的模拟 working order 会被保守标为
 `recovery_canceled`，同一市场不会再次创建 placement cycle。
 
+当前分 epoch/variant 的 `ledger.json` 仍是订单、成交、结算和收益的权威账本。
+`paper-v5-stage-integrity` 另使用 `evaluations.sqlite3` 保存高频 planner 评估；它只
+用于诊断“评估→合格信号→确认机会”的转化，不是收益账本。备份该 SQLite 文件前
+必须由运行时执行 WAL checkpoint，或同时复制数据库及其 `-wal`/`-shm` 文件；不得
+从仍在写入的数据库单独复制主文件并声称备份完整。
+
 异地备份采用内容寻址对象、不可变 snapshot 和全量回读校验。只有生成了与 snapshot 精确绑定的 verification receipt，才允许清理本地 part/manifest；清理默认 dry-run。恢复与实际清理都必须取得采集器同一把单写者锁，不能与采集进程并行修改原始数据目录。
 
 这套机制证明的是“指定 snapshot 中的字节可以从指定 remote 完整取回”，不是云账户绝对可信。生产环境仍要使用独立备份权限、bucket versioning、可选 Object Lock，并把 snapshot ID 与告警/运维记录同步到 VPS 之外。

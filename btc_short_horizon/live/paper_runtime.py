@@ -267,6 +267,7 @@ class ResearchPaperRuntime:
         gamma_client: GammaMarketClient | None = None,
     ) -> None:
         predictor = ModelPaperPredictor(project=project, model_directory=model_directory)
+        self.predictor = predictor
         self.engine = build_research_paper_portfolio(
             project=project,
             predictor=predictor,
@@ -329,14 +330,14 @@ class ResearchPaperRuntime:
     async def run(self, *, stop_event: asyncio.Event) -> None:
         try:
             if not await self._bootstrap_history(stop_event=stop_event):
-                self._flush_opportunities()
+                self._checkpoint_evaluations()
                 self._publish(now=datetime.now(UTC), state="stopped", healthy=True)
                 return
             self._ready = True
             while not stop_event.is_set():
                 if self.event_buffer.overflowed:
                     self._last_error = "admitted_event_buffer_overflow"
-                    self._flush_opportunities()
+                    self._checkpoint_evaluations()
                     self._publish(now=datetime.now(UTC), state="failed", healthy=False)
                     return
                 self._drain_events()
@@ -351,17 +352,17 @@ class ResearchPaperRuntime:
                     await asyncio.wait_for(stop_event.wait(), timeout=0.05)
                 except TimeoutError:
                     continue
-            self._flush_opportunities()
+            self._checkpoint_evaluations()
             self._publish(now=datetime.now(UTC), state="stopped", healthy=True)
         except Exception as exc:
             self._last_error = f"{type(exc).__name__}: {exc}"
-            self._flush_opportunities()
+            self._checkpoint_evaluations()
             self._publish(now=datetime.now(UTC), state="failed", healthy=False)
 
-    def _flush_opportunities(self) -> None:
-        flush = getattr(getattr(self, "engine", None), "flush_opportunities", None)
-        if flush is not None:
-            flush()
+    def _checkpoint_evaluations(self) -> None:
+        checkpoint = getattr(getattr(self, "engine", None), "checkpoint_evaluations", None)
+        if checkpoint is not None:
+            checkpoint()
 
     async def _bootstrap_history(self, *, stop_event: asyncio.Event) -> bool:
         deferred: list[RawCollectorEvent] = []
@@ -562,6 +563,8 @@ class ResearchPaperRuntime:
     def _publish(self, *, now: datetime, state: str, healthy: bool) -> None:
         details = {
             "model_id": self.model_id,
+            "default_model_id": self.predictor.metadata.model_id,
+            "stage_model_ids": self.predictor.stage_model_ids,
             "paper_execution_epoch": self.project.paper_execution_epoch,
             "active_market": self._active_slug,
             "ready": self._ready,

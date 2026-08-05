@@ -460,8 +460,16 @@ the input/output contract and operational commands.
 
 - The v2 implementation is isolated from the VPS `2d1be` release and uses the
   new `paper-v4-stage-aware-taker-v2` epoch.
-- Only the independent FAK pair is active for new paper decisions; the maker
-  variants remain readable but paused.
+
+- The follow-up `paper-v5-stage-integrity` epoch corrects stage-boundary
+  confirmation, separates evaluations/qualified signals/opportunities/fills,
+  records actual model provenance, stores evaluation diagnostics in SQLite,
+  and keeps all older epoch ledgers available through dashboard history.
+- Three independent FAK variants are active for new paper decisions: 2x5 is the
+  primary, 1x5 is the immediate control, and Stable 3x5 is the conservative
+  control. Confirmation count is variant-owned in every stage. The three older
+  maker-gated variants remain readable but paused and are hidden by default on
+  the dashboard; the user can reveal them with the strategy filter.
 - Stage rules, common opportunity logging, optional stage-specific artifacts,
   core price-band protection, and the bounded LightGBM grid are implemented.
 - This remains a Research Paper challenger. It is not a real-money Go decision
