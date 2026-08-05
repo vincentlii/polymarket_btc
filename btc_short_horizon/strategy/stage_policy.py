@@ -26,7 +26,6 @@ class StageRule:
     minimum_net_edge: float
     minimum_price: float = 0.20
     maximum_price: float = 0.80
-    confirmation_signals: int = 2
     enabled: bool = True
 
     def __post_init__(self) -> None:
@@ -45,12 +44,6 @@ class StageRule:
             raise ValueError("stage timing and edge must be non-negative")
         if not 0.0 < self.minimum_price < self.maximum_price < 1.0:
             raise ValueError("stage price bounds must satisfy 0 < min < max < 1")
-        if (
-            isinstance(self.confirmation_signals, bool)
-            or not isinstance(self.confirmation_signals, int)
-            or self.confirmation_signals < 1
-        ):
-            raise ValueError("stage confirmation_signals must be an integer >= 1")
         if not isinstance(self.enabled, bool):
             raise ValueError("stage enabled must be bool")
 
@@ -86,21 +79,18 @@ class StagePolicyConfig:
                     start_seconds=3.0,
                     end_seconds=30.0,
                     minimum_net_edge=0.04,
-                    confirmation_signals=2,
                 ),
                 StageRule(
                     stage=OpeningStage.PRICE_DISCOVERY,
                     start_seconds=35.0,
                     end_seconds=90.0,
                     minimum_net_edge=0.035,
-                    confirmation_signals=2,
                 ),
                 StageRule(
                     stage=OpeningStage.MID_EARLY,
                     start_seconds=95.0,
                     end_seconds=180.0,
                     minimum_net_edge=0.03,
-                    confirmation_signals=3,
                 ),
             )
         )

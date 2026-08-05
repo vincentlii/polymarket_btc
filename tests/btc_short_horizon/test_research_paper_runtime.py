@@ -272,6 +272,47 @@ def test_research_paper_requires_two_live_cadence_signals_and_one_cycle(tmp_path
     assert [item.signal_number for item in engine.records[0].signal_observations] == [1, 2, 3]
 
 
+@pytest.mark.parametrize(
+    ("stage_seconds", "expected_regime"),
+    (
+        ((5, 10, 15), "early_3s_to_30s"),
+        ((40, 45, 50), "price_discovery_35s_to_90s"),
+        ((100, 105, 110), "mid_early_95s_to_180s"),
+    ),
+)
+@pytest.mark.parametrize("required_signals", (1, 2, 3))
+def test_variant_confirmation_count_is_exact_in_every_stage(
+    tmp_path,
+    stage_seconds: tuple[int, int, int],
+    expected_regime: str,
+    required_signals: int,
+) -> None:
+    engine = _engine(
+        tmp_path,
+        variant=_variant(
+            f"independent_fak_{required_signals}x5s",
+            mode="immediate_fak",
+            maker_work_seconds=0.0,
+            opportunity_policy="independent_taker",
+            confirmation_policy=("edge_stable" if required_signals == 3 else "side_only"),
+            confirmation_signals=required_signals,
+            maximum_edge_decay=(0.01 if required_signals == 3 else 0.0),
+        ),
+    )
+    engine.activate_market(_market(), rules={UP: _rules(UP), DOWN: _rules(DOWN)})
+
+    results: list[str] = []
+    for second in stage_seconds[:required_signals]:
+        engine.on_event(_book(UP, bid="0.40", ask="0.42", second=second))
+        engine.on_event(_book(DOWN, bid="0.56", ask="0.58", second=second))
+        results.append(engine.decide(now_ts_ns=T0_NS + second * 1_000_000_000 + 500_000_000))
+
+    assert results == ["confirmation_pending"] * (required_signals - 1) + ["submitted"]
+    assert len(engine.records) == 1
+    assert engine.records[0].entry_regime == expected_regime
+    assert len(engine.records[0].signal_observations) == required_signals
+
+
 def test_market_activation_persists_frozen_rules_for_replay(tmp_path) -> None:
     market = _market()
     rules = {UP: _rules(UP), DOWN: _rules(DOWN)}
@@ -526,6 +567,41 @@ def test_regime_boundary_accepts_only_configured_scheduler_tolerance(tmp_path) -
     assert engine.records[0].entry_regime == "early_3s_to_30s"
 
 
+@pytest.mark.parametrize(
+    ("confirmation_policy", "maximum_edge_decay"),
+    (("side_only", 0.0), ("edge_stable", 0.02)),
+)
+@pytest.mark.parametrize("seconds", ((25, 30, 35), (85, 90, 95)))
+def test_confirmation_never_crosses_stage_boundary(
+    tmp_path,
+    confirmation_policy: str,
+    maximum_edge_decay: float,
+    seconds: tuple[int, int, int],
+) -> None:
+    engine = _engine(
+        tmp_path,
+        variant=_variant(
+            "independent",
+            mode="immediate_fak",
+            maker_work_seconds=0.0,
+            opportunity_policy="independent_taker",
+            confirmation_policy=confirmation_policy,
+            confirmation_signals=3,
+            maximum_edge_decay=maximum_edge_decay,
+        ),
+    )
+    engine.activate_market(_market(), rules={UP: _rules(UP), DOWN: _rules(DOWN)})
+
+    results = []
+    for second in seconds:
+        engine.on_event(_book(UP, bid="0.40", ask="0.42", second=second))
+        engine.on_event(_book(DOWN, bid="0.56", ask="0.58", second=second))
+        results.append(engine.decide(now_ts_ns=T0_NS + second * 1_000_000_000 + 100_000_000))
+
+    assert results == ["confirmation_pending"] * 3
+    assert engine.records == []
+
+
 def test_regime_gap_is_not_silently_assigned_to_a_neighboring_segment(tmp_path) -> None:
     engine = _engine(tmp_path)
     engine.activate_market(_market(), rules={UP: _rules(UP), DOWN: _rules(DOWN)})
@@ -628,12 +704,13 @@ def test_immediate_fak_uses_same_confirmation_then_executes_once_after_latency(t
     assert engine.records[0].fak_client_latency_ms == pytest.approx(50.0)
     assert engine.records[0].fak_server_delay_ms == 0.0
     assert engine.records[0].fak_total_latency_ms == pytest.approx(50.0)
+    assert engine.records[0].model_version == "proxy-model"
     assert PaperTradeRecord.from_json(engine.records[0].to_json()) == engine.records[0]
     performance = engine.variant_performance()
     assert performance.resolved_opportunity_count == 1
-    assert performance.paired_ev_per_opportunity == pytest.approx(2.9)
-    assert performance.core_paired_ev_per_opportunity == pytest.approx(2.9)
-    assert performance.tail_paired_ev_per_opportunity is None
+    assert performance.resolved_ev_per_opportunity == pytest.approx(2.9)
+    assert performance.core_resolved_ev_per_opportunity == pytest.approx(2.9)
+    assert performance.tail_resolved_ev_per_opportunity is None
     assert performance.conditional_ev_per_filled_share == pytest.approx(0.58)
 
 
@@ -667,6 +744,17 @@ def test_independent_fak_submits_when_shared_maker_gate_has_no_plan(tmp_path) ->
     assert len(challenger.records) == 1
     assert challenger.records[0].execution_route == "direct_fak"
     assert challenger.records[0].side == "up"
+    summary = next(
+        item
+        for item in portfolio.dashboard_snapshot(
+            now=T0 + timedelta(seconds=11)
+        ).performance.variant_summaries
+        if item.variant_id == "independent_fak_2x5s"
+    )
+    assert summary.evaluation_count == 2
+    assert summary.qualified_signal_count == 2
+    assert summary.opportunity_count == 1
+    assert summary.fill_count == 0
     diagnostic_paths = tuple(
         (tmp_path / "paper" / "epochs" / "test-paper-v2").glob(
             "variants/independent_fak_2x5s/diagnostics/*.json"
@@ -682,7 +770,7 @@ def test_independent_fak_submits_when_shared_maker_gate_has_no_plan(tmp_path) ->
     assert all(len(item["evaluations"]) == 2 for item in diagnostic["entries"])
 
 
-def test_balance_rejection_is_a_zero_fill_paired_opportunity(tmp_path) -> None:
+def test_balance_rejection_is_a_zero_fill_confirmed_opportunity(tmp_path) -> None:
     engine = _engine(
         tmp_path,
         starting_balance=1.0,
@@ -820,9 +908,9 @@ def test_tail_price_is_recorded_but_excluded_from_initial_go_bucket(tmp_path) ->
     assert engine.records[0].price_bucket == "tail_low"
     assert engine.records[0].go_eligible is False
     performance = engine.variant_performance()
-    assert performance.paired_ev_per_opportunity == pytest.approx(4.05)
-    assert performance.core_paired_ev_per_opportunity is None
-    assert performance.tail_paired_ev_per_opportunity == pytest.approx(4.05)
+    assert performance.resolved_ev_per_opportunity == pytest.approx(4.05)
+    assert performance.core_resolved_ev_per_opportunity is None
+    assert performance.tail_resolved_ev_per_opportunity == pytest.approx(4.05)
 
 
 def test_maker_then_fak_rechecks_probability_after_cancel_ack(tmp_path) -> None:

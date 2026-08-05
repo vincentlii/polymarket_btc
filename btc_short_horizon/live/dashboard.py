@@ -133,6 +133,7 @@ def build_order_history_payload(
     limit: int = _ORDER_HISTORY_DEFAULT_LIMIT,
     cursor: str | None = None,
     variant: str | None = None,
+    epoch: str | None = None,
 ) -> dict[str, object]:
     """Read a deterministic, credential-free page from all Research Paper ledgers."""
 
@@ -146,9 +147,15 @@ def build_order_history_payload(
         )
     if variant is not None:
         _validate_variant_id(variant)
+    if epoch is not None:
+        _validate_variant_id(epoch)
 
-    records, available_variants = _read_order_history(config.runtime_root)
-    filtered = records if variant is None else [item for item in records if item[0][2] == variant]
+    records, available_variants, available_epochs = _read_order_history(config.runtime_root)
+    filtered = [
+        item
+        for item in records
+        if (variant is None or item[0][2] == variant) and (epoch is None or item[0][1] == epoch)
+    ]
     start = 0
     if cursor is not None:
         cursor_key = _decode_order_cursor(cursor)
@@ -165,17 +172,26 @@ def build_order_history_payload(
         "has_more": has_more,
         "limit": limit,
         "variant": variant,
+        "epoch": epoch,
         "available_variants": available_variants,
+        "available_epochs": available_epochs,
         "total_records": len(filtered),
+        "total_realized_pnl": (
+            None
+            if variant is None
+            else sum(float(item[1]["realized_pnl"] or 0.0) for item in filtered)
+        ),
+        "execution_epoch_count": len({item[0][1] for item in filtered}),
     }
 
 
 def _read_order_history(
     runtime_root: Path,
-) -> tuple[list[tuple[tuple[int, str, str, str], dict[str, object]]], list[str]]:
+) -> tuple[list[tuple[tuple[int, str, str, str], dict[str, object]]], list[str], list[str]]:
     records: list[tuple[tuple[int, str, str, str], dict[str, object]]] = []
     seen: set[tuple[str, str, str]] = set()
     variants: set[str] = set()
+    epochs: set[str] = set()
     paper_root = runtime_root / "paper"
     try:
         ledger_paths = _paper_ledger_paths(runtime_root)
@@ -187,7 +203,7 @@ def _read_order_history(
             if not isinstance(raw, Mapping):
                 raise _OrderHistoryDataError
             schema_version = raw.get("schema_version")
-            if isinstance(schema_version, bool) or schema_version not in {2, 3, 4}:
+            if isinstance(schema_version, bool) or schema_version not in {2, 3, 4, 5}:
                 raise _OrderHistoryDataError
             raw_records = raw.get("records")
             if not isinstance(raw_records, list):
@@ -219,7 +235,7 @@ def _read_order_history(
                     raise _OrderHistoryDataError
             for raw_record in raw_records:
                 record_variant = ledger_variant
-                if schema_version in {3, 4}:
+                if schema_version in {3, 4, 5}:
                     record_variant = _data_variant_id(
                         raw_record.get("variant_id") if isinstance(raw_record, Mapping) else None
                     )
@@ -236,6 +252,7 @@ def _read_order_history(
                     raise _OrderHistoryDataError
                 seen.add(identity)
                 variants.add(record_variant)
+                epochs.add(execution_epoch)
                 records.append((key, projected))
     except _OrderHistoryDataError:
         raise
@@ -250,7 +267,7 @@ def _read_order_history(
         raise _OrderHistoryDataError from exc
 
     records.sort(key=lambda item: item[0], reverse=True)
-    return records, sorted(variants)
+    return records, sorted(variants), sorted(epochs)
 
 
 def _paper_ledger_paths(runtime_root: Path) -> list[Path]:
@@ -334,7 +351,7 @@ def _project_order_record(
     if schema_version == 2:
         _data_number(raw.get("cancel_race_filled_shares", 0.0), minimum=0.0)
     else:
-        if schema_version == 4:
+        if schema_version >= 4:
             opportunity_id = _data_text(raw.get("opportunity_id"), maximum=160)
             entry_regime = _data_text(raw.get("entry_regime"), maximum=80)
             price_bucket = _data_text(raw.get("price_bucket"), maximum=80)
@@ -401,6 +418,11 @@ def _project_order_record(
         "go_eligible": go_eligible,
         "decision_best_ask": decision_best_ask,
         "signal_observations": signal_observations,
+        "model_version": (
+            _data_optional_text(raw.get("model_version"), maximum=160)
+            if schema_version >= 5
+            else None
+        ),
     }
     return (placed_at_ns, execution_epoch, variant_id, placement_id), projected
 
@@ -430,9 +452,9 @@ def _decode_order_cursor(value: str) -> tuple[int, str, str, str]:
     return placed_at_ns, execution_epoch, variant_id, placement_id
 
 
-def _history_query(raw_query: str) -> tuple[int, str | None, str | None]:
+def _history_query(raw_query: str) -> tuple[int, str | None, str | None, str | None]:
     values = parse_qs(raw_query, keep_blank_values=True)
-    if set(values) - {"limit", "cursor", "variant"} or any(
+    if set(values) - {"limit", "cursor", "variant", "epoch"} or any(
         len(items) != 1 for items in values.values()
     ):
         raise _OrderHistoryRequestError("查询参数无效。")
@@ -443,9 +465,12 @@ def _history_query(raw_query: str) -> tuple[int, str | None, str | None]:
         raise _OrderHistoryRequestError("limit 必须是整数。") from exc
     cursor = values.get("cursor", [None])[0]
     variant = values.get("variant", [None])[0]
+    epoch = values.get("epoch", [None])[0]
     if cursor == "" or variant == "":
         raise _OrderHistoryRequestError("cursor 与 variant 不得为空。")
-    return limit, cursor, variant
+    if epoch == "":
+        raise _OrderHistoryRequestError("epoch must not be empty")
+    return limit, cursor, variant, epoch
 
 
 def _validate_variant_id(value: str) -> None:
@@ -627,12 +652,13 @@ def create_dashboard_server(
                 return
             if path == "/api/orders":
                 try:
-                    limit, cursor, variant = _history_query(parsed.query)
+                    limit, cursor, variant, epoch = _history_query(parsed.query)
                     history = build_order_history_payload(
                         config,
                         limit=limit,
                         cursor=cursor,
                         variant=variant,
+                        epoch=epoch,
                     )
                 except _OrderHistoryRequestError as exc:
                     self._send_json(

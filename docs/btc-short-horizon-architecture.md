@@ -967,13 +967,16 @@ retroactively canceled because the local feed becomes stale. If its match-time
 book evidence is not trustworthy, the placement becomes `evidence_invalid` and
 is excluded from settlement PnL and Go/No-Go statistics.
 
-The v2 routes remain controls. Two new routes use an independent taker planner
-which evaluates both outcome-token ask ladders, per-level fees and frozen safety
-buffers without requiring a maker plan. `independent_fak_2x5s` uses the deployed
-model's two five-second confirmations. `independent_fak_stable_3x5s` requires
-three five-second observations and limits peak-to-current net-edge decay to one
-cent. The cadence remains five seconds because the current model artifact is
-trained and validated for that cadence.
+The v2 routes remain historical controls. Three active routes use an independent
+taker planner which evaluates both outcome-token ask ladders, per-level fees and
+frozen safety buffers without requiring a maker plan. `independent_fak_1x5s`
+submits on its first qualified observation. The primary
+`independent_fak_2x5s` requires two five-second observations.
+`independent_fak_stable_3x5s` requires three five-second observations and limits
+peak-to-current net-edge decay to one cent. Confirmation count is owned only by
+the variant; stage policy controls time, edge and price gates and resets
+confirmation at stage boundaries. The cadence remains five seconds because the
+current model artifact is trained and validated for that cadence.
 
 Rule snapshots are immutable per `(execution_epoch, market identity)`, but a
 process restart during the same market must not create a second observation-time

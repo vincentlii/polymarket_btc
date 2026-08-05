@@ -185,11 +185,15 @@ def test_dashboard_html_labels_research_paper_as_simulated_not_account_truth() -
 
     assert "Research Paper 模拟账本新鲜" in html
     assert "Simulated ledger" in html
-    assert "三种成交策略对比" in html
+    assert "成交策略对比" in html
     assert "variant_summaries" in html
     assert "recent_orders" in html
     assert "recent_trades" not in html
     assert "research_paper:'Research Paper'" in html
+    assert 'data-variant-filter="enabled" aria-pressed="true"' in html
+    assert 'data-variant-filter="all" aria-pressed="false"' in html
+    assert "variantView.filter==='all'" in html
+    assert "filter(item=>item.enabled!==false)" in html
 
 
 def test_dashboard_page_explains_recent_limit_and_loads_paginated_history() -> None:
@@ -198,7 +202,8 @@ def test_dashboard_page_explains_recent_limit_and_loads_paginated_history() -> N
     assert "仅展示最近 15 条" in html
     assert "查看完整历史" in html
     assert "主策略本进程决策漏斗" in html
-    assert "EV / 机会" in html
+    assert "EV / 已结算机会" in html
+    assert "评估 / 合格信号" in html
     assert "decision_funnel" in html
     assert "/api/orders" in html
     assert "history-variant" in html
@@ -526,6 +531,13 @@ def test_dashboard_order_history_paginates_filters_and_redacts_ledgers(tmp_path)
         assert first["has_more"] is True
         assert first["total_records"] == 4
         assert first["available_variants"] == ["direct_fak", "legacy_paper", "maker_15s"]
+        assert first["available_epochs"] == [
+            "legacy_schema2",
+            "legacy_schema3",
+            "paper-v2-direct-fak",
+        ]
+        assert first["execution_epoch_count"] == 3
+        assert first["total_realized_pnl"] is None
         assert all("token_id" not in item for item in first["items"])
         assert first["items"][0]["execution_epoch"] == "paper-v2-direct-fak"
         assert first["items"][0]["opportunity_id"] == "opportunity-schema4-maker"
@@ -567,6 +579,16 @@ def test_dashboard_order_history_paginates_filters_and_redacts_ledgers(tmp_path)
         assert [item["order_id"] for item in filtered["items"]] == [
             "schema4-maker",
             "schema3-order",
+        ]
+        assert isinstance(filtered["total_realized_pnl"], float)
+
+        connection.request("GET", "/api/orders?limit=10&epoch=paper-v2-direct-fak")
+        epoch_response = connection.getresponse()
+        epoch_filtered = json.loads(epoch_response.read())
+        assert epoch_response.status == 200
+        assert [item["order_id"] for item in epoch_filtered["items"]] == [
+            "schema4-maker",
+            "schema4-taker",
         ]
 
         connection.request("GET", "/api/orders?limit=101")

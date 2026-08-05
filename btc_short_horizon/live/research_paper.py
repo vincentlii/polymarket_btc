@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 import json
 from math import isfinite
 import os
 from pathlib import Path
+import sqlite3
 from uuid import uuid4
 
 import numpy as np
@@ -123,11 +124,11 @@ class PaperSignalObservation:
 
 
 @dataclass(frozen=True, slots=True)
-class PaperOpportunityObservation:
-    """One comparable taker evaluation, including rejected opportunities."""
+class PaperEvaluationObservation:
+    """One independent-taker planner evaluation, selected or rejected."""
 
     variant_id: str
-    opportunity_id: str
+    evaluation_id: str
     market_slug: str
     decision_ts_ns: int
     entry_regime: str
@@ -137,11 +138,12 @@ class PaperOpportunityObservation:
     fair_probability: float | None
     executable_vwap: float | None
     net_edge: float | None
+    model_version: str
 
     def to_json(self) -> dict[str, object]:
         return {
             "variant_id": self.variant_id,
-            "opportunity_id": self.opportunity_id,
+            "evaluation_id": self.evaluation_id,
             "market_slug": self.market_slug,
             "decision_ts_ns": self.decision_ts_ns,
             "entry_regime": self.entry_regime,
@@ -151,14 +153,15 @@ class PaperOpportunityObservation:
             "fair_probability": self.fair_probability,
             "executable_vwap": self.executable_vwap,
             "net_edge": self.net_edge,
+            "model_version": self.model_version,
         }
 
     @classmethod
-    def from_json(cls, raw: object) -> PaperOpportunityObservation:
-        value = _mapping_value(raw, "paper opportunity observation")
+    def from_json(cls, raw: object) -> PaperEvaluationObservation:
+        value = _mapping_value(raw, "paper evaluation observation")
         return cls(
             variant_id=_text(value.get("variant_id"), "variant_id"),
-            opportunity_id=_text(value.get("opportunity_id"), "opportunity_id"),
+            evaluation_id=_text(value.get("evaluation_id"), "evaluation_id"),
             market_slug=_text(value.get("market_slug"), "market_slug"),
             decision_ts_ns=_integer(value.get("decision_ts_ns"), "decision_ts_ns"),
             entry_regime=_text(value.get("entry_regime"), "entry_regime"),
@@ -168,6 +171,7 @@ class PaperOpportunityObservation:
             fair_probability=_optional_number(value.get("fair_probability"), "fair_probability"),
             executable_vwap=_optional_number(value.get("executable_vwap"), "executable_vwap"),
             net_edge=_optional_number(value.get("net_edge"), "net_edge"),
+            model_version=_text(value.get("model_version"), "model_version"),
         )
 
 
@@ -191,6 +195,7 @@ class PaperTradeRecord:
     price_bucket: str
     go_eligible: bool
     decision_best_ask: float
+    model_version: str | None = None
     signal_observations: list[PaperSignalObservation] = field(default_factory=list)
     settlement_status: str = "pending"
     terminal_reason: str | None = None
@@ -244,6 +249,7 @@ class PaperTradeRecord:
             "price_bucket": self.price_bucket,
             "go_eligible": self.go_eligible,
             "decision_best_ask": self.decision_best_ask,
+            "model_version": self.model_version,
             "signal_observations": [item.to_json() for item in self.signal_observations],
             "settlement_status": self.settlement_status,
             "terminal_reason": self.terminal_reason,
@@ -297,6 +303,7 @@ class PaperTradeRecord:
             price_bucket=_text(raw.get("price_bucket"), "price_bucket"),
             go_eligible=_boolean(raw.get("go_eligible"), "go_eligible"),
             decision_best_ask=_number(raw.get("decision_best_ask"), "decision_best_ask"),
+            model_version=_optional_text(raw.get("model_version"), "model_version"),
             signal_observations=[
                 PaperSignalObservation.from_json(item)
                 for item in _sequence_value(raw.get("signal_observations"), "signal_observations")
@@ -385,7 +392,7 @@ class PaperLedgerStore:
 
     def write(self, snapshot: PaperLedgerSnapshot) -> Path:
         payload = {
-            "schema_version": 4,
+            "schema_version": 5,
             "execution_epoch": self.execution_epoch,
             "variant_id": self.variant_id,
             "starting_balance": snapshot.starting_balance,
@@ -411,7 +418,7 @@ class PaperLedgerStore:
             return None
         except json.JSONDecodeError as exc:
             raise ValueError("invalid Research Paper ledger JSON") from exc
-        if not isinstance(raw, Mapping) or raw.get("schema_version") != 4:
+        if not isinstance(raw, Mapping) or raw.get("schema_version") not in {4, 5}:
             raise ValueError("unsupported Research Paper ledger schema")
         if raw.get("execution_epoch") != self.execution_epoch:
             raise ValueError("Research Paper ledger epoch does not match its path")
@@ -429,44 +436,107 @@ class PaperLedgerStore:
         )
 
 
-class PaperOpportunityStore:
-    """Shared immutable-by-identity opportunity log for variant comparison."""
+@dataclass(frozen=True, slots=True)
+class PaperEvaluationCounts:
+    evaluation_count: int
+    qualified_signal_count: int
+
+
+class PaperEvaluationStore:
+    """Disk-backed immutable evaluation journal with bounded process memory."""
+
+    _SCHEMA_VERSION = 1
 
     def __init__(self, runtime_root: Path, execution_epoch: str) -> None:
         _identifier(execution_epoch, "execution_epoch")
-        self.path = runtime_root / "paper" / "epochs" / execution_epoch / "opportunities.json"
-
-    def read(self) -> list[PaperOpportunityObservation]:
-        try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return []
-        except json.JSONDecodeError as exc:
-            raise ValueError("invalid Research Paper opportunity JSON") from exc
-        if not isinstance(raw, Mapping) or raw.get("schema_version") != 1:
-            raise ValueError("unsupported Research Paper opportunity schema")
-        records = raw.get("records")
-        if not isinstance(records, list):
-            raise ValueError("Research Paper opportunity records must be an array")
-        return [PaperOpportunityObservation.from_json(item) for item in records]
-
-    def write(self, records: list[PaperOpportunityObservation]) -> Path:
-        payload = {
-            "schema_version": 1,
-            "records": [record.to_json() for record in records],
-        }
+        self.path = runtime_root / "paper" / "epochs" / execution_epoch / "evaluations.sqlite3"
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_name(f".{self.path.name}.{uuid4().hex}.tmp")
-        encoded = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
-        try:
-            with temporary.open("xb") as handle:
-                handle.write(encoded)
-                handle.flush()
-                os.fsync(handle.fileno())
-            temporary.replace(self.path)
-        finally:
-            temporary.unlink(missing_ok=True)
-        return self.path
+        self._connection = sqlite3.connect(self.path)
+        self._connection.execute("PRAGMA journal_mode=WAL")
+        self._connection.execute("PRAGMA synchronous=FULL")
+        version = int(self._connection.execute("PRAGMA user_version").fetchone()[0])
+        if version not in {0, self._SCHEMA_VERSION}:
+            self._connection.close()
+            raise ValueError("unsupported Research Paper evaluation schema")
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS evaluations (
+                variant_id TEXT NOT NULL,
+                evaluation_id TEXT NOT NULL,
+                market_slug TEXT NOT NULL,
+                decision_ts_ns INTEGER NOT NULL,
+                entry_regime TEXT NOT NULL,
+                price_bucket TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                selected_side TEXT,
+                fair_probability REAL,
+                executable_vwap REAL,
+                net_edge REAL,
+                model_version TEXT NOT NULL,
+                PRIMARY KEY (variant_id, evaluation_id)
+            ) WITHOUT ROWID
+            """
+        )
+        self._connection.execute(f"PRAGMA user_version={self._SCHEMA_VERSION}")
+        self._connection.commit()
+
+    def append(self, records: Sequence[PaperEvaluationObservation]) -> int:
+        inserted = 0
+        with self._connection:
+            for record in records:
+                values = (
+                    record.variant_id,
+                    record.evaluation_id,
+                    record.market_slug,
+                    record.decision_ts_ns,
+                    record.entry_regime,
+                    record.price_bucket,
+                    record.reason,
+                    record.selected_side,
+                    record.fair_probability,
+                    record.executable_vwap,
+                    record.net_edge,
+                    record.model_version,
+                )
+                cursor = self._connection.execute(
+                    "INSERT OR IGNORE INTO evaluations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    values,
+                )
+                if cursor.rowcount:
+                    inserted += 1
+                    continue
+                existing = self._connection.execute(
+                    """
+                    SELECT variant_id, evaluation_id, market_slug, decision_ts_ns,
+                           entry_regime, price_bucket, reason, selected_side,
+                           fair_probability, executable_vwap, net_edge, model_version
+                    FROM evaluations WHERE variant_id = ? AND evaluation_id = ?
+                    """,
+                    (record.variant_id, record.evaluation_id),
+                ).fetchone()
+                if existing != values:
+                    raise ValueError("immutable Research Paper evaluation conflict")
+        return inserted
+
+    def counts_by_variant(self) -> dict[str, PaperEvaluationCounts]:
+        rows = self._connection.execute(
+            """
+            SELECT variant_id, COUNT(*),
+                   SUM(CASE WHEN selected_side IS NOT NULL THEN 1 ELSE 0 END)
+            FROM evaluations GROUP BY variant_id
+            """
+        )
+        return {
+            str(variant_id): PaperEvaluationCounts(int(total), int(qualified or 0))
+            for variant_id, total, qualified in rows
+        }
+
+    def checkpoint(self) -> None:
+        self._connection.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+
+    def close(self) -> None:
+        self._connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        self._connection.close()
 
 
 class PaperRuleSnapshotStore:
@@ -653,7 +723,8 @@ class ResearchPaperEngine:
         self._active_record: PaperTradeRecord | None = None
         self._latest_prediction: OpeningMispricingPrediction | None = None
         self._signal_observations: list[PaperSignalObservation] = []
-        self._last_opportunity: PaperOpportunityObservation | None = None
+        self._last_evaluation: PaperEvaluationObservation | None = None
+        self._confirmation_stage: str | None = None
         if changed:
             self._persist()
 
@@ -662,8 +733,16 @@ class ResearchPaperEngine:
         return self._active_placement
 
     @property
-    def last_opportunity(self) -> PaperOpportunityObservation | None:
-        return self._last_opportunity
+    def last_evaluation(self) -> PaperEvaluationObservation | None:
+        return self._last_evaluation
+
+    @property
+    def active_model_id(self) -> str:
+        return (
+            self.model_id
+            if self._latest_prediction is None
+            else self._latest_prediction.model_version
+        )
 
     def predict_current(self, *, now_ts_ns: int) -> OpeningMispricingPrediction | None:
         if self.market is None:
@@ -722,6 +801,7 @@ class ResearchPaperEngine:
         self._gapped_tokens.clear()
         self._tick_changed_tokens.clear()
         self._confirmation.reset()
+        self._confirmation_stage = None
         self._active_placement = None
         self._active_record = None
         self._latest_prediction = None
@@ -865,7 +945,7 @@ class ResearchPaperEngine:
         now_ts_ns: int,
         prediction: OpeningMispricingPrediction | None = None,
     ) -> str:
-        self._last_opportunity = None
+        self._last_evaluation = None
         if not self.variant.enabled:
             return "paused_variant"
         if self.market is None:
@@ -916,8 +996,13 @@ class ResearchPaperEngine:
             stage_rule = self.stage_policy.rule_for(elapsed)
         except ValueError:
             self._confirmation.reset()
+            self._confirmation_stage = None
             self._signal_observations.clear()
             return "outside_frozen_regime"
+        if self._confirmation_stage != stage_rule.stage.value:
+            self._confirmation.reset()
+            self._signal_observations.clear()
+            self._confirmation_stage = stage_rule.stage.value
         prediction = prediction or self._predict_current(books=books, now_ts_ns=now_ts_ns)
         self._validate_shared_prediction(prediction, now_ts_ns=now_ts_ns)
         self._latest_prediction = prediction
@@ -959,10 +1044,11 @@ class ResearchPaperEngine:
                 config=self.maker_config,
             )
         if isinstance(decision, TakerPlanDecision):
-            self._last_opportunity = self._opportunity_from_taker_decision(
+            self._last_evaluation = self._evaluation_from_taker_decision(
                 decision=decision,
                 stage_rule=stage_rule,
                 now_ts_ns=now_ts_ns,
+                model_version=prediction.model_version,
             )
         if decision.plan is None:
             if isinstance(decision, TakerPlanDecision):
@@ -1005,7 +1091,7 @@ class ResearchPaperEngine:
                 signal_number=self._confirmation.count,
             )
         )
-        if not confirmed or self._confirmation.count < stage_rule.confirmation_signals:
+        if not confirmed:
             return "confirmation_pending"
         selected_probability = decision.plan.p_fair
         planned_notional = (
@@ -1040,6 +1126,7 @@ class ResearchPaperEngine:
                 price_bucket=price_bucket,
                 go_eligible=price_bucket == "core",
                 decision_best_ask=side_book.best_ask,
+                model_version=prediction.model_version,
                 signal_observations=list(self._signal_observations),
                 terminal_reason="insufficient_virtual_balance",
                 execution_route=("direct_fak" if self.variant.mode == "immediate_fak" else "maker"),
@@ -1088,6 +1175,7 @@ class ResearchPaperEngine:
             price_bucket=price_bucket,
             go_eligible=price_bucket == "core",
             decision_best_ask=side_book.best_ask,
+            model_version=prediction.model_version,
             signal_observations=list(self._signal_observations),
             execution_route=placement.execution_route,
             active_at_ns=placement.active_ts_ns,
@@ -1102,22 +1190,23 @@ class ResearchPaperEngine:
         self._persist()
         return "submitted"
 
-    def _opportunity_from_taker_decision(
+    def _evaluation_from_taker_decision(
         self,
         *,
         decision: TakerPlanDecision,
         stage_rule: StageRule,
         now_ts_ns: int,
-    ) -> PaperOpportunityObservation:
+        model_version: str,
+    ) -> PaperEvaluationObservation:
         assert self.market is not None
         candidate = max(
             decision.evaluations,
             key=lambda item: float("-inf") if item.net_edge is None else item.net_edge,
         )
         price = candidate.executable_vwap
-        return PaperOpportunityObservation(
+        return PaperEvaluationObservation(
             variant_id=self.variant.variant_id,
-            opportunity_id=f"{self.market.slug}:{now_ts_ns}",
+            evaluation_id=f"{self.market.slug}:{now_ts_ns}",
             market_slug=self.market.slug,
             decision_ts_ns=now_ts_ns,
             entry_regime=stage_rule.stage.value,
@@ -1127,6 +1216,7 @@ class ResearchPaperEngine:
             fair_probability=(None if candidate is None else candidate.fair_probability),
             executable_vwap=price,
             net_edge=candidate.net_edge,
+            model_version=model_version,
         )
 
     def reevaluate(self, prediction: OpeningMispricingPrediction, *, now_ts_ns: int) -> str:
@@ -1209,7 +1299,7 @@ class ResearchPaperEngine:
                 stage=StrategyStage.SHADOW,
                 gate_state=GateState.RUNNING,
                 next_action="继续积累实时模拟成交；正式 Maker Go 仍需悲观 BookReplay 与 Canary。",
-                model_id=self.model_id,
+                model_id=self.active_model_id,
                 progress_label="已完成模拟市场",
                 progress_current=float(sum(item.realized_pnl is not None for item in self.records)),
                 progress_target=300.0,
@@ -1602,16 +1692,17 @@ class ResearchPaperEngine:
             equity=equity,
             realized_pnl=realized,
             order_count=len(self.records),
+            opportunity_count=len(self.records),
             fill_count=sum(item.filled_shares > 0.0 for item in self.records),
             taker_fees=sum(item.taker_fees for item in self.records),
             resolved_opportunity_count=len(resolved),
             core_resolved_opportunity_count=len(core_resolved),
             tail_resolved_opportunity_count=len(tail_resolved),
-            paired_ev_per_opportunity=(None if not resolved else realized / len(resolved)),
-            core_paired_ev_per_opportunity=(
+            resolved_ev_per_opportunity=(None if not resolved else realized / len(resolved)),
+            core_resolved_ev_per_opportunity=(
                 None if not core_resolved else core_realized / len(core_resolved)
             ),
-            tail_paired_ev_per_opportunity=(
+            tail_resolved_ev_per_opportunity=(
                 None if not tail_resolved else tail_realized / len(tail_resolved)
             ),
             conditional_ev_per_filled_share=(
@@ -1710,6 +1801,9 @@ class ResearchPaperEngine:
         )
         entry = {
             "decision_ts_ns": now_ts_ns,
+            "model_version": (
+                None if self._latest_prediction is None else self._latest_prediction.model_version
+            ),
             "decision_reason": str(decision.reason),
             "selected_side": None if decision.plan is None else decision.plan.side.value,
             "evaluations": [
@@ -1790,22 +1884,17 @@ class ResearchPaperPortfolio:
             raise ValueError("Research Paper portfolio engines must share one model")
         self.engines = engines
         self.primary = primary[0]
-        self.opportunity_store = PaperOpportunityStore(
+        self.evaluation_store = PaperEvaluationStore(
             self.primary.ledger_store.runtime_root,
             self.primary.ledger_store.execution_epoch,
         )
-        self.opportunities = self.opportunity_store.read()
-        self._opportunities_since_flush = 0
         self.last_decisions: dict[str, str] = {}
         self.decision_counts: Counter[str] = Counter()
         self._primary_record_offset = len(self.primary.records)
-        self._primary_opportunity_offset = sum(
-            item.variant_id == self.primary.variant.variant_id for item in self.opportunities
-        )
 
     @property
     def model_id(self) -> str:
-        return self.primary.model_id
+        return self.primary.active_model_id
 
     @property
     def market(self) -> MarketWindow | None:
@@ -1850,7 +1939,9 @@ class ResearchPaperPortfolio:
             now_ts_ns=now_ts_ns,
             prediction=prediction,
         )
-        self._append_last_opportunity(self.primary)
+        evaluations: list[PaperEvaluationObservation] = []
+        if self.primary.last_evaluation is not None:
+            evaluations.append(self.primary.last_evaluation)
         primary_opportunity_created = len(self.primary.records) > primary_records_before
         results = {self.primary.variant.variant_id: primary_result}
         for engine in self.engines:
@@ -1861,29 +1952,26 @@ class ResearchPaperPortfolio:
                     now_ts_ns=now_ts_ns,
                     prediction=prediction,
                 )
-                self._append_last_opportunity(engine)
+                if engine.last_evaluation is not None:
+                    evaluations.append(engine.last_evaluation)
             except CausalFeatureUnavailableError as exc:
                 results[engine.variant.variant_id] = f"prediction_unavailable:{exc}"
         self.last_decisions = results
-        if primary_result == "confirmation_pending" or primary_opportunity_created:
-            self.decision_counts["eligible_signal_ticks"] += 1
+        self.evaluation_store.append(evaluations)
+        primary_evaluation = self.primary.last_evaluation
+        if primary_evaluation is not None:
+            self.decision_counts["evaluations"] += 1
+            if primary_evaluation.selected_side is not None:
+                self.decision_counts["qualified_signals"] += 1
+        elif prediction is not None:
+            self.decision_counts["evaluations"] += 1
+            if primary_result == "confirmation_pending" or primary_opportunity_created:
+                self.decision_counts["qualified_signals"] += 1
         if primary_result == "confirmation_pending":
             self.decision_counts["confirmation_pending"] += 1
         if primary_opportunity_created:
             self.decision_counts["opportunities"] += 1
         return primary_result
-
-    def _append_last_opportunity(self, engine: ResearchPaperEngine) -> None:
-        observation = engine.last_opportunity
-        if observation is None:
-            return
-        identity = (observation.variant_id, observation.opportunity_id)
-        if any((item.variant_id, item.opportunity_id) == identity for item in self.opportunities):
-            return
-        self.opportunities.append(observation)
-        self._opportunities_since_flush += 1
-        if self._opportunities_since_flush >= 50:
-            self.flush_opportunities()
 
     def settle(
         self,
@@ -1898,22 +1986,29 @@ class ResearchPaperPortfolio:
                 outcome=outcome,
                 label_available_ts_ns=label_available_ts_ns,
             )
-        self.flush_opportunities()
+        self.evaluation_store.checkpoint()
 
-    def flush_opportunities(self) -> None:
-        if self._opportunities_since_flush:
-            self.opportunity_store.write(self.opportunities)
-            self._opportunities_since_flush = 0
+    def checkpoint_evaluations(self) -> None:
+        self.evaluation_store.checkpoint()
+
+    def close(self) -> None:
+        self.evaluation_store.close()
 
     def dashboard_snapshot(self, *, now: datetime) -> BotDashboardSnapshot:
         snapshot = self.primary.dashboard_snapshot(now=now)
         assert snapshot.performance is not None
+        evaluation_counts = self.evaluation_store.counts_by_variant()
         summaries = tuple(
             replace(
                 engine.variant_performance(),
-                opportunity_count=sum(
-                    item.variant_id == engine.variant.variant_id for item in self.opportunities
-                ),
+                evaluation_count=evaluation_counts.get(
+                    engine.variant.variant_id,
+                    PaperEvaluationCounts(0, 0),
+                ).evaluation_count,
+                qualified_signal_count=evaluation_counts.get(
+                    engine.variant.variant_id,
+                    PaperEvaluationCounts(0, 0),
+                ).qualified_signal_count,
             )
             for engine in self.engines
         )
@@ -1939,21 +2034,14 @@ class ResearchPaperPortfolio:
 
     def _decision_funnel(self) -> DecisionFunnelSnapshot:
         records = self.primary.records[self._primary_record_offset :]
-        primary_opportunities = sum(
-            item.variant_id == self.primary.variant.variant_id
-            for item in self.opportunities[self._primary_opportunity_offset :]
-        )
         return DecisionFunnelSnapshot(
             scope="primary_process_session",
             decision_ticks=self.decision_counts["decision_ticks"],
             predictions=self.decision_counts["predictions"],
-            eligible_signal_ticks=self.decision_counts["eligible_signal_ticks"],
+            evaluations=self.decision_counts["evaluations"],
+            qualified_signals=self.decision_counts["qualified_signals"],
             confirmation_pending=self.decision_counts["confirmation_pending"],
-            opportunities=(
-                primary_opportunities
-                if primary_opportunities
-                else self.decision_counts["opportunities"]
-            ),
+            opportunities=self.decision_counts["opportunities"],
             placements=sum(item.active_at_ns is not None for item in records),
             working=sum(
                 item.execution_status
@@ -2014,7 +2102,7 @@ def _segment_performance(
                     resolved_count=len(resolved),
                     fill_count=sum(item.filled_shares > 0.0 for item in selected),
                     realized_pnl=pnl,
-                    paired_ev_per_opportunity=(None if not resolved else pnl / len(resolved)),
+                    resolved_ev_per_opportunity=(None if not resolved else pnl / len(resolved)),
                 )
             )
     return tuple(summaries)
@@ -2096,8 +2184,9 @@ def _optional_number(value: object, name: str) -> float | None:
 
 
 __all__ = [
-    "PaperOpportunityObservation",
-    "PaperOpportunityStore",
+    "PaperEvaluationCounts",
+    "PaperEvaluationObservation",
+    "PaperEvaluationStore",
     "PaperLedgerSnapshot",
     "PaperLedgerStore",
     "PaperRuleSnapshotStore",
