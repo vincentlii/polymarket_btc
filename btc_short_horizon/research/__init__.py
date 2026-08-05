@@ -80,6 +80,16 @@ from btc_short_horizon.research.opening_market_relative_research import (
     run_market_relative_development,
     run_market_relative_sealed_holdout,
 )
+from btc_short_horizon.research.lightgbm_tuning import (
+    LightGBMSearchCandidate,
+    controlled_lightgbm_grid,
+)
+from btc_short_horizon.research.stage_aware_models import (
+    StageModelRuns,
+    run_stage_walk_forward_models,
+    sample_elapsed_seconds,
+    select_stage_dataset,
+)
 
 __all__ = [
     "MARKET_RELATIVE_LOGISTIC_ABLATIONS",
@@ -96,6 +106,7 @@ __all__ = [
     "MarketRelativeCandidateMetrics",
     "MarketRelativeDevelopmentRun",
     "MarketRelativeSealedHoldoutRun",
+    "LightGBMSearchCandidate",
     "MarketRelativeFeatureFamily",
     "OofPrediction",
     "OpeningMispricingGateEvidence",
@@ -144,4 +155,9 @@ __all__ = [
     "opening_market_relative_feature_schema",
     "run_market_relative_development",
     "run_market_relative_sealed_holdout",
+    "controlled_lightgbm_grid",
+    "StageModelRuns",
+    "run_stage_walk_forward_models",
+    "sample_elapsed_seconds",
+    "select_stage_dataset",
 ]

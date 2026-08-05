@@ -1,4 +1,4 @@
-paper_execution_epoch = "paper-v3-independent-fak"
+paper_execution_epoch = "paper-v4-stage-aware-taker-v2"
 
 data_sources = [
   "local:../../data/pmxt_raw",
@@ -30,6 +30,39 @@ entry_start_seconds = 3
 entry_end_seconds = 180
 training_snapshot_seconds = 5
 max_feature_lookback_seconds = 3600
+
+[stage_policy]
+tolerance_seconds = 0.25
+
+[[stage_policy.rules]]
+id = "early_3s_to_30s"
+start_seconds = 3.0
+end_seconds = 30.0
+minimum_net_edge = 0.04
+minimum_price = 0.20
+maximum_price = 0.80
+confirmation_signals = 2
+enabled = true
+
+[[stage_policy.rules]]
+id = "price_discovery_35s_to_90s"
+start_seconds = 35.0
+end_seconds = 90.0
+minimum_net_edge = 0.035
+minimum_price = 0.20
+maximum_price = 0.80
+confirmation_signals = 2
+enabled = true
+
+[[stage_policy.rules]]
+id = "mid_early_95s_to_180s"
+start_seconds = 95.0
+end_seconds = 180.0
+minimum_net_edge = 0.03
+minimum_price = 0.20
+maximum_price = 0.80
+confirmation_signals = 3
+enabled = true
 
 [collection]
 flush_size = 50000
@@ -69,7 +102,8 @@ id = "maker_15s"
 label = "Maker 15s"
 mode = "maker"
 maker_work_seconds = 15.0
-primary = true
+primary = false
+enabled = false
 minimum_taker_net_edge = 0.0
 slippage_buffer = 0.0
 model_uncertainty_buffer = 0.0
@@ -84,6 +118,7 @@ label = "Immediate FAK"
 mode = "immediate_fak"
 maker_work_seconds = 0.0
 primary = false
+enabled = false
 minimum_taker_net_edge = 0.03
 slippage_buffer = 0.005
 model_uncertainty_buffer = 0.03
@@ -98,6 +133,7 @@ label = "Maker 5s -> FAK"
 mode = "maker_then_fak"
 maker_work_seconds = 5.0
 primary = false
+enabled = false
 minimum_taker_net_edge = 0.03
 slippage_buffer = 0.005
 model_uncertainty_buffer = 0.03
@@ -112,6 +148,7 @@ label = "Independent FAK 2x5s"
 mode = "immediate_fak"
 maker_work_seconds = 0.0
 primary = false
+enabled = true
 minimum_taker_net_edge = 0.03
 slippage_buffer = 0.005
 model_uncertainty_buffer = 0.03
@@ -125,7 +162,8 @@ id = "independent_fak_stable_3x5s"
 label = "Independent FAK Stable 3x5s"
 mode = "immediate_fak"
 maker_work_seconds = 0.0
-primary = false
+primary = true
+enabled = true
 minimum_taker_net_edge = 0.03
 slippage_buffer = 0.005
 model_uncertainty_buffer = 0.03

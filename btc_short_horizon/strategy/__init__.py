@@ -10,6 +10,7 @@ from btc_short_horizon.strategy.taker import (
     TakerRejectionReason,
     plan_independent_taker_order,
 )
+from btc_short_horizon.strategy.stage_policy import OpeningStage, StagePolicyConfig, StageRule
 from btc_short_horizon.strategy.lifecycle import MarketExecution, StrategyPhase
 from btc_short_horizon.strategy.maker import (
     CancellationAssessment,
@@ -38,10 +39,13 @@ __all__ = [
     "MakerStrategyConfig",
     "MarketExecution",
     "OrderPlan",
+    "OpeningStage",
     "OutcomeBooks",
     "PlanDecision",
     "SideBook",
     "StrategyPhase",
+    "StagePolicyConfig",
+    "StageRule",
     "TokenSide",
     "TakerCandidateEvaluation",
     "TakerOrderPlan",

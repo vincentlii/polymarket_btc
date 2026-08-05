@@ -19,7 +19,13 @@ from btc_short_horizon.execution_timing import (
     CLOB_DELAYED_TAKER_SERVER_MS,
     paper_execution_lifecycle_tail_seconds,
 )
-from btc_short_horizon.strategy import LayerStructure, MakerStrategyConfig
+from btc_short_horizon.strategy import (
+    LayerStructure,
+    MakerStrategyConfig,
+    OpeningStage,
+    StagePolicyConfig,
+    StageRule,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +84,7 @@ class PaperExecutionVariantConfig:
     confirmation_policy: str = "side_only"
     confirmation_signals: int = 2
     maximum_edge_decay: float = 0.0
+    enabled: bool = True
 
     def __post_init__(self) -> None:
         if (
@@ -128,6 +135,8 @@ class PaperExecutionVariantConfig:
             raise ValueError("maker paper variants require maker_work_seconds > 0")
         if not isinstance(self.primary, bool):
             raise ValueError("paper execution primary must be bool")
+        if not isinstance(self.enabled, bool):
+            raise ValueError("paper execution enabled must be bool")
         if self.mode == "maker" and any(
             value > 0.0
             for value in (
@@ -165,6 +174,7 @@ class BtcProjectConfig:
     paper_execution_variants: tuple[PaperExecutionVariantConfig, ...]
     data_sources: tuple[str, ...]
     scenarios: tuple[ExecutionScenario, ...]
+    stage_policy: StagePolicyConfig = StagePolicyConfig.default()
 
     def require_scenario(self, name: str) -> ExecutionScenario:
         for scenario in self.scenarios:
@@ -254,6 +264,7 @@ def load_btc_project_config(path: Path) -> BtcProjectConfig:
         raise ValueError("paper execution variant IDs must be unique")
     if sum(variant.primary for variant in paper_variants) != 1:
         raise ValueError("exactly one paper execution variant must be primary")
+    stage_policy = _stage_policy(raw.get("stage_policy"))
     paper_execution_epoch = _simple_ascii_identifier(
         raw.get("paper_execution_epoch"),
         "paper_execution_epoch",
@@ -298,6 +309,7 @@ def load_btc_project_config(path: Path) -> BtcProjectConfig:
         paper_execution_variants=paper_variants,
         data_sources=sources,
         scenarios=scenarios,
+        stage_policy=stage_policy,
     )
 
 
@@ -318,7 +330,43 @@ def _paper_execution_variant(section: Mapping[str, object]) -> PaperExecutionVar
         confirmation_policy=_text(section, "confirmation_policy"),
         confirmation_signals=_positive_int(section, "confirmation_signals"),
         maximum_edge_decay=_nonnegative_float(section, "maximum_edge_decay"),
+        enabled=_bool_default(section, "enabled", True),
     )
+
+
+def _stage_policy(value: object) -> StagePolicyConfig:
+    if value is None:
+        return StagePolicyConfig.default()
+    if not isinstance(value, Mapping):
+        raise ValueError("stage_policy must be a table")
+    section = value
+    tolerance = _nonnegative_float_default(section, "tolerance_seconds", 0.25)
+    raw_rules = section.get("rules")
+    if not isinstance(raw_rules, list):
+        raise ValueError("stage_policy.rules must be an array")
+    rules: list[StageRule] = []
+    for raw_rule in raw_rules:
+        if not isinstance(raw_rule, Mapping):
+            raise ValueError("stage policy rule must be a table")
+        item = raw_rule
+        stage_id = _text(item, "id")
+        try:
+            stage = OpeningStage(stage_id)
+        except ValueError as exc:
+            raise ValueError(f"unknown stage policy id: {stage_id}") from exc
+        rules.append(
+            StageRule(
+                stage=stage,
+                start_seconds=_nonnegative_float(item, "start_seconds"),
+                end_seconds=_nonnegative_float(item, "end_seconds"),
+                minimum_net_edge=_nonnegative_float(item, "minimum_net_edge"),
+                minimum_price=_probability_excluding_zero_default(item, "minimum_price", 0.20),
+                maximum_price=_probability_excluding_zero_default(item, "maximum_price", 0.80),
+                confirmation_signals=_positive_int_default(item, "confirmation_signals", 2),
+                enabled=_bool_default(item, "enabled", True),
+            )
+        )
+    return StagePolicyConfig(tuple(rules), tolerance_seconds=tolerance)
 
 
 def _simple_ascii_identifier(value: object, name: str) -> str:
@@ -558,6 +606,10 @@ def _nonnegative_float(section: Mapping[str, object], name: str) -> float:
     return value
 
 
+def _nonnegative_float_default(section: Mapping[str, object], name: str, default: float) -> float:
+    return default if name not in section else _nonnegative_float(section, name)
+
+
 def _probability(section: Mapping[str, object], name: str) -> float:
     value = _nonnegative_float(section, name)
     if value > 1.0:
@@ -572,11 +624,25 @@ def _probability_excluding_zero(section: Mapping[str, object], name: str) -> flo
     return value
 
 
+def _probability_excluding_zero_default(
+    section: Mapping[str, object], name: str, default: float
+) -> float:
+    return default if name not in section else _probability_excluding_zero(section, name)
+
+
 def _bool(section: Mapping[str, object], name: str) -> bool:
     value = section.get(name)
     if not isinstance(value, bool):
         raise ValueError(f"{name} must be bool")
     return value
+
+
+def _bool_default(section: Mapping[str, object], name: str, default: bool) -> bool:
+    return default if name not in section else _bool(section, name)
+
+
+def _positive_int_default(section: Mapping[str, object], name: str, default: int) -> int:
+    return default if name not in section else _positive_int(section, name)
 
 
 def _resolve_path(root: Path, value: str) -> Path:

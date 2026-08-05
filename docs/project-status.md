@@ -456,3 +456,14 @@ the input/output contract and operational commands.
 - [x] the interactive menu again shows full runner contents, direct runner imports work in both script and package modes, and the root `_script_helpers.py` shim is gone [PR#53](https://github.com/evan-kolberg/prediction-market-backtesting/pull/53), [PR#62](https://github.com/evan-kolberg/prediction-market-backtesting/pull/62), [PR#64](https://github.com/evan-kolberg/prediction-market-backtesting/pull/64)
 - [x] PMXT timing output, source labels, and raw-hour progress reporting are clearer and better aligned with the actual runner behavior [PR#55](https://github.com/evan-kolberg/prediction-market-backtesting/pull/55), [PR#59](https://github.com/evan-kolberg/prediction-market-backtesting/pull/59), [PR#60](https://github.com/evan-kolberg/prediction-market-backtesting/pull/60)
 - [x] repo CI and docs validation now match the documented local gate, and PR docs builds validate without trying to deploy Pages [PR#58](https://github.com/evan-kolberg/prediction-market-backtesting/pull/58), [PR#64](https://github.com/evan-kolberg/prediction-market-backtesting/pull/64)
+# BTC Stage-Aware Taker Challenger v2
+
+- The v2 implementation is isolated from the VPS `2d1be` release and uses the
+  new `paper-v4-stage-aware-taker-v2` epoch.
+- Only the independent FAK pair is active for new paper decisions; the maker
+  variants remain readable but paused.
+- Stage rules, common opportunity logging, optional stage-specific artifacts,
+  core price-band protection, and the bounded LightGBM grid are implemented.
+- This remains a Research Paper challenger. It is not a real-money Go decision
+  and does not establish profitability until the OOS opportunity denominator,
+  fill evidence, and confidence gates are met.

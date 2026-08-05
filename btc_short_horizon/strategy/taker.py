@@ -21,6 +21,7 @@ class TakerRejectionReason(StrEnum):
     BELOW_MINIMUM_SIZE = "below_minimum_size"
     EDGE_BELOW_THRESHOLD = "edge_below_threshold"
     INSUFFICIENT_BALANCE = "insufficient_virtual_balance"
+    OUTSIDE_PRICE_BAND = "outside_price_band"
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +62,8 @@ def plan_independent_taker_order(
     model_uncertainty_buffer: float,
     available_balance: float,
     decision_ts_ns: int,
+    minimum_price: float = 0.0,
+    maximum_price: float = 1.0,
 ) -> TakerPlanDecision:
     if not market_slug:
         raise ValueError("market_slug is required")
@@ -84,6 +87,14 @@ def plan_independent_taker_order(
         if isinstance(value, bool) or not isfinite(value) or value < 0.0:
             raise ValueError(f"{name} must be finite and >= 0")
     if (
+        isinstance(minimum_price, bool)
+        or isinstance(maximum_price, bool)
+        or not isfinite(minimum_price)
+        or not isfinite(maximum_price)
+        or not 0.0 <= minimum_price < maximum_price <= 1.0
+    ):
+        raise ValueError("taker price bounds must satisfy 0 <= min < max <= 1")
+    if (
         isinstance(decision_ts_ns, bool)
         or not isinstance(decision_ts_ns, int)
         or decision_ts_ns < 0
@@ -104,6 +115,8 @@ def plan_independent_taker_order(
             slippage_buffer=slippage_buffer,
             model_uncertainty_buffer=model_uncertainty_buffer,
             available_balance=available_balance,
+            minimum_price=minimum_price,
+            maximum_price=maximum_price,
         )
         for side in (TokenSide.UP, TokenSide.DOWN)
     )
@@ -150,13 +163,19 @@ def _evaluate_side(
     slippage_buffer: float,
     model_uncertainty_buffer: float,
     available_balance: float,
+    minimum_price: float,
+    maximum_price: float,
 ) -> TakerCandidateEvaluation:
     if isinstance(fee_rate, bool) or not isfinite(fee_rate) or not 0.0 <= fee_rate < 1.0:
         raise ValueError("fee rate must be finite and in [0, 1)")
     remaining = max_shares
     filled = notional = fees = 0.0
     limit_price = None
+    outside_band = False
     for level in book.asks:
+        if level.price < minimum_price or level.price > maximum_price:
+            outside_band = True
+            break
         quantity = min(remaining, level.size)
         fee = calculate_commission(
             quantity=Decimal(str(quantity)),
@@ -183,7 +202,9 @@ def _evaluate_side(
     total_buffer = slippage_buffer + model_uncertainty_buffer
     if filled <= 0.0:
         reason = (
-            TakerRejectionReason.INSUFFICIENT_DEPTH
+            TakerRejectionReason.OUTSIDE_PRICE_BAND
+            if outside_band
+            else TakerRejectionReason.INSUFFICIENT_DEPTH
             if not book.asks
             else TakerRejectionReason.EDGE_BELOW_THRESHOLD
         )

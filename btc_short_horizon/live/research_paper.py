@@ -60,6 +60,8 @@ from btc_short_horizon.strategy import (
     evaluate_cancellation,
     plan_opening_mispricing_orders,
     plan_independent_taker_order,
+    StagePolicyConfig,
+    StageRule,
 )
 
 
@@ -117,6 +119,55 @@ class PaperSignalObservation:
                 value.get("taker_fee_per_share"), "taker_fee_per_share"
             ),
             taker_net_edge=_optional_number(value.get("taker_net_edge"), "taker_net_edge"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PaperOpportunityObservation:
+    """One comparable taker evaluation, including rejected opportunities."""
+
+    variant_id: str
+    opportunity_id: str
+    market_slug: str
+    decision_ts_ns: int
+    entry_regime: str
+    price_bucket: str
+    reason: str
+    selected_side: str | None
+    fair_probability: float | None
+    executable_vwap: float | None
+    net_edge: float | None
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "variant_id": self.variant_id,
+            "opportunity_id": self.opportunity_id,
+            "market_slug": self.market_slug,
+            "decision_ts_ns": self.decision_ts_ns,
+            "entry_regime": self.entry_regime,
+            "price_bucket": self.price_bucket,
+            "reason": self.reason,
+            "selected_side": self.selected_side,
+            "fair_probability": self.fair_probability,
+            "executable_vwap": self.executable_vwap,
+            "net_edge": self.net_edge,
+        }
+
+    @classmethod
+    def from_json(cls, raw: object) -> PaperOpportunityObservation:
+        value = _mapping_value(raw, "paper opportunity observation")
+        return cls(
+            variant_id=_text(value.get("variant_id"), "variant_id"),
+            opportunity_id=_text(value.get("opportunity_id"), "opportunity_id"),
+            market_slug=_text(value.get("market_slug"), "market_slug"),
+            decision_ts_ns=_integer(value.get("decision_ts_ns"), "decision_ts_ns"),
+            entry_regime=_text(value.get("entry_regime"), "entry_regime"),
+            price_bucket=_text(value.get("price_bucket"), "price_bucket"),
+            reason=_text(value.get("reason"), "reason"),
+            selected_side=_optional_text(value.get("selected_side"), "selected_side"),
+            fair_probability=_optional_number(value.get("fair_probability"), "fair_probability"),
+            executable_vwap=_optional_number(value.get("executable_vwap"), "executable_vwap"),
+            net_edge=_optional_number(value.get("net_edge"), "net_edge"),
         )
 
 
@@ -378,6 +429,46 @@ class PaperLedgerStore:
         )
 
 
+class PaperOpportunityStore:
+    """Shared immutable-by-identity opportunity log for variant comparison."""
+
+    def __init__(self, runtime_root: Path, execution_epoch: str) -> None:
+        _identifier(execution_epoch, "execution_epoch")
+        self.path = runtime_root / "paper" / "epochs" / execution_epoch / "opportunities.json"
+
+    def read(self) -> list[PaperOpportunityObservation]:
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return []
+        except json.JSONDecodeError as exc:
+            raise ValueError("invalid Research Paper opportunity JSON") from exc
+        if not isinstance(raw, Mapping) or raw.get("schema_version") != 1:
+            raise ValueError("unsupported Research Paper opportunity schema")
+        records = raw.get("records")
+        if not isinstance(records, list):
+            raise ValueError("Research Paper opportunity records must be an array")
+        return [PaperOpportunityObservation.from_json(item) for item in records]
+
+    def write(self, records: list[PaperOpportunityObservation]) -> Path:
+        payload = {
+            "schema_version": 1,
+            "records": [record.to_json() for record in records],
+        }
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_name(f".{self.path.name}.{uuid4().hex}.tmp")
+        encoded = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        try:
+            with temporary.open("xb") as handle:
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+            temporary.replace(self.path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return self.path
+
+
 class PaperRuleSnapshotStore:
     """Frozen public CLOB rules required to reproduce one Paper execution epoch."""
 
@@ -505,6 +596,7 @@ class ResearchPaperEngine:
         ledger_store: PaperLedgerStore,
         starting_balance: float,
         kline_history: BinanceKlineHistory | None = None,
+        stage_policy: StagePolicyConfig | None = None,
     ) -> None:
         if not callable(predictor) or not model_id:
             raise ValueError("predictor and model_id are required")
@@ -516,6 +608,7 @@ class ResearchPaperEngine:
         self.variant = variant
         self.ledger_store = ledger_store
         self.kline_history = kline_history
+        self.stage_policy = stage_policy or StagePolicyConfig.default()
         restored = ledger_store.read()
         if restored is not None and abs(restored.starting_balance - starting_balance) > 1e-9:
             raise ValueError("configured Paper starting balance differs from persisted ledger")
@@ -560,12 +653,17 @@ class ResearchPaperEngine:
         self._active_record: PaperTradeRecord | None = None
         self._latest_prediction: OpeningMispricingPrediction | None = None
         self._signal_observations: list[PaperSignalObservation] = []
+        self._last_opportunity: PaperOpportunityObservation | None = None
         if changed:
             self._persist()
 
     @property
     def active_placement(self) -> PaperPlacement | None:
         return self._active_placement
+
+    @property
+    def last_opportunity(self) -> PaperOpportunityObservation | None:
+        return self._last_opportunity
 
     def predict_current(self, *, now_ts_ns: int) -> OpeningMispricingPrediction | None:
         if self.market is None:
@@ -576,6 +674,8 @@ class ResearchPaperEngine:
         return self._predict_current(books=books, now_ts_ns=now_ts_ns)
 
     def needs_prediction(self, *, now_ts_ns: int) -> bool:
+        if not self.variant.enabled:
+            return False
         if self.market is None:
             return False
         placement = self._active_placement
@@ -765,6 +865,9 @@ class ResearchPaperEngine:
         now_ts_ns: int,
         prediction: OpeningMispricingPrediction | None = None,
     ) -> str:
+        self._last_opportunity = None
+        if not self.variant.enabled:
+            return "paused_variant"
         if self.market is None:
             return "market_unavailable"
         self.advance(now_ts_ns=now_ts_ns)
@@ -809,6 +912,12 @@ class ResearchPaperEngine:
         ):
             self._confirmation.reset()
             return "outside_entry_window"
+        try:
+            stage_rule = self.stage_policy.rule_for(elapsed)
+        except ValueError:
+            self._confirmation.reset()
+            self._signal_observations.clear()
+            return "outside_frozen_regime"
         prediction = prediction or self._predict_current(books=books, now_ts_ns=now_ts_ns)
         self._validate_shared_prediction(prediction, now_ts_ns=now_ts_ns)
         self._latest_prediction = prediction
@@ -828,11 +937,16 @@ class ResearchPaperEngine:
                     TokenSide.DOWN: self.rules[self.market.down_token_id].taker_fee_rate,
                 },
                 max_shares=self.maker_config.max_shares,
-                minimum_net_edge=self.variant.minimum_taker_net_edge,
+                minimum_net_edge=max(
+                    self.variant.minimum_taker_net_edge,
+                    stage_rule.minimum_net_edge,
+                ),
                 slippage_buffer=self.variant.slippage_buffer,
                 model_uncertainty_buffer=self.variant.model_uncertainty_buffer,
                 available_balance=self._available_balance(),
                 decision_ts_ns=now_ts_ns,
+                minimum_price=stage_rule.minimum_price,
+                maximum_price=stage_rule.maximum_price,
             )
         else:
             decision = plan_opening_mispricing_orders(
@@ -843,6 +957,12 @@ class ResearchPaperEngine:
                 decision_ts_ns=now_ts_ns,
                 elapsed_seconds=elapsed,
                 config=self.maker_config,
+            )
+        if isinstance(decision, TakerPlanDecision):
+            self._last_opportunity = self._opportunity_from_taker_decision(
+                decision=decision,
+                stage_rule=stage_rule,
+                now_ts_ns=now_ts_ns,
             )
         if decision.plan is None:
             if isinstance(decision, TakerPlanDecision):
@@ -885,7 +1005,7 @@ class ResearchPaperEngine:
                 signal_number=self._confirmation.count,
             )
         )
-        if not confirmed:
+        if not confirmed or self._confirmation.count < stage_rule.confirmation_signals:
             return "confirmation_pending"
         selected_probability = decision.plan.p_fair
         planned_notional = (
@@ -898,16 +1018,7 @@ class ResearchPaperEngine:
             )
         )
         opportunity_id = f"{decision.plan.market_slug}:{decision.plan.created_ts_ns}"
-        try:
-            regime = _opening_regime_for_live_decision(
-                elapsed_seconds=elapsed,
-                cadence_seconds=self.maker_config.signal_cadence_seconds,
-                tolerance_seconds=self.maker_config.signal_cadence_tolerance_seconds,
-            )
-        except ValueError:
-            self._confirmation.reset()
-            self._signal_observations.clear()
-            return "outside_frozen_regime"
+        regime = stage_rule.stage.value
         price_bucket = _price_bucket(side_book.best_ask)
         if planned_notional > self._available_balance() + 1e-12:
             self._active_record = PaperTradeRecord(
@@ -990,6 +1101,33 @@ class ResearchPaperEngine:
         self.records.append(self._active_record)
         self._persist()
         return "submitted"
+
+    def _opportunity_from_taker_decision(
+        self,
+        *,
+        decision: TakerPlanDecision,
+        stage_rule: StageRule,
+        now_ts_ns: int,
+    ) -> PaperOpportunityObservation:
+        assert self.market is not None
+        candidate = max(
+            decision.evaluations,
+            key=lambda item: float("-inf") if item.net_edge is None else item.net_edge,
+        )
+        price = candidate.executable_vwap
+        return PaperOpportunityObservation(
+            variant_id=self.variant.variant_id,
+            opportunity_id=f"{self.market.slug}:{now_ts_ns}",
+            market_slug=self.market.slug,
+            decision_ts_ns=now_ts_ns,
+            entry_regime=stage_rule.stage.value,
+            price_bucket=_price_bucket(price if price is not None else 0.0),
+            reason=str(decision.reason),
+            selected_side=(None if decision.plan is None else decision.plan.side.value),
+            fair_probability=(None if candidate is None else candidate.fair_probability),
+            executable_vwap=price,
+            net_edge=candidate.net_edge,
+        )
 
     def reevaluate(self, prediction: OpeningMispricingPrediction, *, now_ts_ns: int) -> str:
         placement = self._active_placement
@@ -1459,6 +1597,7 @@ class ResearchPaperEngine:
             label=self.variant.label,
             policy=self.variant.mode,
             primary=self.variant.primary,
+            enabled=self.variant.enabled,
             starting_balance=self.starting_balance,
             equity=equity,
             realized_pnl=realized,
@@ -1651,9 +1790,18 @@ class ResearchPaperPortfolio:
             raise ValueError("Research Paper portfolio engines must share one model")
         self.engines = engines
         self.primary = primary[0]
+        self.opportunity_store = PaperOpportunityStore(
+            self.primary.ledger_store.runtime_root,
+            self.primary.ledger_store.execution_epoch,
+        )
+        self.opportunities = self.opportunity_store.read()
+        self._opportunities_since_flush = 0
         self.last_decisions: dict[str, str] = {}
         self.decision_counts: Counter[str] = Counter()
         self._primary_record_offset = len(self.primary.records)
+        self._primary_opportunity_offset = sum(
+            item.variant_id == self.primary.variant.variant_id for item in self.opportunities
+        )
 
     @property
     def model_id(self) -> str:
@@ -1702,6 +1850,7 @@ class ResearchPaperPortfolio:
             now_ts_ns=now_ts_ns,
             prediction=prediction,
         )
+        self._append_last_opportunity(self.primary)
         primary_opportunity_created = len(self.primary.records) > primary_records_before
         results = {self.primary.variant.variant_id: primary_result}
         for engine in self.engines:
@@ -1712,6 +1861,7 @@ class ResearchPaperPortfolio:
                     now_ts_ns=now_ts_ns,
                     prediction=prediction,
                 )
+                self._append_last_opportunity(engine)
             except CausalFeatureUnavailableError as exc:
                 results[engine.variant.variant_id] = f"prediction_unavailable:{exc}"
         self.last_decisions = results
@@ -1722,6 +1872,18 @@ class ResearchPaperPortfolio:
         if primary_opportunity_created:
             self.decision_counts["opportunities"] += 1
         return primary_result
+
+    def _append_last_opportunity(self, engine: ResearchPaperEngine) -> None:
+        observation = engine.last_opportunity
+        if observation is None:
+            return
+        identity = (observation.variant_id, observation.opportunity_id)
+        if any((item.variant_id, item.opportunity_id) == identity for item in self.opportunities):
+            return
+        self.opportunities.append(observation)
+        self._opportunities_since_flush += 1
+        if self._opportunities_since_flush >= 50:
+            self.flush_opportunities()
 
     def settle(
         self,
@@ -1736,11 +1898,25 @@ class ResearchPaperPortfolio:
                 outcome=outcome,
                 label_available_ts_ns=label_available_ts_ns,
             )
+        self.flush_opportunities()
+
+    def flush_opportunities(self) -> None:
+        if self._opportunities_since_flush:
+            self.opportunity_store.write(self.opportunities)
+            self._opportunities_since_flush = 0
 
     def dashboard_snapshot(self, *, now: datetime) -> BotDashboardSnapshot:
         snapshot = self.primary.dashboard_snapshot(now=now)
         assert snapshot.performance is not None
-        summaries = tuple(engine.variant_performance() for engine in self.engines)
+        summaries = tuple(
+            replace(
+                engine.variant_performance(),
+                opportunity_count=sum(
+                    item.variant_id == engine.variant.variant_id for item in self.opportunities
+                ),
+            )
+            for engine in self.engines
+        )
         recent_orders = tuple(
             sorted(
                 (
@@ -1763,13 +1939,21 @@ class ResearchPaperPortfolio:
 
     def _decision_funnel(self) -> DecisionFunnelSnapshot:
         records = self.primary.records[self._primary_record_offset :]
+        primary_opportunities = sum(
+            item.variant_id == self.primary.variant.variant_id
+            for item in self.opportunities[self._primary_opportunity_offset :]
+        )
         return DecisionFunnelSnapshot(
             scope="primary_process_session",
             decision_ticks=self.decision_counts["decision_ticks"],
             predictions=self.decision_counts["predictions"],
             eligible_signal_ticks=self.decision_counts["eligible_signal_ticks"],
             confirmation_pending=self.decision_counts["confirmation_pending"],
-            opportunities=self.decision_counts["opportunities"],
+            opportunities=(
+                primary_opportunities
+                if primary_opportunities
+                else self.decision_counts["opportunities"]
+            ),
             placements=sum(item.active_at_ns is not None for item in records),
             working=sum(
                 item.execution_status
@@ -1912,6 +2096,8 @@ def _optional_number(value: object, name: str) -> float | None:
 
 
 __all__ = [
+    "PaperOpportunityObservation",
+    "PaperOpportunityStore",
     "PaperLedgerSnapshot",
     "PaperLedgerStore",
     "PaperRuleSnapshotStore",

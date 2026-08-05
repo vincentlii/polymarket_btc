@@ -101,6 +101,31 @@ def test_independent_taker_keeps_profitable_prefix_instead_of_diluting_to_max_si
     assert decision.plan.limit_price == pytest.approx(0.50)
 
 
+def test_independent_taker_rejects_tail_prices_when_stage_band_is_core_only() -> None:
+    books = OutcomeBooks(
+        up=_book("up", [(0.10, 20)], [(0.12, 5)]),
+        down=_book("down", [(0.19, 20)], [(0.20, 5)]),
+    )
+    decision = plan_independent_taker_order(
+        market_slug="btc-updown-15m-1",
+        p_boundary_up=0.50,
+        p_up=0.70,
+        books=books,
+        fee_rate_by_side={TokenSide.UP: 0.0, TokenSide.DOWN: 0.0},
+        max_shares=2.0,
+        minimum_net_edge=0.03,
+        slippage_buffer=0.005,
+        model_uncertainty_buffer=0.02,
+        available_balance=100.0,
+        decision_ts_ns=10,
+        minimum_price=0.20,
+        maximum_price=0.80,
+    )
+
+    assert decision.plan is not None
+    assert decision.plan.side is TokenSide.DOWN
+
+
 def test_edge_stable_confirmation_resets_on_decay_without_changing_old_confirmation() -> None:
     confirmation = EdgeStableSignalConfirmation(
         required_signals=3,

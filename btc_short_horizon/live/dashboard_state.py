@@ -299,6 +299,8 @@ class ExecutionVariantPerformance:
     order_count: int
     fill_count: int
     taker_fees: float
+    enabled: bool = True
+    opportunity_count: int = 0
     resolved_opportunity_count: int = 0
     core_resolved_opportunity_count: int = 0
     tail_resolved_opportunity_count: int = 0
@@ -314,6 +316,14 @@ class ExecutionVariantPerformance:
         _require_identifier(self.policy, "variant policy")
         if not isinstance(self.primary, bool):
             raise ValueError("variant primary must be bool")
+        if not isinstance(self.enabled, bool):
+            raise ValueError("variant enabled must be bool")
+        if (
+            isinstance(self.opportunity_count, bool)
+            or not isinstance(self.opportunity_count, int)
+            or self.opportunity_count < 0
+        ):
+            raise ValueError("variant opportunity_count must be non-negative")
         _nonnegative(self.starting_balance, "starting_balance")
         _nonnegative(self.equity, "equity")
         _finite(self.realized_pnl, "realized_pnl")
@@ -354,6 +364,8 @@ class ExecutionVariantPerformance:
             "label": self.label,
             "policy": self.policy,
             "primary": self.primary,
+            "enabled": self.enabled,
+            "opportunity_count": self.opportunity_count,
             "starting_balance": self.starting_balance,
             "equity": self.equity,
             "realized_pnl": self.realized_pnl,
@@ -385,6 +397,12 @@ class ExecutionVariantPerformance:
             order_count=_integer(value.get("order_count"), "order_count"),
             fill_count=_integer(value.get("fill_count"), "fill_count"),
             taker_fees=_float(value.get("taker_fees", 0.0), "taker_fees"),
+            enabled=(
+                _optional_bool(value.get("enabled"), "variant enabled")
+                if value.get("enabled") is not None
+                else True
+            ),
+            opportunity_count=_integer(value.get("opportunity_count", 0), "opportunity_count"),
             resolved_opportunity_count=_integer(
                 value.get("resolved_opportunity_count", 0), "resolved_opportunity_count"
             ),
