@@ -185,6 +185,9 @@ def test_dashboard_html_labels_research_paper_as_simulated_not_account_truth() -
 
     assert "Research Paper 模拟账本新鲜" in html
     assert "Simulated ledger" in html
+    assert "方向健康" in html
+    assert 'id="direction-health"' in html
+    assert "自本版本部署起" in html
     assert "成交策略对比" in html
     assert "variant_summaries" in html
     assert "recent_orders" in html

@@ -521,9 +521,7 @@ class ResearchPaperRuntime:
         self._next_decision_ns += round(self.project.maker.signal_cadence_seconds * 1_000_000_000)
 
     async def _settle_resolved_markets(self) -> None:
-        unresolved = {
-            record.market_slug for record in self.engine.records if record.realized_pnl is None
-        }
+        unresolved = set(self.engine.unresolved_market_slugs())
         if not unresolved:
             return
         catalog = await self.gamma_client.discover_catalog(

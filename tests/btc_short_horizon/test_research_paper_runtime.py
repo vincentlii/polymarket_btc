@@ -755,6 +755,12 @@ def test_independent_fak_submits_when_shared_maker_gate_has_no_plan(tmp_path) ->
     assert summary.qualified_signal_count == 2
     assert summary.opportunity_count == 1
     assert summary.fill_count == 0
+    by_side = {item.side: item for item in summary.direction_summaries}
+    assert by_side["up"].qualified_signal_count == 2
+    assert by_side["up"].opportunity_count == 1
+    assert by_side["up"].fill_count == 0
+    assert by_side["down"].qualified_signal_count == 0
+    assert by_side["down"].opportunity_count == 0
     diagnostic_paths = tuple(
         (tmp_path / "paper" / "epochs" / "test-paper-v2").glob(
             "variants/independent_fak_2x5s/diagnostics/*.json"

@@ -30,6 +30,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--code-revision", required=True)
     parser.add_argument("--rule-epoch", required=True)
+    parser.add_argument("--compose-env-file", type=Path, default=Path("deploy/.env"))
     parser.add_argument("--data-root", type=Path, default=Path("deploy/runtime/data"))
     parser.add_argument("--output-root", type=Path, default=Path("deploy/runtime/output"))
     parser.add_argument(
@@ -48,6 +49,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    compose_revision = _compose_revision(args.compose_env_file)
+    if compose_revision.casefold() != args.code_revision.strip().casefold():
+        raise RuntimeError(
+            "compose BTC_CODE_REVISION does not match release revision: "
+            f"{compose_revision} != {args.code_revision}"
+        )
     if not isfinite(args.minimum_free_gib) or args.minimum_free_gib <= 0.0:
         raise ValueError("minimum-free-gib must be finite and > 0")
     config = DeploymentPreflightConfig(
@@ -112,6 +119,35 @@ def _git_revision() -> str:
     if status.stdout.strip():
         raise RuntimeError("deployed release has tracked changes")
     return revision.stdout.strip().casefold()
+
+
+def _compose_revision(path: Path) -> str:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise RuntimeError(f"unable to read compose environment: {path}") from exc
+    values: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        key, separator, value = stripped.partition("=")
+        if separator and key.strip() == "BTC_CODE_REVISION":
+            normalized = value.strip()
+            if (
+                len(normalized) >= 2
+                and normalized[0] == normalized[-1]
+                and normalized[0]
+                in {
+                    "'",
+                    '"',
+                }
+            ):
+                normalized = normalized[1:-1]
+            values.append(normalized)
+    if len(values) != 1 or not values[0]:
+        raise RuntimeError("compose environment must define BTC_CODE_REVISION exactly once")
+    return values[0]
 
 
 def _host_ntp_synchronized() -> bool:

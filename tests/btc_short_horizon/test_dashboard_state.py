@@ -8,6 +8,9 @@ from btc_short_horizon.live.dashboard_state import (
     BotDashboardSnapshot,
     DashboardAlert,
     DashboardSnapshotStore,
+    DirectionExecutionPerformance,
+    DirectionHealthSnapshot,
+    DirectionStageSummary,
     EquityPoint,
     ExecutionVariantPerformance,
     GateState,
@@ -73,6 +76,48 @@ def dashboard_snapshot() -> BotDashboardSnapshot:
                     order_count=24,
                     fill_count=11,
                     taker_fees=0.0,
+                    direction_summaries=(
+                        DirectionExecutionPerformance(
+                            side="up",
+                            qualified_signal_count=14,
+                            opportunity_count=8,
+                            fill_count=7,
+                            resolved_opportunity_count=7,
+                            realized_pnl=3.5,
+                            mean_fair_probability=0.64,
+                            realized_accuracy=0.57,
+                            calibration_gap=-0.07,
+                            resolved_ev_per_opportunity=0.5,
+                        ),
+                    ),
+                ),
+            ),
+            direction_health=DirectionHealthSnapshot(
+                scope="paired_resolved_markets",
+                coverage_started_at=NOW - timedelta(days=2),
+                activated_market_count=200,
+                resolved_market_count=190,
+                paired_market_count=180,
+                prediction_count=6_000,
+                actual_up_count=92,
+                actual_down_count=88,
+                predicted_up_count=96,
+                predicted_down_count=84,
+                mean_p_up=0.51,
+                calibration_z=-0.4,
+                bias_state="consistent",
+                stage_summaries=(
+                    DirectionStageSummary(
+                        stage="early_3s_to_30s",
+                        paired_market_count=180,
+                        actual_up_count=92,
+                        actual_down_count=88,
+                        predicted_up_count=98,
+                        predicted_down_count=82,
+                        mean_p_up=0.52,
+                        calibration_z=-0.6,
+                        bias_state="consistent",
+                    ),
                 ),
             ),
             recent_orders=(
@@ -153,4 +198,23 @@ def test_dashboard_snapshot_rejects_incomplete_progress_pair() -> None:
             gate_state=GateState.RUNNING,
             next_action="继续研究。",
             progress_current=1.0,
+        )
+
+
+def test_direction_health_rejects_unpaired_counts() -> None:
+    with pytest.raises(ValueError, match="actual direction counts"):
+        DirectionHealthSnapshot(
+            scope="paired_resolved_markets",
+            coverage_started_at=NOW,
+            activated_market_count=1,
+            resolved_market_count=1,
+            paired_market_count=1,
+            prediction_count=1,
+            actual_up_count=0,
+            actual_down_count=0,
+            predicted_up_count=1,
+            predicted_down_count=0,
+            mean_p_up=0.6,
+            calibration_z=0.8,
+            bias_state="insufficient_data",
         )

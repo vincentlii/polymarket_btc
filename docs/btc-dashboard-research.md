@@ -306,3 +306,15 @@ core/tail、Go eligibility、decision ask 以及最多三次 fair/VWAP/fee/net-e
 `fill` 是正成交份额。用户可见的“机会 / 成交”只能使用后两者；被拒绝的五秒评估
 不得进入机会分母。跨 execution epoch 的账本可在完整历史中筛选和汇总，但不同
 策略版本的 starting balance 与资金曲线不得拼接为同一账户曲线。
+
+方向健康使用独立的市场级证据口径，自首次部署该能力起记录所有激活市场、共享模型的
+`p_up` 以及最终结果。模型预测不会按并行 execution variant 重复计数，也不会把每个 5 秒
+tick 当成独立市场样本：先在每个 `3--30s`、`35--90s`、`95--180s` 阶段内求均值，再按市场
+聚合。实际 UP/DOWN 比例只与“有预测且已结算”的同一批市场配对；没有机会的市场仍须保存
+结果。旧账本缺少无机会市场与完整 `p_up`，不得推测回填，页面必须显示 coverage start。
+
+方向偏向不要求接近 50/50。首页同时显示实际 UP/DOWN、模型硬方向、平均 `p_up`、配对样本数
+和分阶段摘要；只有配对市场至少 100 个且 calibration-in-the-large 的标准化残差
+`|z| > 1.96` 时提示检查。样本不足只显示积累中。各 variant 另显示合格信号、确认机会、成交、
+准确率和 PnL 的 UP/DOWN 拆分，用于区分模型偏向、筛选偏向与执行偏向，但不替代 Brier、
+calibration、净 EV 或 sealed holdout。

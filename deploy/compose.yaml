@@ -39,7 +39,6 @@ services:
       - btcusdt@depth@100ms
     environment:
       PYTHONUNBUFFERED: "1"
-      BTC_CODE_REVISION: "${BTC_CODE_REVISION}"
     logging: *runtime-logging
     volumes:
       - type: bind
@@ -93,7 +92,6 @@ services:
       - "8080"
     environment:
       PYTHONUNBUFFERED: "1"
-      BTC_CODE_REVISION: "${BTC_CODE_REVISION}"
     logging: *runtime-logging
     volumes:
       - type: bind
@@ -143,7 +141,6 @@ services:
       - /app/output/btc_short_horizon/runtime
     environment:
       PYTHONUNBUFFERED: "1"
-      BTC_CODE_REVISION: "${BTC_CODE_REVISION}"
     logging: *runtime-logging
     volumes:
       - type: bind

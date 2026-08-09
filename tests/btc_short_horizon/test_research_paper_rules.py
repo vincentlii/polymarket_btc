@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import httpx
 import pytest
 
-from btc_short_horizon.data import BTC_15M_MARKET_FAMILY, MarketWindow
+from btc_short_horizon.data import BTC_15M_MARKET_FAMILY, MarketOutcome, MarketWindow
 from btc_short_horizon.live.paper_runtime import PublicPaperRulesClient, ResearchPaperRuntime
 
 
@@ -230,6 +231,51 @@ async def test_resolution_poll_failure_is_recoverable_and_clears_after_success()
     await runtime._refresh_resolutions()
 
     assert runtime._recoverable_errors == {}
+
+
+@pytest.mark.asyncio
+async def test_resolution_poll_includes_activated_market_without_an_opportunity() -> None:
+    market = _market()
+    resolved = replace(
+        market,
+        resolution=MarketOutcome.UP,
+        label_available_ts=market.t1 + timedelta(seconds=10),
+    )
+    settlements: list[tuple[str, MarketOutcome, int]] = []
+
+    class Engine:
+        def unresolved_market_slugs(self) -> tuple[str, ...]:
+            return (market.slug,)
+
+        def settle(
+            self,
+            *,
+            market_slug: str,
+            outcome: MarketOutcome,
+            label_available_ts_ns: int,
+        ) -> None:
+            settlements.append((market_slug, outcome, label_available_ts_ns))
+
+    class Gamma:
+        async def discover_catalog(self, **kwargs):  # type: ignore[no-untyped-def]
+            assert kwargs["slugs"] == (market.slug,)
+            return SimpleNamespace(windows=lambda: (resolved,))
+
+    runtime = object.__new__(ResearchPaperRuntime)
+    runtime.engine = Engine()  # type: ignore[assignment]
+    runtime.gamma_client = Gamma()  # type: ignore[assignment]
+    runtime.project = SimpleNamespace(primary_family=BTC_15M_MARKET_FAMILY)
+    runtime.rule_epoch = market.rule_epoch
+
+    await runtime._settle_resolved_markets()
+
+    assert settlements == [
+        (
+            market.slug,
+            MarketOutcome.UP,
+            int(resolved.label_available_ts.timestamp() * 1_000_000_000),
+        )
+    ]
 
 
 def test_running_projection_is_published_at_five_second_cadence() -> None:
