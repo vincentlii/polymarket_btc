@@ -75,11 +75,14 @@ uv run python scripts/btc_runtime_control.py --clear-stop
 
 ```bash
 mkdir -p deploy/runtime/data deploy/runtime/output deploy/runtime/preflight
+test -f deploy/.env || cp deploy/.env.example deploy/.env
+# 先填写并核对 deploy/.env，再执行预检。
 sudo chown -R 10001:10001 deploy/runtime
 
 uv run python scripts/btc_vps_preflight.py \
   --code-revision "$(git rev-parse HEAD)" \
   --rule-epoch "$BTC_RULE_EPOCH" \
+  --compose-env-file deploy/.env \
   --data-root deploy/runtime/data \
   --output-root deploy/runtime/output \
   --runtime-root deploy/runtime/output/btc_short_horizon/runtime
@@ -133,6 +136,12 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml logs -f forward_col
 ```bash
 docker compose --env-file deploy/.env -f deploy/compose.yaml --profile shadow up -d
 ```
+
+`BTC_CODE_REVISION` 只在 image build 时注入，并同时写入 image ENV 与 OCI revision label。
+Compose service 不得再次用 runtime environment 覆盖它，否则旧 `.env` 会让看板声明的版本与
+容器实际代码分离。每次发布先让 `deploy/.env` 的完整 SHA 与待测 release 一致；preflight 会在
+任何网络检查和容器替换前拒绝不一致。部署后必须核对 image label、三个容器的 image ID 与
+容器内 `BTC_CODE_REVISION` 完全一致。
 
 看板端口默认绑定到 VPS 的 `127.0.0.1`，不应直接暴露到公网。通过 SSH 隧道查看：
 

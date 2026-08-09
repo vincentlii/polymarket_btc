@@ -1,5 +1,18 @@
 # Project Status
 
+## 2026-08-10 Direction health and release identity
+
+- Added durable market-level direction evidence for every activated BTC 15m
+  market, shared `p_up` prediction and final outcome. Dashboard direction ratios
+  use only paired predicted/resolved markets, de-correlate five-second samples at
+  market/stage level, and expose coverage start rather than fabricating history.
+- Added per-variant Up/Down splits for qualified signals, opportunities, fills,
+  accuracy, PnL and calibration diagnostics.
+- Corrected a deployment provenance incident: the v5 image and code were
+  `47980b78`, while a stale Compose runtime override reported `2d1be589` in status.
+  Historical files are retained unchanged. Runtime revision now comes only from
+  the immutable image, and preflight rejects a stale Compose release revision.
+
 ## BTC 15-Minute Short-Horizon Project
 
 This independent BTC-only project is implemented under `btc_short_horizon/`.

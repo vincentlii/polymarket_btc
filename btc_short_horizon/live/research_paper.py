@@ -22,6 +22,7 @@ from btc_short_horizon.data.polymarket import PolymarketL2Normalizer
 from btc_short_horizon.live.dashboard_state import (
     BotDashboardSnapshot,
     DecisionFunnelSnapshot,
+    DirectionExecutionPerformance,
     EquityPoint,
     ExecutionSegmentPerformance,
     ExecutionVariantPerformance,
@@ -33,6 +34,7 @@ from btc_short_horizon.live.dashboard_state import (
     StrategyCycle,
     StrategyStage,
 )
+from btc_short_horizon.live.direction_health import DirectionEvidenceStore
 from btc_short_horizon.live.gateway import PaperOrderGateway
 from btc_short_horizon.live.paper_execution import (
     PaperExecutionConfig,
@@ -440,6 +442,8 @@ class PaperLedgerStore:
 class PaperEvaluationCounts:
     evaluation_count: int
     qualified_signal_count: int
+    qualified_up_count: int = 0
+    qualified_down_count: int = 0
 
 
 class PaperEvaluationStore:
@@ -522,13 +526,20 @@ class PaperEvaluationStore:
         rows = self._connection.execute(
             """
             SELECT variant_id, COUNT(*),
-                   SUM(CASE WHEN selected_side IS NOT NULL THEN 1 ELSE 0 END)
+                   SUM(CASE WHEN selected_side IS NOT NULL THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN selected_side = 'up' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN selected_side = 'down' THEN 1 ELSE 0 END)
             FROM evaluations GROUP BY variant_id
             """
         )
         return {
-            str(variant_id): PaperEvaluationCounts(int(total), int(qualified or 0))
-            for variant_id, total, qualified in rows
+            str(variant_id): PaperEvaluationCounts(
+                int(total),
+                int(qualified or 0),
+                int(qualified_up or 0),
+                int(qualified_down or 0),
+            )
+            for variant_id, total, qualified, qualified_up, qualified_down in rows
         }
 
     def checkpoint(self) -> None:
@@ -1888,6 +1899,10 @@ class ResearchPaperPortfolio:
             self.primary.ledger_store.runtime_root,
             self.primary.ledger_store.execution_epoch,
         )
+        self.direction_store = DirectionEvidenceStore(
+            self.primary.ledger_store.runtime_root,
+            self.primary.ledger_store.execution_epoch,
+        )
         self.last_decisions: dict[str, str] = {}
         self.decision_counts: Counter[str] = Counter()
         self._primary_record_offset = len(self.primary.records)
@@ -1914,6 +1929,7 @@ class ResearchPaperPortfolio:
         *,
         rules: Mapping[str, PaperMarketRules],
     ) -> None:
+        self.direction_store.register_market(market)
         for engine in self.engines:
             engine.activate_market(market, rules=rules)
 
@@ -1934,6 +1950,7 @@ class ResearchPaperPortfolio:
         )
         if prediction is not None:
             self.decision_counts["predictions"] += 1
+            self.direction_store.append_prediction(prediction)
         primary_records_before = len(self.primary.records)
         primary_result = self.primary.decide(
             now_ts_ns=now_ts_ns,
@@ -1986,13 +2003,24 @@ class ResearchPaperPortfolio:
                 outcome=outcome,
                 label_available_ts_ns=label_available_ts_ns,
             )
+        self.direction_store.settle(
+            market_slug,
+            outcome,
+            label_available_ts_ns=label_available_ts_ns,
+        )
         self.evaluation_store.checkpoint()
+        self.direction_store.checkpoint()
+
+    def unresolved_market_slugs(self) -> tuple[str, ...]:
+        return self.direction_store.unresolved_market_slugs()
 
     def checkpoint_evaluations(self) -> None:
         self.evaluation_store.checkpoint()
+        self.direction_store.checkpoint()
 
     def close(self) -> None:
         self.evaluation_store.close()
+        self.direction_store.close()
 
     def dashboard_snapshot(self, *, now: datetime) -> BotDashboardSnapshot:
         snapshot = self.primary.dashboard_snapshot(now=now)
@@ -2009,6 +2037,13 @@ class ResearchPaperPortfolio:
                     engine.variant.variant_id,
                     PaperEvaluationCounts(0, 0),
                 ).qualified_signal_count,
+                direction_summaries=_direction_execution_performance(
+                    engine.records,
+                    evaluation_counts.get(
+                        engine.variant.variant_id,
+                        PaperEvaluationCounts(0, 0),
+                    ),
+                ),
             )
             for engine in self.engines
         )
@@ -2029,6 +2064,7 @@ class ResearchPaperPortfolio:
             variant_summaries=summaries,
             recent_orders=recent_orders,
             decision_funnel=self._decision_funnel(),
+            direction_health=self.direction_store.snapshot(),
         )
         return replace(snapshot, performance=performance)
 
@@ -2105,6 +2141,41 @@ def _segment_performance(
                     resolved_ev_per_opportunity=(None if not resolved else pnl / len(resolved)),
                 )
             )
+    return tuple(summaries)
+
+
+def _direction_execution_performance(
+    records: list[PaperTradeRecord],
+    evaluation_counts: PaperEvaluationCounts,
+) -> tuple[DirectionExecutionPerformance, ...]:
+    summaries: list[DirectionExecutionPerformance] = []
+    qualified = {
+        "up": evaluation_counts.qualified_up_count,
+        "down": evaluation_counts.qualified_down_count,
+    }
+    for side in ("up", "down"):
+        selected = tuple(item for item in records if item.side == side)
+        resolved = tuple(item for item in selected if item.realized_pnl is not None)
+        pnl = sum(item.realized_pnl or 0.0 for item in resolved)
+        correct = sum(item.outcome == side for item in resolved)
+        mean_fair = None if not resolved else sum(item.p_fair for item in resolved) / len(resolved)
+        accuracy = None if not resolved else correct / len(resolved)
+        summaries.append(
+            DirectionExecutionPerformance(
+                side=side,
+                qualified_signal_count=qualified[side],
+                opportunity_count=len(selected),
+                fill_count=sum(item.filled_shares > 0.0 for item in selected),
+                resolved_opportunity_count=len(resolved),
+                realized_pnl=pnl,
+                mean_fair_probability=mean_fair,
+                realized_accuracy=accuracy,
+                calibration_gap=(
+                    None if mean_fair is None or accuracy is None else accuracy - mean_fair
+                ),
+                resolved_ev_per_opportunity=(None if not resolved else pnl / len(resolved)),
+            )
+        )
     return tuple(summaries)
 
 

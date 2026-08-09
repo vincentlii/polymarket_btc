@@ -313,6 +313,7 @@ Detailed guides have been filed away in the [docs index](https://evan-kolberg.gi
   - [Useful Smoke Checks](https://evan-kolberg.github.io/prediction-market-backtesting/testing/#useful-smoke-checks)
   - [Docs Validation](https://evan-kolberg.github.io/prediction-market-backtesting/testing/#docs-validation)
 - [Project Status](https://evan-kolberg.github.io/prediction-market-backtesting/project-status/)
+  - [2026-08-10 Direction Health and Release Identity](https://evan-kolberg.github.io/prediction-market-backtesting/project-status/#2026-08-10-direction-health-and-release-identity)
   - [BTC 15-Minute Short-Horizon Project](https://evan-kolberg.github.io/prediction-market-backtesting/project-status/#btc-15-minute-short-horizon-project)
   - [Pre-VPS Final Audit (2026-07-22)](https://evan-kolberg.github.io/prediction-market-backtesting/project-status/#pre-vps-final-audit-2026-07-22)
   - [Roadmap](https://evan-kolberg.github.io/prediction-market-backtesting/project-status/#roadmap)

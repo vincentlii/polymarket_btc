@@ -16,7 +16,7 @@ from scripts.btc_runtime_control import main as runtime_control_main
 from scripts.btc_runtime_dashboard import parse_args as parse_dashboard_args
 from scripts.btc_runtime_healthcheck import main as runtime_healthcheck_main
 from scripts.btc_vps_preflight import main as vps_preflight_main
-from scripts.btc_vps_preflight import _git_revision
+from scripts.btc_vps_preflight import _compose_revision, _git_revision
 
 
 def test_forward_runtime_cli_requires_a_verified_rule_epoch() -> None:
@@ -147,6 +147,8 @@ def test_vps_preflight_cli_persists_target_host_evidence(
             return Response([{"id": "market"}])
 
     revision = "a" * 40
+    compose_env = tmp_path / ".env"
+    compose_env.write_text(f"BTC_CODE_REVISION={revision}\n", encoding="utf-8")
     monkeypatch.setattr("scripts.btc_vps_preflight.httpx.Client", Client)
     monkeypatch.setattr("scripts.btc_vps_preflight._git_revision", lambda: revision)
     monkeypatch.setattr("scripts.btc_vps_preflight._host_ntp_synchronized", lambda: True)
@@ -157,6 +159,8 @@ def test_vps_preflight_cli_persists_target_host_evidence(
             revision,
             "--rule-epoch",
             "btc-15m-current-v1",
+            "--compose-env-file",
+            str(compose_env),
             "--data-root",
             str(data_root),
             "--output-root",
@@ -172,6 +176,24 @@ def test_vps_preflight_cli_persists_target_host_evidence(
 
     assert result == 0
     assert (runtime_root / "preflight" / "latest.json").is_file()
+
+
+def test_vps_preflight_rejects_stale_compose_revision(tmp_path) -> None:
+    compose_env = tmp_path / ".env"
+    compose_env.write_text("BTC_CODE_REVISION=old-revision\n", encoding="utf-8")
+
+    assert _compose_revision(compose_env) == "old-revision"
+    with pytest.raises(RuntimeError, match="does not match release revision"):
+        vps_preflight_main(
+            [
+                "--code-revision",
+                "new-revision",
+                "--rule-epoch",
+                "btc-15m-current-v1",
+                "--compose-env-file",
+                str(compose_env),
+            ]
+        )
 
 
 def test_vps_preflight_rejects_dirty_tracked_release(monkeypatch: pytest.MonkeyPatch) -> None:

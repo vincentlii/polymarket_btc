@@ -14,7 +14,7 @@ def test_vps_compose_pins_identity_and_bounds_container_logs() -> None:
             "driver": "json-file",
             "options": {"max-size": "10m", "max-file": "5"},
         }
-        assert service["environment"]["BTC_CODE_REVISION"] == "${BTC_CODE_REVISION}"
+        assert "BTC_CODE_REVISION" not in service["environment"]
         assert service["user"] == "10001:10001"
         assert service["read_only"] is True
         assert service["cap_drop"] == ["ALL"]
@@ -28,6 +28,10 @@ def test_vps_compose_pins_identity_and_bounds_container_logs() -> None:
     assert collector["stop_signal"] == "SIGINT"
     assert collector["stop_grace_period"] == "45s"
     assert collector["build"]["args"]["BTC_CODE_REVISION"].startswith("${BTC_CODE_REVISION:?")
+    dockerfile = Path("deploy/Dockerfile").read_text(encoding="utf-8")
+    assert "ENV PYTHONDONTWRITEBYTECODE=1" in dockerfile
+    assert "BTC_CODE_REVISION=${BTC_CODE_REVISION}" in dockerfile
+    assert "LABEL org.opencontainers.image.revision=${BTC_CODE_REVISION}" in dockerfile
     assert all(
         mount["type"] == "bind" and mount["bind"]["create_host_path"] is False
         for mount in collector["volumes"]

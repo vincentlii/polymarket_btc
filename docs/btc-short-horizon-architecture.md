@@ -57,6 +57,15 @@ raw market/BTC feeds
 | Reporting | `btc_short_horizon.reporting` | Immutable whole-directory artifact publication, event-level fill reconciliation, probability/fill attribution, markout quality, and lifecycle metrics. |
 | Live | `btc_short_horizon.live` | Shadow-default service, append-only WAL, current CLOB V2 gateway, heartbeat cancellation, reconciliation, and canary caps. |
 
+Research Paper direction monitoring is isolated in a dedicated SQLite evidence
+store under the execution epoch. Its small interface registers every activated
+market, appends each shared model prediction once, records immutable resolution,
+and returns paired market-level summaries. It is separate from the opportunity
+ledger and evaluation journal: a market without a trade is still required for
+an unbiased actual Up/Down baseline, while execution variants continue to own
+independent ledgers. Existing epochs are not fabricated or backfilled; coverage
+starts at the first market registered by the deployed direction store.
+
 ## Configuration
 
 `configs/btc_short_horizon/baseline.toml` is the single baseline configuration.

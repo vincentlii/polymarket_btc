@@ -288,6 +288,220 @@ class ExecutionSegmentPerformance:
 
 
 @dataclass(frozen=True, slots=True)
+class DirectionStageSummary:
+    stage: str
+    paired_market_count: int
+    actual_up_count: int
+    actual_down_count: int
+    predicted_up_count: int
+    predicted_down_count: int
+    mean_p_up: float | None
+    calibration_z: float | None
+    bias_state: str
+
+    def __post_init__(self) -> None:
+        _require_identifier(self.stage, "direction stage")
+        _require_identifier(self.bias_state, "direction bias state")
+        for name in (
+            "paired_market_count",
+            "actual_up_count",
+            "actual_down_count",
+            "predicted_up_count",
+            "predicted_down_count",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        if self.actual_up_count + self.actual_down_count != self.paired_market_count:
+            raise ValueError("actual direction counts must equal paired markets")
+        if self.predicted_up_count + self.predicted_down_count != self.paired_market_count:
+            raise ValueError("predicted direction counts must equal paired markets")
+        _optional_probability(self.mean_p_up, "mean_p_up")
+        _optional_finite(self.calibration_z, "calibration_z")
+
+    def to_json(self) -> dict[str, object]:
+        return {name: getattr(self, name) for name in self.__dataclass_fields__}
+
+    @classmethod
+    def from_json(cls, raw: object) -> DirectionStageSummary:
+        value = _mapping(raw, "direction stage summary")
+        return cls(
+            stage=_text(value.get("stage"), "direction stage"),
+            paired_market_count=_integer(value.get("paired_market_count"), "paired_market_count"),
+            actual_up_count=_integer(value.get("actual_up_count"), "actual_up_count"),
+            actual_down_count=_integer(value.get("actual_down_count"), "actual_down_count"),
+            predicted_up_count=_integer(value.get("predicted_up_count"), "predicted_up_count"),
+            predicted_down_count=_integer(
+                value.get("predicted_down_count"), "predicted_down_count"
+            ),
+            mean_p_up=_optional_float(value.get("mean_p_up"), "mean_p_up"),
+            calibration_z=_optional_float(value.get("calibration_z"), "calibration_z"),
+            bias_state=_text(value.get("bias_state"), "direction bias state"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DirectionHealthSnapshot:
+    scope: str
+    coverage_started_at: datetime
+    activated_market_count: int
+    resolved_market_count: int
+    paired_market_count: int
+    prediction_count: int
+    actual_up_count: int
+    actual_down_count: int
+    predicted_up_count: int
+    predicted_down_count: int
+    mean_p_up: float | None
+    calibration_z: float | None
+    bias_state: str
+    stage_summaries: tuple[DirectionStageSummary, ...] = ()
+
+    def __post_init__(self) -> None:
+        _require_identifier(self.scope, "direction health scope")
+        _require_identifier(self.bias_state, "direction bias state")
+        object.__setattr__(
+            self,
+            "coverage_started_at",
+            _as_utc(self.coverage_started_at, "coverage_started_at"),
+        )
+        for name in (
+            "activated_market_count",
+            "resolved_market_count",
+            "paired_market_count",
+            "prediction_count",
+            "actual_up_count",
+            "actual_down_count",
+            "predicted_up_count",
+            "predicted_down_count",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        if self.resolved_market_count > self.activated_market_count:
+            raise ValueError("resolved markets cannot exceed activated markets")
+        if self.paired_market_count > self.resolved_market_count:
+            raise ValueError("paired markets cannot exceed resolved markets")
+        if self.actual_up_count + self.actual_down_count != self.paired_market_count:
+            raise ValueError("actual direction counts must equal paired markets")
+        if self.predicted_up_count + self.predicted_down_count != self.paired_market_count:
+            raise ValueError("predicted direction counts must equal paired markets")
+        _optional_probability(self.mean_p_up, "mean_p_up")
+        _optional_finite(self.calibration_z, "calibration_z")
+        object.__setattr__(self, "stage_summaries", tuple(self.stage_summaries))
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "scope": self.scope,
+            "coverage_started_at": self.coverage_started_at.isoformat(),
+            "activated_market_count": self.activated_market_count,
+            "resolved_market_count": self.resolved_market_count,
+            "paired_market_count": self.paired_market_count,
+            "prediction_count": self.prediction_count,
+            "actual_up_count": self.actual_up_count,
+            "actual_down_count": self.actual_down_count,
+            "predicted_up_count": self.predicted_up_count,
+            "predicted_down_count": self.predicted_down_count,
+            "mean_p_up": self.mean_p_up,
+            "calibration_z": self.calibration_z,
+            "bias_state": self.bias_state,
+            "stage_summaries": [item.to_json() for item in self.stage_summaries],
+        }
+
+    @classmethod
+    def from_json(cls, raw: object) -> DirectionHealthSnapshot:
+        value = _mapping(raw, "direction health snapshot")
+        return cls(
+            scope=_text(value.get("scope"), "direction health scope"),
+            coverage_started_at=_timestamp(value.get("coverage_started_at"), "coverage_started_at"),
+            activated_market_count=_integer(
+                value.get("activated_market_count"), "activated_market_count"
+            ),
+            resolved_market_count=_integer(
+                value.get("resolved_market_count"), "resolved_market_count"
+            ),
+            paired_market_count=_integer(value.get("paired_market_count"), "paired_market_count"),
+            prediction_count=_integer(value.get("prediction_count"), "prediction_count"),
+            actual_up_count=_integer(value.get("actual_up_count"), "actual_up_count"),
+            actual_down_count=_integer(value.get("actual_down_count"), "actual_down_count"),
+            predicted_up_count=_integer(value.get("predicted_up_count"), "predicted_up_count"),
+            predicted_down_count=_integer(
+                value.get("predicted_down_count"), "predicted_down_count"
+            ),
+            mean_p_up=_optional_float(value.get("mean_p_up"), "mean_p_up"),
+            calibration_z=_optional_float(value.get("calibration_z"), "calibration_z"),
+            bias_state=_text(value.get("bias_state"), "direction bias state"),
+            stage_summaries=tuple(
+                DirectionStageSummary.from_json(item)
+                for item in _sequence(value.get("stage_summaries", ()), "stage_summaries")
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DirectionExecutionPerformance:
+    side: str
+    qualified_signal_count: int
+    opportunity_count: int
+    fill_count: int
+    resolved_opportunity_count: int
+    realized_pnl: float
+    mean_fair_probability: float | None
+    realized_accuracy: float | None
+    calibration_gap: float | None
+    resolved_ev_per_opportunity: float | None
+
+    def __post_init__(self) -> None:
+        if self.side not in {"up", "down"}:
+            raise ValueError("direction side must be 'up' or 'down'")
+        for name in (
+            "qualified_signal_count",
+            "opportunity_count",
+            "fill_count",
+            "resolved_opportunity_count",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        if self.fill_count > self.opportunity_count:
+            raise ValueError("direction fills cannot exceed opportunities")
+        if self.resolved_opportunity_count > self.opportunity_count:
+            raise ValueError("resolved direction opportunities cannot exceed opportunities")
+        _finite(self.realized_pnl, "direction realized_pnl")
+        _optional_probability(self.mean_fair_probability, "mean_fair_probability")
+        _optional_probability(self.realized_accuracy, "realized_accuracy")
+        _optional_finite(self.calibration_gap, "calibration_gap")
+        _optional_finite(self.resolved_ev_per_opportunity, "resolved_ev_per_opportunity")
+
+    def to_json(self) -> dict[str, object]:
+        return {name: getattr(self, name) for name in self.__dataclass_fields__}
+
+    @classmethod
+    def from_json(cls, raw: object) -> DirectionExecutionPerformance:
+        value = _mapping(raw, "direction execution performance")
+        return cls(
+            side=_text(value.get("side"), "direction side"),
+            qualified_signal_count=_integer(
+                value.get("qualified_signal_count"), "qualified_signal_count"
+            ),
+            opportunity_count=_integer(value.get("opportunity_count"), "opportunity_count"),
+            fill_count=_integer(value.get("fill_count"), "fill_count"),
+            resolved_opportunity_count=_integer(
+                value.get("resolved_opportunity_count"), "resolved_opportunity_count"
+            ),
+            realized_pnl=_float(value.get("realized_pnl"), "direction realized_pnl"),
+            mean_fair_probability=_optional_float(
+                value.get("mean_fair_probability"), "mean_fair_probability"
+            ),
+            realized_accuracy=_optional_float(value.get("realized_accuracy"), "realized_accuracy"),
+            calibration_gap=_optional_float(value.get("calibration_gap"), "calibration_gap"),
+            resolved_ev_per_opportunity=_optional_float(
+                value.get("resolved_ev_per_opportunity"), "resolved_ev_per_opportunity"
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutionVariantPerformance:
     variant_id: str
     label: str
@@ -311,6 +525,7 @@ class ExecutionVariantPerformance:
     tail_resolved_ev_per_opportunity: float | None = None
     conditional_ev_per_filled_share: float | None = None
     segment_summaries: tuple[ExecutionSegmentPerformance, ...] = ()
+    direction_summaries: tuple[DirectionExecutionPerformance, ...] = ()
 
     def __post_init__(self) -> None:
         _require_identifier(self.variant_id, "variant_id")
@@ -355,6 +570,10 @@ class ExecutionVariantPerformance:
             "conditional_ev_per_filled_share",
         )
         object.__setattr__(self, "segment_summaries", tuple(self.segment_summaries))
+        direction_summaries = tuple(self.direction_summaries)
+        if len({item.side for item in direction_summaries}) != len(direction_summaries):
+            raise ValueError("direction summaries must have unique sides")
+        object.__setattr__(self, "direction_summaries", direction_summaries)
 
     @property
     def fill_rate(self) -> float | None:
@@ -385,6 +604,7 @@ class ExecutionVariantPerformance:
             "tail_resolved_ev_per_opportunity": self.tail_resolved_ev_per_opportunity,
             "conditional_ev_per_filled_share": self.conditional_ev_per_filled_share,
             "segment_summaries": [item.to_json() for item in self.segment_summaries],
+            "direction_summaries": [item.to_json() for item in self.direction_summaries],
         }
 
     @classmethod
@@ -440,6 +660,10 @@ class ExecutionVariantPerformance:
             segment_summaries=tuple(
                 ExecutionSegmentPerformance.from_json(item)
                 for item in _sequence(value.get("segment_summaries", ()), "segment_summaries")
+            ),
+            direction_summaries=tuple(
+                DirectionExecutionPerformance.from_json(item)
+                for item in _sequence(value.get("direction_summaries", ()), "direction_summaries")
             ),
         )
 
@@ -540,6 +764,7 @@ class PerformanceSnapshot:
     recent_orders: tuple[OrderPerformance, ...] = ()
     paper_execution_epoch: str | None = None
     decision_funnel: DecisionFunnelSnapshot | None = None
+    direction_health: DirectionHealthSnapshot | None = None
 
     def __post_init__(self) -> None:
         _require_identifier(self.currency, "currency")
@@ -603,6 +828,9 @@ class PerformanceSnapshot:
             "decision_funnel": (
                 None if self.decision_funnel is None else self.decision_funnel.to_json()
             ),
+            "direction_health": (
+                None if self.direction_health is None else self.direction_health.to_json()
+            ),
         }
 
     @classmethod
@@ -643,6 +871,11 @@ class PerformanceSnapshot:
                 None
                 if value.get("decision_funnel") is None
                 else DecisionFunnelSnapshot.from_json(value.get("decision_funnel"))
+            ),
+            direction_health=(
+                None
+                if value.get("direction_health") is None
+                else DirectionHealthSnapshot.from_json(value.get("direction_health"))
             ),
         )
 
@@ -923,6 +1156,13 @@ def _nonnegative(value: float, name: str) -> None:
 def _optional_finite(value: float | None, name: str) -> None:
     if value is not None:
         _finite(value, name)
+
+
+def _optional_probability(value: float | None, name: str) -> None:
+    if value is not None:
+        _finite(value, name)
+        if not 0.0 <= value <= 1.0:
+            raise ValueError(f"{name} must be in [0, 1]")
 
 
 def _optional_nonnegative(value: float | None, name: str) -> None:
