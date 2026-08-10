@@ -88,10 +88,14 @@ full `book` before the first decision. Polymarket CLOB collection ends at
 remain continuously connected between these bounded CLOB windows, preserving
 the model lookback while removing the dominant raw-storage source.
 `opening_handoff_delay_seconds` defines the end of each market's CLOB capture
-relative to its own `t0`. The shared public-feed task stays alive across market
-boundaries; each newly discovered token pair is added to a bounded CLOB window
-manager, while the durable collector session rotates after the current CLOB
-handoff without closing Binance or Chainlink sockets. CLI overrides are
+relative to its own `t0`. The market-end maker control raises the baseline to
+`t0+901s`, covering the full market plus the configured cancel latency. During
+the final 90 seconds, the current pair and next pair are captured together so
+the resting order retains evidence without losing the next market's pre-open
+book. The shared public-feed task stays alive across market boundaries; each
+newly discovered token pair is added to a bounded CLOB window manager, while
+the durable collector session rotates after the current CLOB handoff without
+closing Binance or Chainlink sockets. CLI overrides are
 available for a deliberately bounded operator run; do not lower these defaults
 without measuring resulting evidence coverage.
 
@@ -678,6 +682,13 @@ revalued through `entry_end + max_work`; stale/gapped data, probability decay,
 rule changes and expiry request a simulated cancel, with fills still possible
 during the configured cancel latency.
 
+The enabled market-end maker control uses the exact independent 1x5 taker
+candidate filter and one-signal confirmation, then converts the selected side
+to a passive post-only plan. Its expiry is the market's immutable `t1`, not a
+fixed number of seconds after placement. Safety cancellation remains active;
+`market_end` changes time-in-force only. The 2x5 FAK variant remains primary,
+so this control has an isolated ledger and cannot change the main equity curve.
+
 Its matching is deliberately pessimistic and explicitly heuristic: P99
 insert/cancel latency, the full visible same-side L2 queue ahead, and only 50%
 of seller-initiated public trade volume can consume that queue and fill a
@@ -695,11 +706,16 @@ notional, partial/cancel-race fills, settlement and virtual cash/equity. The
 dashboard labels every value as simulated; this evidence is useful for runtime
 and strategy iteration but cannot satisfy the formal Maker Go gate. A Paper
 model/bootstrap/rules/buffer failure writes an unhealthy `research_paper`
-status while the collector continues. Rule fetch retries are rate-limited;
+status while the collector continues. A failed Paper runtime is closed and
+recreated after a bounded retry delay using the same admitted-event buffer;
+durable collection and existing ledgers remain uninterrupted. Rule fetch retries are rate-limited;
 transient Gamma resolution failures remain unhealthy and retry every 30 seconds
 instead of terminating the Paper decision loop. Event intake remains at 50ms,
 while status/dashboard atomic writes are limited to the page's five-second
 refresh cadence to avoid unnecessary VPS disk I/O.
+Stage assignment for direction evidence is supplied by the same tolerant
+`StagePolicyConfig` rule that authorized execution; evidence persistence does
+not independently reinterpret scheduler jitter around a stage boundary.
 Any model/feature `ValueError` during an active decision is retained as a
 recoverable `prediction` health error with market and timestamp. It keeps Paper
 unhealthy until a later decision succeeds; the cumulative counter alone is not

@@ -85,6 +85,7 @@ class PaperExecutionVariantConfig:
     confirmation_signals: int = 2
     maximum_edge_decay: float = 0.0
     enabled: bool = True
+    maker_expiry_policy: str = "fixed_duration"
 
     def __post_init__(self) -> None:
         if (
@@ -107,8 +108,11 @@ class PaperExecutionVariantConfig:
             raise ValueError("paper opportunity policy must be shared_maker or independent_taker")
         if self.confirmation_policy not in {"side_only", "edge_stable"}:
             raise ValueError("paper confirmation policy must be side_only or edge_stable")
-        if self.opportunity_policy == "independent_taker" and self.mode != "immediate_fak":
-            raise ValueError("independent taker opportunity policy requires immediate_fak mode")
+        if self.opportunity_policy == "independent_taker" and self.mode not in {
+            "maker",
+            "immediate_fak",
+        }:
+            raise ValueError("independent taker opportunity policy requires maker or immediate_fak")
         if self.opportunity_policy == "shared_maker" and self.confirmation_policy != "side_only":
             raise ValueError("shared maker opportunity policy requires side_only confirmation")
         if (
@@ -131,18 +135,34 @@ class PaperExecutionVariantConfig:
                 raise ValueError(f"paper execution {name} must be finite and >= 0")
         if self.mode == "immediate_fak" and self.maker_work_seconds != 0.0:
             raise ValueError("immediate-FAK paper variants require maker_work_seconds=0")
-        if self.mode != "immediate_fak" and self.maker_work_seconds <= 0.0:
+        if self.maker_expiry_policy not in {"fixed_duration", "market_end"}:
+            raise ValueError("maker expiry policy must be fixed_duration or market_end")
+        if self.mode == "immediate_fak" and self.maker_expiry_policy != "fixed_duration":
+            raise ValueError("immediate-FAK variants require fixed_duration expiry")
+        if self.maker_expiry_policy == "market_end" and self.mode != "maker":
+            raise ValueError("market_end expiry requires maker mode")
+        if (
+            self.mode != "immediate_fak"
+            and self.maker_expiry_policy == "fixed_duration"
+            and self.maker_work_seconds <= 0.0
+        ):
             raise ValueError("maker paper variants require maker_work_seconds > 0")
+        if self.maker_expiry_policy == "market_end" and self.maker_work_seconds != 0.0:
+            raise ValueError("market_end maker variants require maker_work_seconds=0")
         if not isinstance(self.primary, bool):
             raise ValueError("paper execution primary must be bool")
         if not isinstance(self.enabled, bool):
             raise ValueError("paper execution enabled must be bool")
-        if self.mode == "maker" and any(
-            value > 0.0
-            for value in (
-                self.minimum_taker_net_edge,
-                self.slippage_buffer,
-                self.model_uncertainty_buffer,
+        if (
+            self.mode == "maker"
+            and self.opportunity_policy == "shared_maker"
+            and any(
+                value > 0.0
+                for value in (
+                    self.minimum_taker_net_edge,
+                    self.slippage_buffer,
+                    self.model_uncertainty_buffer,
+                )
             )
         ):
             raise ValueError("maker-only paper variants cannot configure taker buffers")
@@ -276,24 +296,33 @@ def load_btc_project_config(path: Path) -> BtcProjectConfig:
     if len({scenario.name for scenario in scenarios}) != len(scenarios):
         raise ValueError("execution scenario names must be unique")
     _validate_formal_scenario_grid(scenarios)
-    maximum_lifecycle_tail_seconds = max(
-        paper_execution_lifecycle_tail_seconds(
-            mode=variant.mode,
-            maker_work_seconds=variant.maker_work_seconds,
-            cancel_latency_ms=(
+    required_handoff_seconds = max(
+        (
+            primary_family.window_seconds
+            + (
                 scenario.execution.latency_model.base_latency_ms
                 + scenario.execution.latency_model.cancel_latency_ms
-            ),
-            taker_latency_ms=(
-                scenario.execution.latency_model.base_latency_ms
-                + scenario.execution.latency_model.insert_latency_ms
-            ),
-            taker_server_delay_ms=CLOB_DELAYED_TAKER_SERVER_MS,
+            )
+            / 1_000.0
+            if variant.maker_expiry_policy == "market_end"
+            else maker.entry_end_seconds
+            + paper_execution_lifecycle_tail_seconds(
+                mode=variant.mode,
+                maker_work_seconds=variant.maker_work_seconds,
+                cancel_latency_ms=(
+                    scenario.execution.latency_model.base_latency_ms
+                    + scenario.execution.latency_model.cancel_latency_ms
+                ),
+                taker_latency_ms=(
+                    scenario.execution.latency_model.base_latency_ms
+                    + scenario.execution.latency_model.insert_latency_ms
+                ),
+                taker_server_delay_ms=CLOB_DELAYED_TAKER_SERVER_MS,
+            )
         )
         for scenario in scenarios
         for variant in paper_variants
     )
-    required_handoff_seconds = maker.entry_end_seconds + maximum_lifecycle_tail_seconds
     if collection.opening_handoff_delay_seconds < required_handoff_seconds:
         raise ValueError(
             "opening handoff must cover the entry window, order lifecycle, and cancel latency"
@@ -331,6 +360,7 @@ def _paper_execution_variant(section: Mapping[str, object]) -> PaperExecutionVar
         confirmation_signals=_positive_int(section, "confirmation_signals"),
         maximum_edge_decay=_nonnegative_float(section, "maximum_edge_decay"),
         enabled=_bool_default(section, "enabled", True),
+        maker_expiry_policy=str(section.get("maker_expiry_policy", "fixed_duration")),
     )
 
 

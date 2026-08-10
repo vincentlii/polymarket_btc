@@ -12,7 +12,10 @@ from btc_short_horizon.live.forward_runtime import (
     run_forward_collector_runtime,
 )
 from btc_short_horizon.live.runtime import RuntimeControl, RuntimeStatusStore
-from scripts.btc_forward_runtime import _initialize_research_paper
+from scripts.btc_forward_runtime import (
+    _initialize_research_paper,
+    _run_research_paper_supervisor,
+)
 
 
 async def _wait_for_state(store: RuntimeStatusStore, state: str) -> None:
@@ -142,3 +145,42 @@ def test_paper_startup_failure_is_persisted_without_blocking_collector(
     assert status.state == "failed"
     assert status.details["real_orders_enabled"] is False
     assert "bad model artifact" in str(status.details["last_error"])
+
+
+def test_paper_supervisor_restarts_after_an_isolated_runtime_failure() -> None:
+    class FailedRuntime:
+        closed = False
+
+        async def run(self, *, stop_event: asyncio.Event) -> None:
+            raise ValueError("boundary invariant")
+
+        def close(self) -> None:
+            self.closed = True
+
+    class RecoveredRuntime:
+        ran = False
+
+        async def run(self, *, stop_event: asyncio.Event) -> None:
+            self.ran = True
+            stop_event.set()
+
+        def close(self) -> None:
+            raise AssertionError("healthy replacement must not be closed")
+
+    async def run() -> None:
+        stop_event = asyncio.Event()
+        failed = FailedRuntime()
+        recovered = RecoveredRuntime()
+        activated: list[object] = []
+        await _run_research_paper_supervisor(
+            initial_runtime=failed,  # type: ignore[arg-type]
+            create_runtime=lambda: recovered,  # type: ignore[return-value]
+            on_runtime=activated.append,  # type: ignore[arg-type]
+            stop_event=stop_event,
+            retry_seconds=0.0,
+        )
+        assert failed.closed
+        assert recovered.ran
+        assert activated == [recovered]
+
+    asyncio.run(run())

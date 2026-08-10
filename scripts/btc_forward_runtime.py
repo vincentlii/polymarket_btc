@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from math import isfinite
@@ -67,16 +67,30 @@ def _captured_market(
     lead_seconds: float,
     handoff_seconds: float,
 ) -> MarketWindow | None:
-    for market in (window.market, window.lookahead):
-        if market is None:
-            continue
-        if (
-            market.t0 - timedelta(seconds=lead_seconds)
-            <= now
-            < market.t0 + timedelta(seconds=handoff_seconds)
-        ):
-            return market
-    return None
+    captured = _captured_markets(
+        window,
+        now=now,
+        lead_seconds=lead_seconds,
+        handoff_seconds=handoff_seconds,
+    )
+    return None if not captured else max(captured, key=lambda market: market.t0)
+
+
+def _captured_markets(
+    window: _ActiveWindow,
+    *,
+    now: datetime,
+    lead_seconds: float,
+    handoff_seconds: float,
+) -> tuple[MarketWindow, ...]:
+    return tuple(
+        market
+        for market in (window.market, window.lookahead)
+        if market is not None
+        and market.t0 - timedelta(seconds=lead_seconds)
+        <= now
+        < market.t0 + timedelta(seconds=handoff_seconds)
+    )
 
 
 def _refresh_required_clob_feeds(
@@ -86,15 +100,17 @@ def _refresh_required_clob_feeds(
     lead_seconds: float,
     handoff_seconds: float,
 ) -> MarketWindow | None:
-    market = _captured_market(
+    markets = _captured_markets(
         window,
         now=now,
         lead_seconds=lead_seconds,
         handoff_seconds=handoff_seconds,
     )
-    tokens = () if market is None else (market.up_token_id, market.down_token_id)
+    tokens = tuple(
+        token_id for market in markets for token_id in (market.up_token_id, market.down_token_id)
+    )
     window.collector.configure_required_polymarket_tokens(tokens)
-    return market
+    return None if not markets else max(markets, key=lambda market: market.t0)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -163,6 +179,45 @@ def _initialize_research_paper(
         )
         return None, None
     return buffer, runtime
+
+
+async def _run_research_paper_supervisor(
+    *,
+    initial_runtime: ResearchPaperRuntime,
+    create_runtime: Callable[[], ResearchPaperRuntime],
+    on_runtime: Callable[[ResearchPaperRuntime], None],
+    stop_event: asyncio.Event,
+    retry_seconds: float = 1.0,
+) -> None:
+    runtime = initial_runtime
+    while not stop_event.is_set():
+        try:
+            await runtime.run(stop_event=stop_event)
+        except Exception:
+            runtime.close()
+            if stop_event.is_set():
+                return
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=retry_seconds)
+            except TimeoutError:
+                pass
+            if stop_event.is_set():
+                return
+            while not stop_event.is_set():
+                try:
+                    runtime = create_runtime()
+                except Exception:
+                    try:
+                        await asyncio.wait_for(stop_event.wait(), timeout=retry_seconds)
+                    except TimeoutError:
+                        continue
+                else:
+                    break
+            if stop_event.is_set():
+                return
+            on_runtime(runtime)
+            continue
+        return
 
 
 async def run_async(args: argparse.Namespace) -> None:
@@ -333,11 +388,33 @@ async def run_async(args: argparse.Namespace) -> None:
         return details
 
     async def collect(stop_event: asyncio.Event) -> None:
+        def create_paper_runtime() -> ResearchPaperRuntime:
+            assert paper_buffer is not None
+            return ResearchPaperRuntime(
+                project=project,
+                model_directory=args.paper_model_directory,
+                runtime_root=runtime_root,
+                rule_epoch=args.rule_epoch,
+                event_buffer=paper_buffer,
+                starting_balance=args.paper_starting_balance,
+            )
+
+        def on_paper_runtime(runtime: ResearchPaperRuntime) -> None:
+            nonlocal paper_runtime
+            paper_runtime = runtime
+            if active is not None:
+                runtime.register_markets(active.market, active.lookahead)
+
         paper_task = (
             None
             if paper_runtime is None
             else asyncio.create_task(
-                paper_runtime.run(stop_event=stop_event),
+                _run_research_paper_supervisor(
+                    initial_runtime=paper_runtime,
+                    create_runtime=create_paper_runtime,
+                    on_runtime=on_paper_runtime,
+                    stop_event=stop_event,
+                ),
                 name="btc-research-paper",
             )
         )

@@ -358,6 +358,13 @@ class ResearchPaperRuntime:
             self._last_error = f"{type(exc).__name__}: {exc}"
             self._checkpoint_evaluations()
             self._publish(now=datetime.now(UTC), state="failed", healthy=False)
+            raise
+
+    def close(self) -> None:
+        for task in self._rule_tasks.values():
+            if not task.done():
+                task.cancel()
+        self.engine.close()
 
     def _checkpoint_evaluations(self) -> None:
         checkpoint = getattr(getattr(self, "engine", None), "checkpoint_evaluations", None)
@@ -447,6 +454,10 @@ class ResearchPaperRuntime:
         market = max(candidates, key=lambda item: item.t0)
         if market.slug == self._active_slug:
             return
+        if self.engine.market is not None and self.engine.market.slug != market.slug:
+            self.engine.advance(now_ts_ns=int(now.timestamp() * 1_000_000_000))
+            if self.engine.has_unfinished_placement:
+                return
         rules = self._rules.get(market.slug)
         if rules is None:
             self._schedule_rule_fetch(market, now=now)

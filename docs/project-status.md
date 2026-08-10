@@ -1,5 +1,19 @@
 # Project Status
 
+## 2026-08-11 Paper recovery and market-end maker control
+
+- Fixed the live `t0+30.058s` failure by making direction evidence persist the
+  exact tolerance-aware stage selected by the execution policy. Research Paper
+  now closes and recreates a failed runtime after a bounded delay while raw
+  collection and immutable ledgers continue.
+- Added an isolated `independent_maker_1x5s_market_end` control. It reuses the
+  same one-signal independent candidate filter as 1x5 FAK, submits passively,
+  and expires at market `t1`; 2x5 FAK remains primary.
+- Extended required CLOB evidence through market end plus cancel latency. The
+  current and look-ahead token pairs overlap during the next market's 90-second
+  pre-open window, preventing either a late-order evidence gap or a missed next
+  opening book.
+
 ## 2026-08-10 Direction health and release identity
 
 - Added durable market-level direction evidence for every activated BTC 15m
@@ -478,9 +492,10 @@ the input/output contract and operational commands.
   confirmation, separates evaluations/qualified signals/opportunities/fills,
   records actual model provenance, stores evaluation diagnostics in SQLite,
   and keeps all older epoch ledgers available through dashboard history.
-- Three independent FAK variants are active for new paper decisions: 2x5 is the
-  primary, 1x5 is the immediate control, and Stable 3x5 is the conservative
-  control. Confirmation count is variant-owned in every stage. The three older
+- Four independent-filter variants are active for new paper decisions: 2x5 FAK
+  is the primary, 1x5 FAK is the immediate control, market-end 1x5 maker is the
+  passive control, and Stable 3x5 FAK is the conservative control. Confirmation
+  count is variant-owned in every stage. The three older
   maker-gated variants remain readable but paused and are hidden by default on
   the dashboard; the user can reveal them with the strategy filter.
 - Stage rules, common opportunity logging, optional stage-specific artifacts,

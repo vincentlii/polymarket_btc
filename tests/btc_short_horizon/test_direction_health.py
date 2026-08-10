@@ -50,9 +50,11 @@ def test_direction_store_pairs_predictions_and_results_by_market(tmp_path) -> No
     for market in (up_market, down_market, no_prediction):
         store.register_market(market)
 
-    store.append_prediction(_prediction(up_market, second=5, p_up=0.7))
-    store.append_prediction(_prediction(up_market, second=10, p_up=0.6))
-    store.append_prediction(_prediction(down_market, second=35, p_up=0.4))
+    store.append_prediction(_prediction(up_market, second=5, p_up=0.7), stage="early_3s_to_30s")
+    store.append_prediction(_prediction(up_market, second=10, p_up=0.6), stage="early_3s_to_30s")
+    store.append_prediction(
+        _prediction(down_market, second=35, p_up=0.4), stage="price_discovery_35s_to_90s"
+    )
     store.settle(up_market.slug, MarketOutcome.UP, label_available_ts_ns=1)
     store.settle(down_market.slug, MarketOutcome.DOWN, label_available_ts_ns=2)
     store.settle(no_prediction.slug, MarketOutcome.UP, label_available_ts_ns=3)
@@ -81,8 +83,8 @@ def test_direction_store_is_idempotent_restart_safe_and_tracks_unresolved(tmp_pa
     first = DirectionEvidenceStore(tmp_path, "paper-v6")
     first.register_market(market)
     first.register_market(market)
-    first.append_prediction(prediction)
-    first.append_prediction(prediction)
+    first.append_prediction(prediction, stage="early_3s_to_30s")
+    first.append_prediction(prediction, stage="early_3s_to_30s")
     assert first.unresolved_market_slugs() == (market.slug,)
     first.close()
 
@@ -98,10 +100,10 @@ def test_direction_store_rejects_conflicting_immutable_evidence(tmp_path) -> Non
     market = _market()
     store = DirectionEvidenceStore(tmp_path, "paper-v6")
     store.register_market(market)
-    store.append_prediction(_prediction(market, second=5, p_up=0.55))
+    store.append_prediction(_prediction(market, second=5, p_up=0.55), stage="early_3s_to_30s")
 
     with pytest.raises(ValueError, match="prediction conflict"):
-        store.append_prediction(_prediction(market, second=5, p_up=0.65))
+        store.append_prediction(_prediction(market, second=5, p_up=0.65), stage="early_3s_to_30s")
 
     store.settle(market.slug, MarketOutcome.UP, label_available_ts_ns=1)
     with pytest.raises(ValueError, match="outcome conflict"):
@@ -113,7 +115,7 @@ def test_direction_store_only_flags_bias_after_minimum_paired_sample(tmp_path) -
     for index in range(100):
         market = _market(index)
         store.register_market(market)
-        store.append_prediction(_prediction(market, second=5, p_up=0.5))
+        store.append_prediction(_prediction(market, second=5, p_up=0.5), stage="early_3s_to_30s")
         store.settle(market.slug, MarketOutcome.UP, label_available_ts_ns=index)
 
     snapshot = store.snapshot()

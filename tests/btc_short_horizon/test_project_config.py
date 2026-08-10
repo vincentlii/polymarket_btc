@@ -36,7 +36,7 @@ def test_baseline_config_is_path_relative_and_has_explicit_queue_scenarios() -> 
     assert config.collection.max_pending_events == 100_000
     assert config.collection.max_pending_bytes == 67_108_864
     assert config.collection.polymarket_capture_lead_seconds == 90.0
-    assert config.collection.opening_handoff_delay_seconds == 215.0
+    assert config.collection.opening_handoff_delay_seconds == 901.0
     assert config.collection.ingest_version == "btc-short-horizon-v15"
     assert config.paper_execution_epoch == "paper-v5-stage-integrity"
     assert [variant.variant_id for variant in config.paper_execution_variants] == [
@@ -44,6 +44,7 @@ def test_baseline_config_is_path_relative_and_has_explicit_queue_scenarios() -> 
         "immediate_fak",
         "maker_5s_then_fak",
         "independent_fak_1x5s",
+        "independent_maker_1x5s_market_end",
         "independent_fak_2x5s",
         "independent_fak_stable_3x5s",
     ]
@@ -53,13 +54,16 @@ def test_baseline_config_is_path_relative_and_has_explicit_queue_scenarios() -> 
     assert config.paper_execution_variants[1].maker_work_seconds == 0.0
     assert config.paper_execution_variants[3].opportunity_policy == "independent_taker"
     assert config.paper_execution_variants[3].confirmation_signals == 1
-    assert config.paper_execution_variants[4].confirmation_signals == 2
-    assert config.paper_execution_variants[5].confirmation_policy == "edge_stable"
-    assert config.paper_execution_variants[5].confirmation_signals == 3
-    assert config.paper_execution_variants[5].maximum_edge_decay == 0.01
-    assert config.paper_execution_variants[4].enabled is True
-    assert config.paper_execution_variants[4].primary is True
-    assert config.paper_execution_variants[5].primary is False
+    assert config.paper_execution_variants[4].mode == "maker"
+    assert config.paper_execution_variants[4].maker_expiry_policy == "market_end"
+    assert config.paper_execution_variants[4].confirmation_signals == 1
+    assert config.paper_execution_variants[5].confirmation_signals == 2
+    assert config.paper_execution_variants[6].confirmation_policy == "edge_stable"
+    assert config.paper_execution_variants[6].confirmation_signals == 3
+    assert config.paper_execution_variants[6].maximum_edge_decay == 0.01
+    assert config.paper_execution_variants[5].enabled is True
+    assert config.paper_execution_variants[5].primary is True
+    assert config.paper_execution_variants[6].primary is False
     assert [rule.stage.value for rule in config.stage_policy.rules] == [
         "early_3s_to_30s",
         "price_discovery_35s_to_90s",
@@ -119,7 +123,7 @@ def test_collection_window_covers_cancel_race_latency(tmp_path: Path) -> None:
     path = tmp_path / "short-capture.toml"
     path.write_text(
         baseline.replace(
-            "opening_handoff_delay_seconds = 215.0", "opening_handoff_delay_seconds = 195.0"
+            "opening_handoff_delay_seconds = 901.0", "opening_handoff_delay_seconds = 900.0"
         ),
         encoding="utf-8",
     )

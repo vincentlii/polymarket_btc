@@ -185,20 +185,23 @@ def _variant(
     confirmation_policy: str = "side_only",
     confirmation_signals: int = 2,
     maximum_edge_decay: float = 0.0,
+    maker_expiry_policy: str = "fixed_duration",
 ) -> PaperExecutionVariantConfig:
+    uses_independent_filter = opportunity_policy == "independent_taker"
     return PaperExecutionVariantConfig(
         variant_id=variant_id,
         label=variant_id.replace("_", " ").title(),
         mode=mode,
         maker_work_seconds=maker_work_seconds,
         primary=primary,
-        minimum_taker_net_edge=0.03 if mode != "maker" else 0.0,
-        slippage_buffer=0.005 if mode != "maker" else 0.0,
-        model_uncertainty_buffer=0.03 if mode != "maker" else 0.0,
+        minimum_taker_net_edge=0.03 if mode != "maker" or uses_independent_filter else 0.0,
+        slippage_buffer=0.005 if mode != "maker" or uses_independent_filter else 0.0,
+        model_uncertainty_buffer=0.03 if mode != "maker" or uses_independent_filter else 0.0,
         opportunity_policy=opportunity_policy,
         confirmation_policy=confirmation_policy,
         confirmation_signals=confirmation_signals,
         maximum_edge_decay=maximum_edge_decay,
+        maker_expiry_policy=maker_expiry_policy,
     )
 
 
@@ -567,6 +570,30 @@ def test_regime_boundary_accepts_only_configured_scheduler_tolerance(tmp_path) -
     assert engine.records[0].entry_regime == "early_3s_to_30s"
 
 
+def test_direction_evidence_uses_the_same_boundary_tolerance_as_execution(tmp_path) -> None:
+    engine = _engine(
+        tmp_path,
+        variant=_variant(
+            "independent_fak_1x5s",
+            mode="immediate_fak",
+            maker_work_seconds=0.0,
+            opportunity_policy="independent_taker",
+            confirmation_signals=1,
+        ),
+    )
+    portfolio = ResearchPaperPortfolio((engine,))
+    portfolio.activate_market(_market(), rules={UP: _rules(UP), DOWN: _rules(DOWN)})
+    portfolio.on_event(_book(UP, bid="0.40", ask="0.42", second=29))
+    portfolio.on_event(_book(DOWN, bid="0.56", ask="0.58", second=29))
+
+    result = portfolio.decide(now_ts_ns=T0_NS + 30_058_000_000)
+
+    assert result == "submitted"
+    summary = portfolio.direction_store.snapshot()
+    assert summary.prediction_count == 1
+    assert [item.stage for item in summary.stage_summaries] == ["early_3s_to_30s"]
+
+
 @pytest.mark.parametrize(
     ("confirmation_policy", "maximum_edge_decay"),
     (("side_only", 0.0), ("edge_stable", 0.02)),
@@ -774,6 +801,53 @@ def test_independent_fak_submits_when_shared_maker_gate_has_no_plan(tmp_path) ->
         T0_NS + 10_500_000_000,
     ]
     assert all(len(item["evaluations"]) == 2 for item in diagnostic["entries"])
+
+
+def test_independent_maker_reuses_1x5_filter_and_works_until_market_end(tmp_path) -> None:
+    maker = _engine(
+        tmp_path,
+        predictor=lambda _market, _history, observation: _prediction(observation, p_up=0.68),
+        variant=_variant(
+            "independent_maker_1x5s_market_end",
+            mode="maker",
+            maker_work_seconds=0.0,
+            opportunity_policy="independent_taker",
+            confirmation_signals=1,
+            maker_expiry_policy="market_end",
+        ),
+    )
+    fak = _engine(
+        tmp_path,
+        predictor=lambda _market, _history, observation: _prediction(observation, p_up=0.68),
+        variant=_variant(
+            "independent_fak_1x5s",
+            mode="immediate_fak",
+            maker_work_seconds=0.0,
+            primary=False,
+            opportunity_policy="independent_taker",
+            confirmation_signals=1,
+        ),
+    )
+    portfolio = ResearchPaperPortfolio((maker, fak))
+    market = _market()
+    portfolio.activate_market(market, rules={UP: _rules(UP), DOWN: _rules(DOWN)})
+    portfolio.on_event(_book(UP, bid="0.58", ask="0.59", second=5))
+    portfolio.on_event(_book(DOWN, bid="0.40", ask="0.41", second=5))
+
+    portfolio.decide(now_ts_ns=T0_NS + 5_500_000_000)
+    maker.advance(now_ts_ns=T0_NS + 5_550_000_000)
+
+    assert maker.records[0].side == fak.records[0].side == "up"
+    assert maker.records[0].execution_route == "maker"
+    assert maker.active_placement is not None
+    assert maker.active_placement.plan.expires_ts_ns == int(market.t1.timestamp() * 1_000_000_000)
+    assert maker.active_placement.status == "working"
+
+    portfolio.on_event(_book(UP, bid="0.58", ask="0.59", second=300))
+    portfolio.on_event(_book(DOWN, bid="0.40", ask="0.41", second=300))
+    maker.advance(now_ts_ns=T0_NS + 300_200_000_000)
+
+    assert maker.active_placement.status == "working"
 
 
 def test_balance_rejection_is_a_zero_fill_confirmed_opportunity(tmp_path) -> None:

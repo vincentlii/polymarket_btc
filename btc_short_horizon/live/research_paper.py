@@ -1023,7 +1023,7 @@ class ResearchPaperEngine:
             self._signal_observations.clear()
             return safety_reason
         if self.variant.opportunity_policy == "independent_taker":
-            decision = plan_independent_taker_order(
+            taker_decision = plan_independent_taker_order(
                 market_slug=self.market.slug,
                 p_boundary_up=prediction.p_boundary_up,
                 p_up=prediction.p_up,
@@ -1044,6 +1044,31 @@ class ResearchPaperEngine:
                 minimum_price=stage_rule.minimum_price,
                 maximum_price=stage_rule.maximum_price,
             )
+            decision = taker_decision
+            plan_reason = str(taker_decision.reason)
+            plan = taker_decision.plan
+            if plan is not None and self.variant.mode == "maker":
+                maker_decision = plan_opening_mispricing_orders(
+                    market_slug=self.market.slug,
+                    p_boundary_up=prediction.p_boundary_up,
+                    p_up=prediction.p_up,
+                    books=books,
+                    decision_ts_ns=now_ts_ns,
+                    elapsed_seconds=elapsed,
+                    config=replace(
+                        self.maker_config,
+                        minimum_edge=0.0,
+                        safety_buffer=self.variant.model_uncertainty_buffer,
+                    ),
+                    selected_side=plan.side,
+                    expires_ts_ns=(
+                        int(self.market.t1.timestamp() * 1_000_000_000)
+                        if self.variant.maker_expiry_policy == "market_end"
+                        else None
+                    ),
+                )
+                plan = maker_decision.plan
+                plan_reason = maker_decision.reason
         else:
             decision = plan_opening_mispricing_orders(
                 market_slug=self.market.slug,
@@ -1054,6 +1079,8 @@ class ResearchPaperEngine:
                 elapsed_seconds=elapsed,
                 config=self.maker_config,
             )
+            plan_reason = decision.reason
+            plan = decision.plan
         if isinstance(decision, TakerPlanDecision):
             self._last_evaluation = self._evaluation_from_taker_decision(
                 decision=decision,
@@ -1061,21 +1088,21 @@ class ResearchPaperEngine:
                 now_ts_ns=now_ts_ns,
                 model_version=prediction.model_version,
             )
-        if decision.plan is None:
+        if plan is None:
             if isinstance(decision, TakerPlanDecision):
                 self._persist_taker_diagnostics(decision, now_ts_ns=now_ts_ns)
             self._confirmation.reset()
             self._signal_observations.clear()
-            return str(decision.reason)
+            return plan_reason
         if isinstance(decision, TakerPlanDecision):
             self._persist_taker_diagnostics(decision, now_ts_ns=now_ts_ns)
         if isinstance(self._confirmation, EdgeStableSignalConfirmation):
             net_edge = (
-                decision.plan.net_edge_per_share
-                if isinstance(decision.plan, TakerOrderPlan)
+                plan.net_edge_per_share
+                if isinstance(plan, TakerOrderPlan)
                 else self._signal_observation(
-                    plan=decision.plan,
-                    book=books.for_side(decision.plan.side),
+                    plan=plan,
+                    book=books.for_side(plan.side),
                     now_ts_ns=now_ts_ns,
                     signal_number=1,
                 ).taker_net_edge
@@ -1085,18 +1112,18 @@ class ResearchPaperEngine:
                 self._signal_observations.clear()
                 return "edge_below_threshold"
             confirmed = self._confirmation.observe(
-                decision.plan.side,
+                plan.side,
                 net_edge=net_edge,
                 signal_ts_ns=now_ts_ns,
             )
         else:
-            confirmed = self._confirmation.observe(decision.plan.side, signal_ts_ns=now_ts_ns)
+            confirmed = self._confirmation.observe(plan.side, signal_ts_ns=now_ts_ns)
         if self._confirmation.count == 1:
             self._signal_observations.clear()
-        side_book = books.for_side(decision.plan.side)
+        side_book = books.for_side(plan.side)
         self._signal_observations.append(
             self._signal_observation(
-                plan=decision.plan,
+                plan=plan,
                 book=side_book,
                 now_ts_ns=now_ts_ns,
                 signal_number=self._confirmation.count,
@@ -1104,33 +1131,33 @@ class ResearchPaperEngine:
         )
         if not confirmed:
             return "confirmation_pending"
-        selected_probability = decision.plan.p_fair
+        selected_probability = plan.p_fair
         planned_notional = (
-            decision.plan.total_notional
-            if isinstance(decision.plan, TakerOrderPlan)
+            plan.total_notional
+            if isinstance(plan, TakerOrderPlan)
             else (
-                decision.plan.total_size * selected_probability
+                plan.total_size * selected_probability
                 if self.variant.mode == "immediate_fak"
-                else decision.plan.total_notional
+                else plan.total_notional
             )
         )
-        opportunity_id = f"{decision.plan.market_slug}:{decision.plan.created_ts_ns}"
+        opportunity_id = f"{plan.market_slug}:{plan.created_ts_ns}"
         regime = stage_rule.stage.value
         price_bucket = _price_bucket(side_book.best_ask)
         if planned_notional > self._available_balance() + 1e-12:
             self._active_record = PaperTradeRecord(
                 variant_id=self.variant.variant_id,
                 placement_id=opportunity_id,
-                market_slug=decision.plan.market_slug,
-                token_id=decision.plan.token_id,
-                side=decision.plan.side.value,
+                market_slug=plan.market_slug,
+                token_id=plan.token_id,
+                side=plan.side.value,
                 placed_at_ns=now_ts_ns,
-                shares=decision.plan.total_size,
+                shares=plan.total_size,
                 filled_shares=0.0,
                 filled_notional=0.0,
                 planned_notional=planned_notional,
-                p_fair=decision.plan.p_fair,
-                market_price=decision.plan.p_market,
+                p_fair=plan.p_fair,
+                market_price=plan.p_market,
                 execution_status="rejected",
                 opportunity_id=opportunity_id,
                 entry_regime=regime,
@@ -1150,8 +1177,8 @@ class ResearchPaperEngine:
             return "insufficient_virtual_balance"
         if self.variant.mode == "immediate_fak":
             placement = self.simulator.submit_direct_fak(
-                plan=decision.plan,
-                rules=self.rules[decision.plan.token_id],
+                plan=plan,
+                rules=self.rules[plan.token_id],
                 book=side_book,
                 now_ts_ns=now_ts_ns,
                 selected_probability=selected_probability,
@@ -1161,8 +1188,8 @@ class ResearchPaperEngine:
             )
         else:
             placement = self.simulator.submit(
-                plan=decision.plan,
-                rules=self.rules[decision.plan.token_id],
+                plan=plan,
+                rules=self.rules[plan.token_id],
                 book=side_book,
                 now_ts_ns=now_ts_ns,
             )
@@ -1170,16 +1197,16 @@ class ResearchPaperEngine:
         self._active_record = PaperTradeRecord(
             variant_id=self.variant.variant_id,
             placement_id=placement.placement_id,
-            market_slug=decision.plan.market_slug,
-            token_id=decision.plan.token_id,
-            side=decision.plan.side.value,
+            market_slug=plan.market_slug,
+            token_id=plan.token_id,
+            side=plan.side.value,
             placed_at_ns=now_ts_ns,
-            shares=decision.plan.total_size,
+            shares=plan.total_size,
             filled_shares=0.0,
             filled_notional=0.0,
             planned_notional=planned_notional,
-            p_fair=decision.plan.p_fair,
-            market_price=decision.plan.p_market,
+            p_fair=plan.p_fair,
+            market_price=plan.p_market,
             execution_status=placement.status,
             opportunity_id=opportunity_id,
             entry_regime=regime,
@@ -1919,6 +1946,15 @@ class ResearchPaperPortfolio:
     def records(self) -> tuple[PaperTradeRecord, ...]:
         return tuple(record for engine in self.engines for record in engine.records)
 
+    @property
+    def has_unfinished_placement(self) -> bool:
+        return any(
+            engine.active_placement is not None
+            and engine.active_placement.status
+            in {"insert_pending", "working", "cancel_pending", "fak_pending"}
+            for engine in self.engines
+        )
+
     def set_kline_history(self, history: BinanceKlineHistory) -> None:
         for engine in self.engines:
             engine.kline_history = history
@@ -1950,7 +1986,12 @@ class ResearchPaperPortfolio:
         )
         if prediction is not None:
             self.decision_counts["predictions"] += 1
-            self.direction_store.append_prediction(prediction)
+            try:
+                stage = self.primary.stage_policy.rule_for(prediction.elapsed_seconds).stage
+            except ValueError:
+                pass
+            else:
+                self.direction_store.append_prediction(prediction, stage=stage)
         primary_records_before = len(self.primary.records)
         primary_result = self.primary.decide(
             now_ts_ns=now_ts_ns,

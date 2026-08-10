@@ -10,6 +10,7 @@ from btc_short_horizon.live.runtime import RuntimeControl, RuntimeStatus, Runtim
 from scripts.btc_forward_runtime import (
     _captured_market,
     _effective_market,
+    _refresh_required_clob_feeds,
     parse_args as parse_forward_runtime_args,
 )
 from scripts.btc_runtime_control import main as runtime_control_main
@@ -61,6 +62,36 @@ def test_forward_runtime_only_requires_clob_during_capture_window() -> None:
         ).slug
         == "lookahead"
     )
+
+
+def test_forward_runtime_keeps_old_market_and_preopens_next_market_together() -> None:
+    t0 = datetime(2026, 7, 16, 15, 0, tzinfo=UTC)
+
+    class Collector:
+        tokens: tuple[str, ...] = ()
+
+        def configure_required_polymarket_tokens(self, token_ids) -> None:  # type: ignore[no-untyped-def]
+            self.tokens = tuple(token_ids)
+
+    collector = Collector()
+    current = SimpleNamespace(slug="current", t0=t0, up_token_id="up-1", down_token_id="down-1")
+    lookahead = SimpleNamespace(
+        slug="lookahead",
+        t0=t0.replace(minute=15),
+        up_token_id="up-2",
+        down_token_id="down-2",
+    )
+    window = SimpleNamespace(market=current, lookahead=lookahead, collector=collector)
+
+    captured = _refresh_required_clob_feeds(
+        window,
+        now=t0.replace(minute=14),
+        lead_seconds=90.0,
+        handoff_seconds=901.0,
+    )
+
+    assert captured.slug == "lookahead"
+    assert collector.tokens == ("up-1", "down-1", "up-2", "down-2")
     assert (
         _captured_market(
             window,
