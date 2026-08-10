@@ -27,6 +27,10 @@ from btc_short_horizon.live.research_paper import (
     ResearchPaperPortfolio,
 )
 from btc_short_horizon.live.runtime import RuntimeStatus, RuntimeStatusStore
+from btc_short_horizon.live.settlement_trades import (
+    PublicSettlementTradesClient,
+    SettlementTradeEvidenceStore,
+)
 from btc_short_horizon.models import ModelArtifactStore
 from btc_short_horizon.research.binance_history import fetch_binance_spot_kline_history
 from btc_short_horizon.research.opening_proxy import (
@@ -245,6 +249,7 @@ def build_research_paper_portfolio(
                 ),
                 starting_balance=starting_balance,
                 stage_policy=stage_policy or project.stage_policy,
+                clob_capture_end_seconds=project.collection.opening_handoff_delay_seconds,
             )
             for variant in project.paper_execution_variants
         )
@@ -265,6 +270,7 @@ class ResearchPaperRuntime:
         starting_balance: float = 1_000.0,
         rules_client: PublicPaperRulesClient | None = None,
         gamma_client: GammaMarketClient | None = None,
+        settlement_trades_client: PublicSettlementTradesClient | None = None,
     ) -> None:
         predictor = ModelPaperPredictor(project=project, model_directory=model_directory)
         self.predictor = predictor
@@ -281,6 +287,11 @@ class ResearchPaperRuntime:
         self.event_buffer = event_buffer
         self.rules_client = rules_client or PublicPaperRulesClient()
         self.gamma_client = gamma_client or GammaMarketClient()
+        self.settlement_trades_client = settlement_trades_client or PublicSettlementTradesClient()
+        self.settlement_trade_store = SettlementTradeEvidenceStore(
+            runtime_root,
+            project.paper_execution_epoch,
+        )
         self._markets: dict[str, MarketWindow] = {}
         self._rules: dict[str, dict[str, PaperMarketRules]] = {}
         self._rule_tasks: dict[str, asyncio.Task[None]] = {}
@@ -544,6 +555,21 @@ class ResearchPaperRuntime:
         for market in catalog.windows():
             if market.resolution is None or market.label_available_ts is None:
                 continue
+            if self.engine.requires_settlement_trade_evidence(market.slug):
+                boundary_ns = self.engine.deferred_fill_start_ns(market.slug)
+                if boundary_ns is None:
+                    raise RuntimeError("deferred maker evidence boundary is unavailable")
+                evidence = await self.settlement_trades_client.fetch(
+                    market,
+                    start_seconds=boundary_ns // 1_000_000_000 + 1,
+                    end_seconds=int(market.t1.timestamp()),
+                )
+                self.settlement_trade_store.write(evidence)
+                self.engine.apply_settlement_trade_evidence(
+                    market_slug=market.slug,
+                    trades=evidence.trades,
+                    assessed_at_ns=int(evidence.fetched_at.timestamp() * 1_000_000_000),
+                )
             self.engine.settle(
                 market_slug=market.slug,
                 outcome=market.resolution,

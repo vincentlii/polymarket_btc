@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 import json
 from types import SimpleNamespace
 
+import httpx
 import numpy as np
 import pytest
 
@@ -28,6 +29,11 @@ from btc_short_horizon.live.research_paper import (
     PaperTradeRecord,
     ResearchPaperEngine,
     ResearchPaperPortfolio,
+)
+from btc_short_horizon.live.settlement_trades import (
+    PublicSettlementTradesClient,
+    SettlementTrade,
+    SettlementTradeEvidenceStore,
 )
 from btc_short_horizon.models import OpeningMispricingPrediction
 from btc_short_horizon.research.binance_history import BinanceKlineHistory
@@ -186,6 +192,7 @@ def _variant(
     confirmation_signals: int = 2,
     maximum_edge_decay: float = 0.0,
     maker_expiry_policy: str = "fixed_duration",
+    maker_fill_evidence_policy: str = "live_stream",
 ) -> PaperExecutionVariantConfig:
     uses_independent_filter = opportunity_policy == "independent_taker"
     return PaperExecutionVariantConfig(
@@ -202,6 +209,7 @@ def _variant(
         confirmation_signals=confirmation_signals,
         maximum_edge_decay=maximum_edge_decay,
         maker_expiry_policy=maker_expiry_policy,
+        maker_fill_evidence_policy=maker_fill_evidence_policy,
     )
 
 
@@ -814,6 +822,7 @@ def test_independent_maker_reuses_1x5_filter_and_works_until_market_end(tmp_path
             opportunity_policy="independent_taker",
             confirmation_signals=1,
             maker_expiry_policy="market_end",
+            maker_fill_evidence_policy="settlement_trades",
         ),
     )
     fak = _engine(
@@ -843,11 +852,69 @@ def test_independent_maker_reuses_1x5_filter_and_works_until_market_end(tmp_path
     assert maker.active_placement.plan.expires_ts_ns == int(market.t1.timestamp() * 1_000_000_000)
     assert maker.active_placement.status == "working"
 
-    portfolio.on_event(_book(UP, bid="0.58", ask="0.59", second=300))
-    portfolio.on_event(_book(DOWN, bid="0.40", ask="0.41", second=300))
     maker.advance(now_ts_ns=T0_NS + 300_200_000_000)
 
     assert maker.active_placement.status == "working"
+    maker.advance(now_ts_ns=int(market.t1.timestamp() * 1_000_000_000))
+    maker.advance(now_ts_ns=int(market.t1.timestamp() * 1_000_000_000) + 100_000_000)
+    assert maker.requires_settlement_trade_evidence(market.slug)
+    record = maker.records[0]
+    assert record.maker_limit_price is not None
+    maker.apply_settlement_trade_evidence(
+        market_slug=market.slug,
+        trades=(
+            SettlementTrade(
+                token_id=UP,
+                price=record.maker_limit_price,
+                size=210.0,
+                timestamp_seconds=int((T0 + timedelta(seconds=400)).timestamp()),
+                evidence_id="a" * 64,
+            ),
+        ),
+        assessed_at_ns=T0_NS + 901_000_000_000,
+    )
+
+    assert record.filled_shares == 5.0
+    assert record.maker_filled_shares == 5.0
+    assert record.execution_status == "filled"
+    assert not maker.requires_settlement_trade_evidence(market.slug)
+
+
+def test_public_settlement_trade_client_validates_deduplicates_and_persists(tmp_path) -> None:
+    market = _market()
+    timestamp = int((T0 + timedelta(seconds=300)).timestamp())
+    row = {
+        "asset": UP,
+        "conditionId": CONDITION,
+        "side": "SELL",
+        "price": 0.58,
+        "size": 12.0,
+        "timestamp": timestamp,
+        "transactionHash": "0xtrade",
+        "proxyWallet": "0xwallet",
+    }
+
+    async def run() -> object:
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.params["market"] == CONDITION
+            assert request.url.params["side"] == "SELL"
+            assert request.url.params["takerOnly"] == "true"
+            return httpx.Response(200, json=[row, row])
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await PublicSettlementTradesClient().fetch(
+                market,
+                start_seconds=timestamp - 1,
+                end_seconds=timestamp + 1,
+                client=client,
+            )
+
+    evidence = asyncio.run(run())
+    assert len(evidence.trades) == 1  # type: ignore[union-attr]
+    path = SettlementTradeEvidenceStore(tmp_path, "paper-v7").write(evidence)  # type: ignore[arg-type]
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert persisted["trade_count"] == 1
+    assert persisted["trades"][0]["token_id"] == UP
 
 
 def test_balance_rejection_is_a_zero_fill_confirmed_opportunity(tmp_path) -> None:

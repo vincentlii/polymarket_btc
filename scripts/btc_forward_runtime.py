@@ -67,30 +67,16 @@ def _captured_market(
     lead_seconds: float,
     handoff_seconds: float,
 ) -> MarketWindow | None:
-    captured = _captured_markets(
-        window,
-        now=now,
-        lead_seconds=lead_seconds,
-        handoff_seconds=handoff_seconds,
-    )
-    return None if not captured else max(captured, key=lambda market: market.t0)
-
-
-def _captured_markets(
-    window: _ActiveWindow,
-    *,
-    now: datetime,
-    lead_seconds: float,
-    handoff_seconds: float,
-) -> tuple[MarketWindow, ...]:
-    return tuple(
-        market
-        for market in (window.market, window.lookahead)
-        if market is not None
-        and market.t0 - timedelta(seconds=lead_seconds)
-        <= now
-        < market.t0 + timedelta(seconds=handoff_seconds)
-    )
+    for market in (window.market, window.lookahead):
+        if market is None:
+            continue
+        if (
+            market.t0 - timedelta(seconds=lead_seconds)
+            <= now
+            < market.t0 + timedelta(seconds=handoff_seconds)
+        ):
+            return market
+    return None
 
 
 def _refresh_required_clob_feeds(
@@ -100,17 +86,15 @@ def _refresh_required_clob_feeds(
     lead_seconds: float,
     handoff_seconds: float,
 ) -> MarketWindow | None:
-    markets = _captured_markets(
+    market = _captured_market(
         window,
         now=now,
         lead_seconds=lead_seconds,
         handoff_seconds=handoff_seconds,
     )
-    tokens = tuple(
-        token_id for market in markets for token_id in (market.up_token_id, market.down_token_id)
-    )
+    tokens = () if market is None else (market.up_token_id, market.down_token_id)
     window.collector.configure_required_polymarket_tokens(tokens)
-    return None if not markets else max(markets, key=lambda market: market.t0)
+    return market
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

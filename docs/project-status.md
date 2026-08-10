@@ -9,10 +9,10 @@
 - Added an isolated `independent_maker_1x5s_market_end` control. It reuses the
   same one-signal independent candidate filter as 1x5 FAK, submits passively,
   and expires at market `t1`; 2x5 FAK remains primary.
-- Extended required CLOB evidence through market end plus cancel latency. The
-  current and look-ahead token pairs overlap during the next market's 90-second
-  pre-open window, preventing either a late-order evidence gap or a missed next
-  opening book.
+- Kept the bounded CLOB window at `t0+215s`. The market-end maker control
+  defers its remaining fill assessment until resolution, then persists public
+  seller-initiated trades and consumes the remaining queue under the same 50%
+  volume stress. Missing or ambiguous evidence cannot create a simulated fill.
 
 ## 2026-08-10 Direction health and release identity
 

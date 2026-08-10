@@ -86,6 +86,7 @@ class PaperExecutionVariantConfig:
     maximum_edge_decay: float = 0.0
     enabled: bool = True
     maker_expiry_policy: str = "fixed_duration"
+    maker_fill_evidence_policy: str = "live_stream"
 
     def __post_init__(self) -> None:
         if (
@@ -149,6 +150,12 @@ class PaperExecutionVariantConfig:
             raise ValueError("maker paper variants require maker_work_seconds > 0")
         if self.maker_expiry_policy == "market_end" and self.maker_work_seconds != 0.0:
             raise ValueError("market_end maker variants require maker_work_seconds=0")
+        if self.maker_fill_evidence_policy not in {"live_stream", "settlement_trades"}:
+            raise ValueError("maker fill evidence policy must be live_stream or settlement_trades")
+        if self.maker_fill_evidence_policy == "settlement_trades" and (
+            self.mode != "maker" or self.maker_expiry_policy != "market_end"
+        ):
+            raise ValueError("settlement trade evidence requires a market_end maker variant")
         if not isinstance(self.primary, bool):
             raise ValueError("paper execution primary must be bool")
         if not isinstance(self.enabled, bool):
@@ -284,6 +291,11 @@ def load_btc_project_config(path: Path) -> BtcProjectConfig:
         raise ValueError("paper execution variant IDs must be unique")
     if sum(variant.primary for variant in paper_variants) != 1:
         raise ValueError("exactly one paper execution variant must be primary")
+    if (
+        any(variant.maker_fill_evidence_policy == "settlement_trades" for variant in paper_variants)
+        and maker.structure is not LayerStructure.SINGLE
+    ):
+        raise ValueError("settlement trade evidence currently requires a single maker layer")
     stage_policy = _stage_policy(raw.get("stage_policy"))
     paper_execution_epoch = _simple_ascii_identifier(
         raw.get("paper_execution_epoch"),
@@ -298,30 +310,32 @@ def load_btc_project_config(path: Path) -> BtcProjectConfig:
     _validate_formal_scenario_grid(scenarios)
     required_handoff_seconds = max(
         (
-            primary_family.window_seconds
+            maker.entry_end_seconds
             + (
-                scenario.execution.latency_model.base_latency_ms
-                + scenario.execution.latency_model.cancel_latency_ms
-            )
-            / 1_000.0
-            if variant.maker_expiry_policy == "market_end"
-            else maker.entry_end_seconds
-            + paper_execution_lifecycle_tail_seconds(
-                mode=variant.mode,
-                maker_work_seconds=variant.maker_work_seconds,
-                cancel_latency_ms=(
-                    scenario.execution.latency_model.base_latency_ms
-                    + scenario.execution.latency_model.cancel_latency_ms
-                ),
-                taker_latency_ms=(
+                (
                     scenario.execution.latency_model.base_latency_ms
                     + scenario.execution.latency_model.insert_latency_ms
-                ),
-                taker_server_delay_ms=CLOB_DELAYED_TAKER_SERVER_MS,
+                )
+                / 1_000.0
+                if variant.maker_fill_evidence_policy == "settlement_trades"
+                else paper_execution_lifecycle_tail_seconds(
+                    mode=variant.mode,
+                    maker_work_seconds=variant.maker_work_seconds,
+                    cancel_latency_ms=(
+                        scenario.execution.latency_model.base_latency_ms
+                        + scenario.execution.latency_model.cancel_latency_ms
+                    ),
+                    taker_latency_ms=(
+                        scenario.execution.latency_model.base_latency_ms
+                        + scenario.execution.latency_model.insert_latency_ms
+                    ),
+                    taker_server_delay_ms=CLOB_DELAYED_TAKER_SERVER_MS,
+                )
             )
-        )
-        for scenario in scenarios
-        for variant in paper_variants
+            for scenario in scenarios
+            for variant in paper_variants
+        ),
+        default=maker.entry_end_seconds,
     )
     if collection.opening_handoff_delay_seconds < required_handoff_seconds:
         raise ValueError(
@@ -361,6 +375,7 @@ def _paper_execution_variant(section: Mapping[str, object]) -> PaperExecutionVar
         maximum_edge_decay=_nonnegative_float(section, "maximum_edge_decay"),
         enabled=_bool_default(section, "enabled", True),
         maker_expiry_policy=str(section.get("maker_expiry_policy", "fixed_duration")),
+        maker_fill_evidence_policy=str(section.get("maker_fill_evidence_policy", "live_stream")),
     )
 
 

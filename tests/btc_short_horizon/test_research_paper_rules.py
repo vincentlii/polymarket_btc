@@ -10,6 +10,7 @@ import pytest
 
 from btc_short_horizon.data import BTC_15M_MARKET_FAMILY, MarketOutcome, MarketWindow
 from btc_short_horizon.live.paper_runtime import PublicPaperRulesClient, ResearchPaperRuntime
+from btc_short_horizon.live.settlement_trades import SettlementTradeEvidence
 
 
 T0 = datetime(2026, 7, 27, tzinfo=UTC)
@@ -247,6 +248,10 @@ async def test_resolution_poll_includes_activated_market_without_an_opportunity(
         def unresolved_market_slugs(self) -> tuple[str, ...]:
             return (market.slug,)
 
+        def requires_settlement_trade_evidence(self, market_slug: str) -> bool:
+            assert market_slug == market.slug
+            return False
+
         def settle(
             self,
             *,
@@ -276,6 +281,75 @@ async def test_resolution_poll_includes_activated_market_without_an_opportunity(
             int(resolved.label_available_ts.timestamp() * 1_000_000_000),
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_resolution_fetches_and_applies_deferred_maker_evidence_before_pnl() -> None:
+    market = _market()
+    resolved = replace(
+        market,
+        resolution=MarketOutcome.UP,
+        label_available_ts=market.t1 + timedelta(seconds=10),
+    )
+    calls: list[str] = []
+    evidence = SettlementTradeEvidence(
+        market_slug=market.slug,
+        condition_id=market.condition_id,
+        start_seconds=int(market.t0.timestamp()) + 216,
+        end_seconds=int(market.t1.timestamp()),
+        fetched_at=market.t1 + timedelta(seconds=11),
+        trades=(),
+    )
+
+    class Engine:
+        def unresolved_market_slugs(self) -> tuple[str, ...]:
+            return (market.slug,)
+
+        def requires_settlement_trade_evidence(self, market_slug: str) -> bool:
+            return market_slug == market.slug
+
+        def deferred_fill_start_ns(self, market_slug: str) -> int:
+            assert market_slug == market.slug
+            return int((market.t0 + timedelta(seconds=215)).timestamp() * 1_000_000_000)
+
+        def apply_settlement_trade_evidence(self, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            assert kwargs["trades"] == ()
+            calls.append("apply")
+
+        def settle(self, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            assert kwargs["market_slug"] == market.slug
+            calls.append("settle")
+
+    class Gamma:
+        async def discover_catalog(self, **kwargs):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(windows=lambda: (resolved,))
+
+    class TradesClient:
+        async def fetch(self, selected_market, **kwargs):  # type: ignore[no-untyped-def]
+            assert selected_market.slug == market.slug
+            assert kwargs == {
+                "start_seconds": int(market.t0.timestamp()) + 216,
+                "end_seconds": int(market.t1.timestamp()),
+            }
+            calls.append("fetch")
+            return evidence
+
+    class Store:
+        def write(self, selected_evidence) -> None:  # type: ignore[no-untyped-def]
+            assert selected_evidence is evidence
+            calls.append("persist")
+
+    runtime = object.__new__(ResearchPaperRuntime)
+    runtime.engine = Engine()  # type: ignore[assignment]
+    runtime.gamma_client = Gamma()  # type: ignore[assignment]
+    runtime.settlement_trades_client = TradesClient()  # type: ignore[assignment]
+    runtime.settlement_trade_store = Store()  # type: ignore[assignment]
+    runtime.project = SimpleNamespace(primary_family=BTC_15M_MARKET_FAMILY)
+    runtime.rule_epoch = market.rule_epoch
+
+    await runtime._settle_resolved_markets()
+
+    assert calls == ["fetch", "persist", "apply", "settle"]
 
 
 def test_running_projection_is_published_at_five_second_cadence() -> None:

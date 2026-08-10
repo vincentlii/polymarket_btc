@@ -42,6 +42,7 @@ from btc_short_horizon.live.paper_execution import (
     PaperMarketRules,
     PaperPlacement,
 )
+from btc_short_horizon.live.settlement_trades import SettlementTrade
 from btc_short_horizon.models import OpeningMispricingPrediction
 from btc_short_horizon.research.binance_history import BinanceKlineHistory
 from btc_short_horizon.research.opening_evidence import OpeningMarketObservation
@@ -226,6 +227,9 @@ class PaperTradeRecord:
     settled_at_ns: int | None = None
     realized_pnl: float | None = None
     execution_evidence_valid: bool = True
+    maker_limit_price: float | None = None
+    deferred_fill_start_ns: int | None = None
+    deferred_fill_assessed_at_ns: int | None = None
 
     @property
     def entry_price(self) -> float | None:
@@ -280,6 +284,9 @@ class PaperTradeRecord:
             "settled_at_ns": self.settled_at_ns,
             "realized_pnl": self.realized_pnl,
             "execution_evidence_valid": self.execution_evidence_valid,
+            "maker_limit_price": self.maker_limit_price,
+            "deferred_fill_start_ns": self.deferred_fill_start_ns,
+            "deferred_fill_assessed_at_ns": self.deferred_fill_assessed_at_ns,
         }
 
     @classmethod
@@ -363,6 +370,14 @@ class PaperTradeRecord:
             execution_evidence_valid=_boolean(
                 raw.get("execution_evidence_valid"),
                 "execution_evidence_valid",
+            ),
+            maker_limit_price=_optional_number(raw.get("maker_limit_price"), "maker_limit_price"),
+            deferred_fill_start_ns=_optional_integer(
+                raw.get("deferred_fill_start_ns"), "deferred_fill_start_ns"
+            ),
+            deferred_fill_assessed_at_ns=_optional_integer(
+                raw.get("deferred_fill_assessed_at_ns"),
+                "deferred_fill_assessed_at_ns",
             ),
         )
 
@@ -678,6 +693,7 @@ class ResearchPaperEngine:
         starting_balance: float,
         kline_history: BinanceKlineHistory | None = None,
         stage_policy: StagePolicyConfig | None = None,
+        clob_capture_end_seconds: float = 215.0,
     ) -> None:
         if not callable(predictor) or not model_id:
             raise ValueError("predictor and model_id are required")
@@ -690,6 +706,9 @@ class ResearchPaperEngine:
         self.ledger_store = ledger_store
         self.kline_history = kline_history
         self.stage_policy = stage_policy or StagePolicyConfig.default()
+        if not isfinite(clob_capture_end_seconds) or clob_capture_end_seconds <= 0.0:
+            raise ValueError("clob_capture_end_seconds must be finite and > 0")
+        self.clob_capture_end_seconds = clob_capture_end_seconds
         restored = ledger_store.read()
         if restored is not None and abs(restored.starting_balance - starting_balance) > 1e-9:
             raise ValueError("configured Paper starting balance differs from persisted ledger")
@@ -943,6 +962,14 @@ class ResearchPaperEngine:
             return "tick_changed"
         if self.market is None:
             return "book_stale_connection_unobserved"
+        capture_end_ns = int(self.market.t0.timestamp() * 1_000_000_000) + round(
+            self.clob_capture_end_seconds * 1_000_000_000
+        )
+        if (
+            self.variant.maker_fill_evidence_policy == "settlement_trades"
+            and now_ts_ns >= capture_end_ns
+        ):
+            return None
         stale_after_ns = round(self.maker_config.stale_after_seconds * 1_000_000_000)
         for token_id in (self.market.up_token_id, self.market.down_token_id):
             metadata = self._last_books.get(token_id)
@@ -1223,6 +1250,17 @@ class ResearchPaperEngine:
             fak_total_latency_ms=placement.fak_total_latency_ms,
             initial_queue_ahead=sum(layer.initial_queue_ahead for layer in placement.layers),
             remaining_queue_ahead=sum(layer.queue_ahead for layer in placement.layers),
+            maker_limit_price=(
+                placement.layers[0].price
+                if self.variant.maker_fill_evidence_policy == "settlement_trades"
+                else None
+            ),
+            deferred_fill_start_ns=(
+                int(self.market.t0.timestamp() * 1_000_000_000)
+                + round(self.clob_capture_end_seconds * 1_000_000_000)
+                if self.variant.maker_fill_evidence_policy == "settlement_trades"
+                else None
+            ),
         )
         self.records.append(self._active_record)
         self._persist()
@@ -1323,6 +1361,81 @@ class ResearchPaperEngine:
             record.outcome = outcome.value
             record.settled_at_ns = label_available_ts_ns
             record.settlement_status = "void" if outcome is MarketOutcome.VOID else "resolved"
+            changed = True
+        if changed:
+            self._persist()
+
+    def requires_settlement_trade_evidence(self, market_slug: str) -> bool:
+        if self.variant.maker_fill_evidence_policy != "settlement_trades":
+            return False
+        return any(
+            record.market_slug == market_slug
+            and record.deferred_fill_assessed_at_ns is None
+            and record.maker_limit_price is not None
+            and record.execution_evidence_valid
+            and record.terminal_reason == "max_work_age"
+            and record.filled_shares < record.shares - 1e-12
+            for record in self.records
+        )
+
+    def apply_settlement_trade_evidence(
+        self,
+        *,
+        market_slug: str,
+        trades: tuple[SettlementTrade, ...],
+        assessed_at_ns: int,
+    ) -> None:
+        changed = False
+        for record in self.records:
+            if (
+                record.market_slug != market_slug
+                or record.deferred_fill_assessed_at_ns is not None
+                or record.maker_limit_price is None
+                or not record.execution_evidence_valid
+                or record.terminal_reason != "max_work_age"
+                or record.filled_shares >= record.shares - 1e-12
+            ):
+                continue
+            if record.deferred_fill_start_ns is None:
+                raise ValueError("deferred maker record has no evidence boundary")
+            queue_ahead = record.remaining_queue_ahead
+            remaining = record.shares - record.filled_shares
+            limit_price = record.maker_limit_price
+            for trade in trades:
+                trade_ns = trade.timestamp_seconds * 1_000_000_000
+                if (
+                    trade.token_id != record.token_id
+                    or trade_ns < record.deferred_fill_start_ns
+                    or trade.price > limit_price + 1e-12
+                ):
+                    continue
+                record.raw_eligible_sell_volume += trade.size
+                stressed = trade.size * self.simulator.config.trade_volume_multiplier
+                record.stressed_eligible_sell_volume += stressed
+                queue_consumed = min(queue_ahead, stressed)
+                queue_ahead -= queue_consumed
+                fill = min(remaining, stressed - queue_consumed)
+                if fill <= 0.0:
+                    continue
+                record.filled_shares += fill
+                record.maker_filled_shares += fill
+                notional = fill * limit_price
+                record.filled_notional += notional
+                record.maker_filled_notional += notional
+                remaining -= fill
+                record.terminal_at_ns = trade_ns
+                if remaining <= 1e-12:
+                    break
+            record.remaining_queue_ahead = queue_ahead
+            record.deferred_fill_assessed_at_ns = assessed_at_ns
+            record.execution_status = (
+                "filled"
+                if record.filled_shares >= record.shares - 1e-12
+                else "partially_filled"
+                if record.filled_shares > 0.0
+                else "canceled"
+            )
+            record.terminal_reason = "settlement_trade_evidence_assessed"
             changed = True
         if changed:
             self._persist()
@@ -2051,6 +2164,36 @@ class ResearchPaperPortfolio:
         )
         self.evaluation_store.checkpoint()
         self.direction_store.checkpoint()
+
+    def requires_settlement_trade_evidence(self, market_slug: str) -> bool:
+        return any(
+            engine.requires_settlement_trade_evidence(market_slug) for engine in self.engines
+        )
+
+    def deferred_fill_start_ns(self, market_slug: str) -> int | None:
+        boundaries = {
+            record.deferred_fill_start_ns
+            for engine in self.engines
+            for record in engine.records
+            if record.market_slug == market_slug
+            and engine.requires_settlement_trade_evidence(market_slug)
+            and record.deferred_fill_start_ns is not None
+        }
+        return None if not boundaries else min(boundaries)
+
+    def apply_settlement_trade_evidence(
+        self,
+        *,
+        market_slug: str,
+        trades: tuple[SettlementTrade, ...],
+        assessed_at_ns: int,
+    ) -> None:
+        for engine in self.engines:
+            engine.apply_settlement_trade_evidence(
+                market_slug=market_slug,
+                trades=trades,
+                assessed_at_ns=assessed_at_ns,
+            )
 
     def unresolved_market_slugs(self) -> tuple[str, ...]:
         return self.direction_store.unresolved_market_slugs()

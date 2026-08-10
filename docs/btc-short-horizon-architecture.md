@@ -88,14 +88,11 @@ full `book` before the first decision. Polymarket CLOB collection ends at
 remain continuously connected between these bounded CLOB windows, preserving
 the model lookback while removing the dominant raw-storage source.
 `opening_handoff_delay_seconds` defines the end of each market's CLOB capture
-relative to its own `t0`. The market-end maker control raises the baseline to
-`t0+901s`, covering the full market plus the configured cancel latency. During
-the final 90 seconds, the current pair and next pair are captured together so
-the resting order retains evidence without losing the next market's pre-open
-book. The shared public-feed task stays alive across market boundaries; each
-newly discovered token pair is added to a bounded CLOB window manager, while
-the durable collector session rotates after the current CLOB handoff without
-closing Binance or Chainlink sockets. CLI overrides are
+relative to its own `t0`; the baseline remains `t0+215s`. The shared public-feed
+task stays alive across market boundaries; each newly discovered token pair is
+added to a bounded CLOB window manager, while the durable collector session
+rotates after the current CLOB handoff without closing Binance or Chainlink
+sockets. CLI overrides are
 available for a deliberately bounded operator run; do not lower these defaults
 without measuring resulting evidence coverage.
 
@@ -688,6 +685,19 @@ to a passive post-only plan. Its expiry is the market's immutable `t1`, not a
 fixed number of seconds after placement. Safety cancellation remains active;
 `market_end` changes time-in-force only. The 2x5 FAK variant remains primary,
 so this control has an isolated ledger and cannot change the main equity curve.
+
+This control does not expand durable CLOB capture through all 15 minutes. Live
+trade evidence updates its queue only through `t0+215s`. Once Gamma reports the
+market resolved, Paper fetches public seller-initiated trades for the remaining
+interval from the Polymarket Data API, stores the immutable response projection,
+and applies the same 50% volume stress against the remaining queue. The query
+starts one whole second after the live cutoff because public timestamps are only
+second-granular; this deliberately loses ambiguous boundary trades. Missing,
+malformed, over-limit, or mismatched evidence leaves settlement pending and
+Paper unhealthy. It never converts missing evidence into an assumed fill. The
+source contract is Polymarket's public
+[`GET /trades`](https://docs.polymarket.com/api-reference/core/get-trades-for-a-user-or-markets)
+Data API filtered by condition, `SELL` side, and the bounded time interval.
 
 Its matching is deliberately pessimistic and explicitly heuristic: P99
 insert/cancel latency, the full visible same-side L2 queue ahead, and only 50%
