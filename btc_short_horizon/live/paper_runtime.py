@@ -237,6 +237,7 @@ def build_research_paper_portfolio(
                     max_work_seconds=(
                         variant.maker_work_seconds
                         if variant.mode == "maker"
+                        and variant.maker_expiry_policy == "fixed_duration"
                         else project.maker.max_work_seconds
                     ),
                 ),

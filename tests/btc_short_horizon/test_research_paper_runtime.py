@@ -5,19 +5,23 @@ from collections import defaultdict, deque
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
 import numpy as np
 import pytest
 
-from btc_short_horizon.config import PaperExecutionVariantConfig
+from btc_short_horizon.config import PaperExecutionVariantConfig, load_btc_project_config
 from btc_short_horizon.data import BTC_15M_MARKET_FAMILY, MarketOutcome, MarketWindow
 from btc_short_horizon.data.collector import RawCollectorEvent
 from btc_short_horizon.data.contracts import TimedMarketEvent
 from btc_short_horizon.data.forward import AdmittedEventBuffer
 from btc_short_horizon.live.paper_execution import PaperExecutionConfig, PaperMarketRules
-from btc_short_horizon.live.paper_runtime import ResearchPaperRuntime
+from btc_short_horizon.live.paper_runtime import (
+    ResearchPaperRuntime,
+    build_research_paper_portfolio,
+)
 from btc_short_horizon.live.paper_replay import (
     build_replay_binance_history,
     replay_research_paper,
@@ -878,6 +882,30 @@ def test_independent_maker_reuses_1x5_filter_and_works_until_market_end(tmp_path
     assert record.maker_filled_shares == 5.0
     assert record.execution_status == "filled"
     assert not maker.requires_settlement_trade_evidence(market.slug)
+
+
+def test_baseline_portfolio_builds_market_end_maker_without_zero_work_age(tmp_path) -> None:
+    project = load_btc_project_config(Path("configs/btc_short_horizon/baseline.toml"))
+
+    class Predictor:
+        model_id = "proxy-model"
+
+        def __call__(self, market, history, observation):  # type: ignore[no-untyped-def]
+            return _prediction(observation)
+
+    portfolio = build_research_paper_portfolio(
+        project=project,
+        predictor=Predictor(),  # type: ignore[arg-type]
+        runtime_root=tmp_path,
+        starting_balance=1_000.0,
+    )
+    maker = next(
+        engine
+        for engine in portfolio.engines
+        if engine.variant.variant_id == "independent_maker_1x5s_market_end"
+    )
+
+    assert maker.maker_config.max_work_seconds == project.maker.max_work_seconds
 
 
 def test_public_settlement_trade_client_validates_deduplicates_and_persists(tmp_path) -> None:
