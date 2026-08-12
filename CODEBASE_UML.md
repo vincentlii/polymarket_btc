@@ -1,8 +1,8 @@
 # Codebase UML Inventory
 
 This file is generated from Python AST metadata and excludes `tests/` plus git-ignored private strategy/research directories.
-Generated: 2026-08-12T14:04:56+00:00
-Modules: 242 | Classes: 504 | Functions/methods: 3384
+Generated: 2026-08-12T16:23:57+00:00
+Modules: 242 | Classes: 504 | Functions/methods: 3388
 
 ## Backtesting Data Flow
 
@@ -834,37 +834,37 @@ flowchart TD
 
 ### `btc_short_horizon/live/dashboard.py`
 - Imports: `__future__, base64, binascii, btc_short_horizon, collections, dataclasses, datetime, http, json, math, os, pathlib, urllib`
-- Function L61: `build_dashboard_payload(config: DashboardConfig, *, now: datetime | None = None) -> dict[str, object]`
-- Function L130: `build_order_history_payload(config: DashboardConfig, *, limit: int = _ORDER_HISTORY_DEFAULT_LIMIT, cursor: str | None = None, variant: str | None = None, epoch: str | None = None) -> dict[str, object]`
-- Function L188: `_read_order_history(runtime_root: Path) -> tuple[list[tuple[tuple[int, str, str, str], dict[str, object]]], list[str], list[str]]`
-- Function L273: `_paper_ledger_paths(runtime_root: Path) -> list[Path]`
-- Function L308: `_project_order_record(raw: object, *, schema_version: int, variant_id: str, execution_epoch: str) -> tuple[tuple[int, str, str, str], dict[str, object]]`
-- Function L430: `_encode_order_cursor(key: tuple[int, str, str, str]) -> str`
-- Function L435: `_decode_order_cursor(value: str) -> tuple[int, str, str, str]`
-- Function L455: `_history_query(raw_query: str) -> tuple[int, str | None, str | None, str | None]`
-- Function L476: `_validate_variant_id(value: str) -> None`
-- Function L480: `_request_variant_id(value: object) -> str`
-- Function L487: `_data_variant_id(value: object) -> str`
-- Function L501: `_data_text(value: object, *, maximum: int) -> str`
-- Function L507: `_data_optional_text(value: object, *, maximum: int) -> str | None`
-- Function L513: `_data_integer(value: object, *, minimum: int) -> int`
-- Function L519: `_data_optional_integer(value: object, *, minimum: int) -> int | None`
-- Function L525: `_data_number(value: object, *, minimum: float | None = None, maximum: float | None = None) -> float`
-- Function L543: `_data_optional_number(value: object) -> float | None`
-- Function L549: `_data_boolean(value: object) -> bool`
-- Function L555: `_project_signal_observation(raw: object) -> dict[str, object]`
-- Function L584: `_request_integer(value: object, label: str) -> int`
-- Function L591: `_reject_nonfinite_json(_value: str) -> None`
-- Function L595: `_snapshot_health(snapshot: BotDashboardSnapshot | None, *, now: datetime, max_age_seconds: float) -> dict[str, object]`
-- Function L616: `_shadow_projection(status: RuntimeStatus | None, errors: list[str]) -> dict[str, object] | None`
-- Function L634: `create_dashboard_server(config: DashboardConfig, *, host: str, port: int, now: Callable[[], datetime] = lambda: datetime.now(UTC)) -> ThreadingHTTPServer`
-- Function L728: `serve_dashboard(config: DashboardConfig, *, host: str, port: int) -> None`
-- Function L735: `_status_payload(status: RuntimeStatus, now: datetime, max_age_seconds: float) -> dict[str, object]`
-- Function L755: `_status_max_age_seconds(status: RuntimeStatus | None, *, config: DashboardConfig) -> float`
+- Function L68: `build_dashboard_payload(config: DashboardConfig, *, now: datetime | None = None) -> dict[str, object]`
+- Function L154: `build_order_history_payload(config: DashboardConfig, *, limit: int = _ORDER_HISTORY_DEFAULT_LIMIT, cursor: str | None = None, variant: str | None = None, epoch: str | None = None) -> dict[str, object]`
+- Function L212: `_read_order_history(runtime_root: Path) -> tuple[list[tuple[tuple[int, str, str, str], dict[str, object]]], list[str], list[str]]`
+- Function L297: `_paper_ledger_paths(runtime_root: Path) -> list[Path]`
+- Function L332: `_project_order_record(raw: object, *, schema_version: int, variant_id: str, execution_epoch: str) -> tuple[tuple[int, str, str, str], dict[str, object]]`
+- Function L454: `_encode_order_cursor(key: tuple[int, str, str, str]) -> str`
+- Function L459: `_decode_order_cursor(value: str) -> tuple[int, str, str, str]`
+- Function L479: `_history_query(raw_query: str) -> tuple[int, str | None, str | None, str | None]`
+- Function L500: `_validate_variant_id(value: str) -> None`
+- Function L504: `_request_variant_id(value: object) -> str`
+- Function L511: `_data_variant_id(value: object) -> str`
+- Function L525: `_data_text(value: object, *, maximum: int) -> str`
+- Function L531: `_data_optional_text(value: object, *, maximum: int) -> str | None`
+- Function L537: `_data_integer(value: object, *, minimum: int) -> int`
+- Function L543: `_data_optional_integer(value: object, *, minimum: int) -> int | None`
+- Function L549: `_data_number(value: object, *, minimum: float | None = None, maximum: float | None = None) -> float`
+- Function L567: `_data_optional_number(value: object) -> float | None`
+- Function L573: `_data_boolean(value: object) -> bool`
+- Function L579: `_project_signal_observation(raw: object) -> dict[str, object]`
+- Function L608: `_request_integer(value: object, label: str) -> int`
+- Function L615: `_reject_nonfinite_json(_value: str) -> None`
+- Function L619: `_snapshot_health(snapshot: BotDashboardSnapshot | None, *, now: datetime, max_age_seconds: float) -> dict[str, object]`
+- Function L640: `_shadow_projection(status: RuntimeStatus | None, errors: list[str]) -> dict[str, object] | None`
+- Function L658: `create_dashboard_server(config: DashboardConfig, *, host: str, port: int, now: Callable[[], datetime] = lambda: datetime.now(UTC)) -> ThreadingHTTPServer`
+- Function L752: `serve_dashboard(config: DashboardConfig, *, host: str, port: int) -> None`
+- Function L759: `_status_payload(status: RuntimeStatus, now: datetime, max_age_seconds: float) -> dict[str, object]`
+- Function L779: `_status_max_age_seconds(status: RuntimeStatus | None, *, config: DashboardConfig) -> float`
 - Class L34: `_OrderHistoryDataError(ValueError)`
 - Class L38: `_OrderHistoryRequestError(ValueError)`
 - Class L43: `DashboardConfig`
-  - Method L49: `__post_init__(self) -> None`
+  - Method L50: `__post_init__(self) -> None`
 
 ### `btc_short_horizon/live/dashboard_page.py`
 - Imports: `__future__`
@@ -872,86 +872,86 @@ flowchart TD
 
 ### `btc_short_horizon/live/dashboard_state.py`
 - Imports: `__future__, collections, dataclasses, datetime, enum, json, math, os, pathlib, uuid`
-- Function L1144: `_mapping(value: object, name: str) -> Mapping[str, object]`
-- Function L1150: `_sequence(value: object, name: str) -> Sequence[object]`
-- Function L1156: `_require_identifier(value: object, name: str) -> None`
-- Function L1162: `_require_text(value: object, name: str) -> None`
-- Function L1166: `_text(value: object, name: str) -> str`
-- Function L1172: `_optional_text(value: object, name: str) -> str | None`
-- Function L1176: `_optional_bool(value: object, name: str) -> bool | None`
-- Function L1184: `_finite(value: float, name: str) -> None`
-- Function L1189: `_float(value: object, name: str) -> float`
-- Function L1195: `_optional_float(value: object, name: str) -> float | None`
-- Function L1199: `_nonnegative(value: float, name: str) -> None`
-- Function L1205: `_optional_finite(value: float | None, name: str) -> None`
-- Function L1210: `_optional_probability(value: float | None, name: str) -> None`
-- Function L1217: `_optional_nonnegative(value: float | None, name: str) -> None`
-- Function L1222: `_integer(value: object, name: str) -> int`
-- Function L1228: `_optional_integer(value: object, name: str) -> int | None`
-- Function L1232: `_as_utc(value: datetime, name: str) -> datetime`
-- Function L1238: `_timestamp(value: object, name: str) -> datetime`
-- Function L1248: `_optional_timestamp(value: object, name: str) -> datetime | None`
-- Function L1252: `_optional_iso(value: datetime | None) -> str | None`
+- Function L1148: `_mapping(value: object, name: str) -> Mapping[str, object]`
+- Function L1154: `_sequence(value: object, name: str) -> Sequence[object]`
+- Function L1160: `_require_identifier(value: object, name: str) -> None`
+- Function L1166: `_require_text(value: object, name: str) -> None`
+- Function L1170: `_text(value: object, name: str) -> str`
+- Function L1176: `_optional_text(value: object, name: str) -> str | None`
+- Function L1180: `_optional_bool(value: object, name: str) -> bool | None`
+- Function L1188: `_finite(value: float, name: str) -> None`
+- Function L1193: `_float(value: object, name: str) -> float`
+- Function L1199: `_optional_float(value: object, name: str) -> float | None`
+- Function L1203: `_nonnegative(value: float, name: str) -> None`
+- Function L1209: `_optional_finite(value: float | None, name: str) -> None`
+- Function L1214: `_optional_probability(value: float | None, name: str) -> None`
+- Function L1221: `_optional_nonnegative(value: float | None, name: str) -> None`
+- Function L1226: `_integer(value: object, name: str) -> int`
+- Function L1232: `_optional_integer(value: object, name: str) -> int | None`
+- Function L1236: `_as_utc(value: datetime, name: str) -> datetime`
+- Function L1242: `_timestamp(value: object, name: str) -> datetime`
+- Function L1252: `_optional_timestamp(value: object, name: str) -> datetime | None`
+- Function L1256: `_optional_iso(value: datetime | None) -> str | None`
 - Class L19: `HealthState(StrEnum)`
 - Class L26: `StrategyStage(StrEnum)`
-- Class L34: `GateState(StrEnum)`
-- Class L43: `HealthIndicator`
-  - Method L51: `__post_init__(self) -> None`
-  - Method L60: `to_json(self) -> dict[str, object]`
-  - Method L71: `from_json(cls, raw: object) -> HealthIndicator`
-- Class L84: `EquityPoint`
-  - Method L88: `__post_init__(self) -> None`
-  - Method L94: `to_json(self) -> dict[str, object]`
-  - Method L98: `from_json(cls, raw: object) -> EquityPoint`
-- Class L107: `OrderPerformance`
-  - Method L135: `__post_init__(self) -> None`
-  - Method L176: `to_json(self) -> dict[str, object]`
-  - Method L207: `from_json(cls, raw: object) -> OrderPerformance`
-- Class L244: `ExecutionSegmentPerformance`
-  - Method L253: `__post_init__(self) -> None`
-  - Method L263: `to_json(self) -> dict[str, object]`
-  - Method L275: `from_json(cls, raw: object) -> ExecutionSegmentPerformance`
-- Class L291: `DirectionStageSummary`
-  - Method L302: `__post_init__(self) -> None`
-  - Method L322: `to_json(self) -> dict[str, object]`
-  - Method L326: `from_json(cls, raw: object) -> DirectionStageSummary`
-- Class L344: `DirectionHealthSnapshot`
-  - Method L360: `__post_init__(self) -> None`
-  - Method L393: `to_json(self) -> dict[str, object]`
-  - Method L412: `from_json(cls, raw: object) -> DirectionHealthSnapshot`
-- Class L442: `DirectionExecutionPerformance`
-  - Method L454: `__post_init__(self) -> None`
-  - Method L476: `to_json(self) -> dict[str, object]`
-  - Method L480: `from_json(cls, raw: object) -> DirectionExecutionPerformance`
-- Class L505: `ExecutionVariantPerformance`
-  - Method L536: `__post_init__(self) -> None`
-  - Method L601: `fill_rate(self) -> float | None`
-  - Method L604: `to_json(self) -> dict[str, object]`
-  - Method L639: `from_json(cls, raw: object) -> ExecutionVariantPerformance`
-- Class L721: `DecisionFunnelSnapshot`
-  - Method L736: `__post_init__(self) -> None`
-  - Method L768: `to_json(self) -> dict[str, object]`
-  - Method L772: `from_json(cls, raw: object) -> DecisionFunnelSnapshot`
-- Class L797: `PerformanceSnapshot`
-  - Method L818: `__post_init__(self) -> None`
-  - Method L858: `to_json(self) -> dict[str, object]`
-  - Method L886: `from_json(cls, raw: object) -> PerformanceSnapshot`
-- Class L933: `StrategyCycle`
-  - Method L949: `__post_init__(self) -> None`
-  - Method L981: `to_json(self) -> dict[str, object]`
-  - Method L1000: `from_json(cls, raw: object) -> StrategyCycle`
-- Class L1029: `DashboardAlert`
-  - Method L1034: `__post_init__(self) -> None`
-  - Method L1042: `to_json(self) -> dict[str, object]`
-  - Method L1050: `from_json(cls, raw: object) -> DashboardAlert`
-- Class L1060: `BotDashboardSnapshot`
-  - Method L1068: `__post_init__(self) -> None`
-  - Method L1077: `to_json(self) -> dict[str, object]`
-  - Method L1089: `from_json(cls, raw: object) -> BotDashboardSnapshot`
-- Class L1112: `DashboardSnapshotStore`
-  - Method L1115: `__init__(self, runtime_root: Path) -> None`
-  - Method L1118: `write(self, snapshot: BotDashboardSnapshot) -> Path`
-  - Method L1134: `read(self) -> BotDashboardSnapshot | None`
+- Class L35: `GateState(StrEnum)`
+- Class L44: `HealthIndicator`
+  - Method L52: `__post_init__(self) -> None`
+  - Method L61: `to_json(self) -> dict[str, object]`
+  - Method L72: `from_json(cls, raw: object) -> HealthIndicator`
+- Class L85: `EquityPoint`
+  - Method L89: `__post_init__(self) -> None`
+  - Method L95: `to_json(self) -> dict[str, object]`
+  - Method L99: `from_json(cls, raw: object) -> EquityPoint`
+- Class L108: `OrderPerformance`
+  - Method L137: `__post_init__(self) -> None`
+  - Method L178: `to_json(self) -> dict[str, object]`
+  - Method L210: `from_json(cls, raw: object) -> OrderPerformance`
+- Class L248: `ExecutionSegmentPerformance`
+  - Method L257: `__post_init__(self) -> None`
+  - Method L267: `to_json(self) -> dict[str, object]`
+  - Method L279: `from_json(cls, raw: object) -> ExecutionSegmentPerformance`
+- Class L295: `DirectionStageSummary`
+  - Method L306: `__post_init__(self) -> None`
+  - Method L326: `to_json(self) -> dict[str, object]`
+  - Method L330: `from_json(cls, raw: object) -> DirectionStageSummary`
+- Class L348: `DirectionHealthSnapshot`
+  - Method L364: `__post_init__(self) -> None`
+  - Method L397: `to_json(self) -> dict[str, object]`
+  - Method L416: `from_json(cls, raw: object) -> DirectionHealthSnapshot`
+- Class L446: `DirectionExecutionPerformance`
+  - Method L458: `__post_init__(self) -> None`
+  - Method L480: `to_json(self) -> dict[str, object]`
+  - Method L484: `from_json(cls, raw: object) -> DirectionExecutionPerformance`
+- Class L509: `ExecutionVariantPerformance`
+  - Method L540: `__post_init__(self) -> None`
+  - Method L605: `fill_rate(self) -> float | None`
+  - Method L608: `to_json(self) -> dict[str, object]`
+  - Method L643: `from_json(cls, raw: object) -> ExecutionVariantPerformance`
+- Class L725: `DecisionFunnelSnapshot`
+  - Method L740: `__post_init__(self) -> None`
+  - Method L772: `to_json(self) -> dict[str, object]`
+  - Method L776: `from_json(cls, raw: object) -> DecisionFunnelSnapshot`
+- Class L801: `PerformanceSnapshot`
+  - Method L822: `__post_init__(self) -> None`
+  - Method L862: `to_json(self) -> dict[str, object]`
+  - Method L890: `from_json(cls, raw: object) -> PerformanceSnapshot`
+- Class L937: `StrategyCycle`
+  - Method L953: `__post_init__(self) -> None`
+  - Method L985: `to_json(self) -> dict[str, object]`
+  - Method L1004: `from_json(cls, raw: object) -> StrategyCycle`
+- Class L1033: `DashboardAlert`
+  - Method L1038: `__post_init__(self) -> None`
+  - Method L1046: `to_json(self) -> dict[str, object]`
+  - Method L1054: `from_json(cls, raw: object) -> DashboardAlert`
+- Class L1064: `BotDashboardSnapshot`
+  - Method L1072: `__post_init__(self) -> None`
+  - Method L1081: `to_json(self) -> dict[str, object]`
+  - Method L1093: `from_json(cls, raw: object) -> BotDashboardSnapshot`
+- Class L1116: `DashboardSnapshotStore`
+  - Method L1119: `__init__(self, runtime_root: Path) -> None`
+  - Method L1122: `write(self, snapshot: BotDashboardSnapshot) -> Path`
+  - Method L1138: `read(self) -> BotDashboardSnapshot | None`
 
 ### `btc_short_horizon/live/deployment.py`
 - Imports: `__future__, collections, dataclasses, datetime, hashlib, json, math, os, pathlib, re, shutil, time, typing, uuid`
@@ -1245,12 +1245,12 @@ flowchart TD
 
 ### `btc_short_horizon/live/paper_runtime.py`
 - Imports: `__future__, asyncio, btc_short_horizon, collections, dataclasses, datetime, httpx, math, numpy, pathlib, queue`
-- Function L278: `build_research_paper_portfolio(*, project: BtcProjectConfig, predictor: ModelPaperPredictor, runtime_root: Path, starting_balance: float, stage_policy: StagePolicyConfig | None = None) -> ResearchPaperPortfolio`
-- Function L735: `_positive_number(value: object, name: str) -> float`
-- Function L745: `_closed_binance_kline_open_ms(event: RawCollectorEvent) -> int | None`
-- Function L765: `_nonnegative_number(value: object, name: str) -> float`
-- Function L775: `_nonnegative_integer(value: object, name: str) -> int`
-- Function L785: `_decimal_text(value: object, name: str) -> str`
+- Function L291: `build_research_paper_portfolio(*, project: BtcProjectConfig, predictor: ModelPaperPredictor, runtime_root: Path, starting_balance: float, stage_policy: StagePolicyConfig | None = None) -> ResearchPaperPortfolio`
+- Function L767: `_positive_number(value: object, name: str) -> float`
+- Function L777: `_closed_binance_kline_open_ms(event: RawCollectorEvent) -> int | None`
+- Function L797: `_nonnegative_number(value: object, name: str) -> float`
+- Function L807: `_nonnegative_integer(value: object, name: str) -> int`
+- Function L817: `_decimal_text(value: object, name: str) -> str`
 - Class L65: `PublicPaperRulesClient`
   - Method L68: `__init__(self, *, base_url: str = _CLOB_HOST, timeout_seconds: float = 10.0, enabled_taker_delay_ms: float = CLOB_DELAYED_TAKER_SERVER_MS, taker_delay_policy_id: str = 'clob-itode-250ms-v1') -> None`
   - Method L89: `async fetch(self, market: MarketWindow, *, client: httpx.AsyncClient | None = None) -> dict[str, PaperMarketRules]`
@@ -1262,25 +1262,26 @@ flowchart TD
   - Method L238: `model_id(self) -> str`
   - Method L242: `stage_model_ids(self) -> dict[str, str]`
   - Method L248: `market_relative_model_id(self) -> str | None`
-  - Method L251: `__call__(self, market, history, observation) -> Any`
-- Class L327: `ResearchPaperRuntime`
-  - Method L330: `__init__(self, *, project: BtcProjectConfig, model_directory: Path, market_relative_model_directory: Path | None = None, runtime_root: Path, rule_epoch: str, event_buffer: AdmittedEventBuffer, starting_balance: float = 1000.0, rules_client: PublicPaperRulesClient | None = None, gamma_client: GammaMarketClient | None = None, settlement_trades_client: PublicSettlementTradesClient | None = None) -> None`
-  - Method L393: `model_id(self) -> str`
-  - Method L396: `register_markets(self, market: MarketWindow, lookahead: MarketWindow | None) -> None`
-  - Method L418: `async run(self, *, stop_event: asyncio.Event) -> None`
-  - Method L451: `close(self) -> None`
-  - Method L457: `_checkpoint_evaluations(self) -> None`
-  - Method L462: `async _bootstrap_history(self, *, stop_event: asyncio.Event) -> bool`
-  - Method L499: `async _fetch_rules(self, market: MarketWindow) -> None`
-  - Method L509: `_schedule_rule_fetch(self, market: MarketWindow, *, now: datetime) -> None`
-  - Method L524: `_drain_events(self) -> None`
-  - Method L532: `_consume_event(self, event: RawCollectorEvent) -> None`
-  - Method L536: `_activate_current_market(self, now: datetime) -> None`
-  - Method L584: `_run_due_decision(self, now: datetime) -> None`
-  - Method L624: `async _settle_resolved_markets(self) -> None`
-  - Method L658: `async _refresh_resolutions(self) -> None`
-  - Method L667: `_publish_running_if_due(self, now: datetime) -> None`
-  - Method L677: `_publish(self, *, now: datetime, state: str, healthy: bool) -> None`
+  - Method L252: `ledger_model_identity(self) -> dict[str, object]`
+  - Method L264: `__call__(self, market, history, observation) -> Any`
+- Class L359: `ResearchPaperRuntime`
+  - Method L362: `__init__(self, *, project: BtcProjectConfig, model_directory: Path, market_relative_model_directory: Path | None = None, runtime_root: Path, rule_epoch: str, event_buffer: AdmittedEventBuffer, starting_balance: float = 1000.0, rules_client: PublicPaperRulesClient | None = None, gamma_client: GammaMarketClient | None = None, settlement_trades_client: PublicSettlementTradesClient | None = None) -> None`
+  - Method L425: `model_id(self) -> str`
+  - Method L428: `register_markets(self, market: MarketWindow, lookahead: MarketWindow | None) -> None`
+  - Method L450: `async run(self, *, stop_event: asyncio.Event) -> None`
+  - Method L483: `close(self) -> None`
+  - Method L489: `_checkpoint_evaluations(self) -> None`
+  - Method L494: `async _bootstrap_history(self, *, stop_event: asyncio.Event) -> bool`
+  - Method L531: `async _fetch_rules(self, market: MarketWindow) -> None`
+  - Method L541: `_schedule_rule_fetch(self, market: MarketWindow, *, now: datetime) -> None`
+  - Method L556: `_drain_events(self) -> None`
+  - Method L564: `_consume_event(self, event: RawCollectorEvent) -> None`
+  - Method L568: `_activate_current_market(self, now: datetime) -> None`
+  - Method L616: `_run_due_decision(self, now: datetime) -> None`
+  - Method L656: `async _settle_resolved_markets(self) -> None`
+  - Method L690: `async _refresh_resolutions(self) -> None`
+  - Method L699: `_publish_running_if_due(self, now: datetime) -> None`
+  - Method L709: `_publish(self, *, now: datetime, state: str, healthy: bool) -> None`
 
 ### `btc_short_horizon/live/reconciliation.py`
 - Imports: `__future__, btc_short_horizon, collections, dataclasses, datetime, decimal, enum, hashlib, json, math, re, time, typing`
@@ -1339,22 +1340,23 @@ flowchart TD
 
 ### `btc_short_horizon/live/research_paper.py`
 - Imports: `__future__, btc_short_horizon, collections, dataclasses, datetime, json, math, numpy, os, pathlib, sqlite3, uuid`
-- Function L2616: `_signal_edge_decay(observations: list[PaperSignalObservation]) -> float | None`
-- Function L2621: `_price_bucket(executable_ask: float) -> str`
-- Function L2629: `_opening_regime_for_live_decision(*, elapsed_seconds: float, cadence_seconds: float, tolerance_seconds: float) -> str`
-- Function L2644: `_segment_performance(records: list[PaperTradeRecord]) -> tuple[ExecutionSegmentPerformance, ...]`
-- Function L2667: `_direction_execution_performance(records: list[PaperTradeRecord], evaluation_counts: PaperEvaluationCounts) -> tuple[DirectionExecutionPerformance, ...]`
-- Function L2702: `_text(value: object, name: str) -> str`
-- Function L2708: `_identifier(value: object, name: str, *, maximum: int = 64) -> str`
-- Function L2723: `_mapping_value(value: object, name: str) -> Mapping[str, object]`
-- Function L2729: `_sequence_value(value: object, name: str) -> list[object]`
-- Function L2735: `_boolean(value: object, name: str) -> bool`
-- Function L2741: `_optional_text(value: object, name: str) -> str | None`
-- Function L2745: `_integer(value: object, name: str) -> int`
-- Function L2751: `_optional_integer(value: object, name: str) -> int | None`
-- Function L2755: `_number(value: object, name: str) -> float`
-- Function L2761: `_wire_number(value: object, name: str) -> float`
-- Function L2773: `_optional_number(value: object, name: str) -> float | None`
+- Function L2667: `_signal_edge_decay(observations: list[PaperSignalObservation]) -> float | None`
+- Function L2672: `_price_bucket(executable_ask: float) -> str`
+- Function L2680: `_opening_regime_for_live_decision(*, elapsed_seconds: float, cadence_seconds: float, tolerance_seconds: float) -> str`
+- Function L2695: `_segment_performance(records: list[PaperTradeRecord]) -> tuple[ExecutionSegmentPerformance, ...]`
+- Function L2718: `_direction_execution_performance(records: list[PaperTradeRecord], evaluation_counts: PaperEvaluationCounts) -> tuple[DirectionExecutionPerformance, ...]`
+- Function L2753: `_bounded_equity_curve(points: Sequence[EquityPoint], *, maximum_points: int = 2000) -> tuple[EquityPoint, ...]`
+- Function L2769: `_text(value: object, name: str) -> str`
+- Function L2775: `_identifier(value: object, name: str, *, maximum: int = 64) -> str`
+- Function L2790: `_mapping_value(value: object, name: str) -> Mapping[str, object]`
+- Function L2796: `_sequence_value(value: object, name: str) -> list[object]`
+- Function L2802: `_boolean(value: object, name: str) -> bool`
+- Function L2808: `_optional_text(value: object, name: str) -> str | None`
+- Function L2812: `_integer(value: object, name: str) -> int`
+- Function L2818: `_optional_integer(value: object, name: str) -> int | None`
+- Function L2822: `_number(value: object, name: str) -> float`
+- Function L2828: `_wire_number(value: object, name: str) -> float`
+- Function L2840: `_optional_number(value: object, name: str) -> float | None`
 - Class L87: `PaperSignalObservation`
   - Method L96: `__post_init__(self) -> None`
   - Method L110: `to_json(self) -> dict[str, object]`
@@ -1368,81 +1370,82 @@ flowchart TD
   - Method L327: `from_json(cls, raw: object) -> PaperTradeRecord`
 - Class L420: `PaperLedgerSnapshot`
 - Class L425: `PaperLedgerStore`
-  - Method L428: `__init__(self, runtime_root: Path, execution_epoch: str, variant_id: str) -> None`
-  - Method L444: `write(self, snapshot: PaperLedgerSnapshot) -> Path`
-  - Method L465: `read(self) -> PaperLedgerSnapshot | None`
-- Class L491: `PaperEvaluationCounts`
-- Class L504: `PaperEvaluationStore`
-  - Method L509: `__init__(self, runtime_root: Path, execution_epoch: str) -> None`
-  - Method L562: `append(self, records: Sequence[PaperEvaluationObservation]) -> int`
-  - Method L611: `counts_by_variant(self) -> dict[str, PaperEvaluationCounts]`
-  - Method L660: `checkpoint(self) -> None`
-  - Method L663: `close(self) -> None`
-- Class L668: `PaperRuleSnapshotStore`
-  - Method L671: `__init__(self, runtime_root: Path, execution_epoch: str) -> None`
-  - Method L676: `write(self, market: MarketWindow, rules: Mapping[str, PaperMarketRules]) -> Path`
-  - Method L715: `read(self, market: MarketWindow) -> dict[str, PaperMarketRules]`
-  - Method L745: `load_or_create(self, market: MarketWindow, rules: Mapping[str, PaperMarketRules]) -> dict[str, PaperMarketRules]`
-  - Method L762: `_path(self, market_slug: str) -> Path`
-  - Method L766: `_validate_rules(market: MarketWindow, rules: Mapping[str, PaperMarketRules]) -> None`
-- Class L781: `ResearchPaperEngine`
-  - Method L784: `__init__(self, *, predictor: PaperPredictor, model_id: str, maker_config: MakerStrategyConfig, execution_config: PaperExecutionConfig, variant: PaperExecutionVariantConfig, ledger_store: PaperLedgerStore, starting_balance: float, kline_history: BinanceKlineHistory | None = None, stage_policy: StagePolicyConfig | None = None, clob_capture_end_seconds: float = 215.0) -> None`
-  - Method L863: `active_placement(self) -> PaperPlacement | None`
-  - Method L867: `last_evaluation(self) -> PaperEvaluationObservation | None`
-  - Method L871: `active_model_id(self) -> str`
-  - Method L878: `predict_current(self, *, now_ts_ns: int) -> OpeningMispricingPrediction | None`
-  - Method L886: `needs_prediction(self, *, now_ts_ns: int) -> bool`
-  - Method L901: `set_kline_history(self, history: BinanceKlineHistory) -> None`
-  - Method L904: `activate_market(self, market: MarketWindow, *, rules: Mapping[str, PaperMarketRules]) -> None`
-  - Method L941: `on_event(self, event: RawCollectorEvent) -> None`
-  - Method L986: `_advance_execution_before(self, event_ts_ns: int) -> None`
-  - Method L1014: `on_trade(self, *, token_id: str, aggressor_side: str, price: float, size: float, available_ts_ns: int) -> None`
-  - Method L1032: `advance(self, *, now_ts_ns: int) -> None`
-  - Method L1053: `_unsafe_execution_reason(self, *, now_ts_ns: int) -> str | None`
-  - Method L1083: `decide(self, *, now_ts_ns: int, prediction: OpeningMispricingPrediction | None = None) -> str`
-  - Method L1552: `_evaluation_from_taker_decision(self, *, decision: TakerPlanDecision, stage_rule: StageRule, now_ts_ns: int, model_version: str, robust_candidate: RobustExecutableCost | None = None, market_anchor_up: float | None = None, probability_interval: ProbabilityInterval | None = None) -> PaperEvaluationObservation`
-  - Method L1610: `reevaluate(self, prediction: OpeningMispricingPrediction, *, now_ts_ns: int) -> str`
-  - Method L1649: `settle(self, *, market_slug: str, outcome: MarketOutcome, label_available_ts_ns: int) -> None`
-  - Method L1680: `requires_settlement_trade_evidence(self, market_slug: str) -> bool`
-  - Method L1693: `apply_settlement_trade_evidence(self, *, market_slug: str, trades: tuple[SettlementTrade, ...], assessed_at_ns: int) -> None`
-  - Method L1755: `dashboard_snapshot(self, *, now: datetime) -> BotDashboardSnapshot`
-  - Method L1789: `_sync_active_record(self) -> None`
-  - Method L1828: `_maybe_request_fak(self, *, now_ts_ns: int) -> None`
-  - Method L1865: `_prediction_safety_reason(self, prediction: OpeningMispricingPrediction) -> str | None`
-  - Method L1883: `_signal_observation(self, *, plan: OrderPlan | TakerOrderPlan, book: SideBook, now_ts_ns: int, signal_number: int) -> PaperSignalObservation`
-  - Method L1926: `_maybe_record_third_signal(self, *, prediction: OpeningMispricingPrediction, books: OutcomeBooks, now_ts_ns: int) -> None`
-  - Method L1970: `_outcome_books(self) -> OutcomeBooks | None`
-  - Method L1983: `_predict_current(self, *, books: OutcomeBooks, now_ts_ns: int) -> OpeningMispricingPrediction`
-  - Method L2008: `_validate_shared_prediction(self, prediction: OpeningMispricingPrediction, *, now_ts_ns: int) -> None`
-  - Method L2020: `_books_by_token(self) -> dict[str, SideBook]`
-  - Method L2039: `performance_snapshot(self, *, now: datetime) -> PerformanceSnapshot`
-  - Method L2139: `variant_performance(self) -> ExecutionVariantPerformance`
-  - Method L2177: `_performance_totals(self) -> tuple[float, float]`
-  - Method L2187: `_available_balance(self) -> float`
-  - Method L2191: `_cash_and_working_notional(self) -> tuple[float, float]`
-  - Method L2207: `_append_binance_kline(self, payload: Mapping[str, object]) -> None`
-  - Method L2240: `_persist(self) -> None`
-  - Method L2248: `_persist_taker_diagnostics(self, decision: TakerPlanDecision, *, now_ts_ns: int) -> None`
-- Class L2333: `ResearchPaperPortfolio`
-  - Method L2336: `__init__(self, engines: tuple[ResearchPaperEngine, ...]) -> None`
-  - Method L2363: `model_id(self) -> str`
-  - Method L2367: `market(self) -> MarketWindow | None`
-  - Method L2371: `records(self) -> tuple[PaperTradeRecord, ...]`
-  - Method L2375: `has_unfinished_placement(self) -> bool`
-  - Method L2383: `set_kline_history(self, history: BinanceKlineHistory) -> None`
-  - Method L2387: `activate_market(self, market: MarketWindow, *, rules: Mapping[str, PaperMarketRules]) -> None`
-  - Method L2397: `on_event(self, event: RawCollectorEvent) -> None`
-  - Method L2401: `advance(self, *, now_ts_ns: int) -> None`
-  - Method L2405: `decide(self, *, now_ts_ns: int) -> str`
-  - Method L2459: `settle(self, *, market_slug: str, outcome: MarketOutcome, label_available_ts_ns: int) -> None`
-  - Method L2480: `requires_settlement_trade_evidence(self, market_slug: str) -> bool`
-  - Method L2485: `deferred_fill_start_ns(self, market_slug: str) -> int | None`
-  - Method L2496: `apply_settlement_trade_evidence(self, *, market_slug: str, trades: tuple[SettlementTrade, ...], assessed_at_ns: int) -> None`
-  - Method L2510: `unresolved_market_slugs(self) -> tuple[str, ...]`
-  - Method L2513: `checkpoint_evaluations(self) -> None`
-  - Method L2517: `close(self) -> None`
-  - Method L2521: `dashboard_snapshot(self, *, now: datetime) -> BotDashboardSnapshot`
-  - Method L2591: `_decision_funnel(self) -> DecisionFunnelSnapshot`
+  - Method L428: `__init__(self, runtime_root: Path, execution_epoch: str, variant_id: str, *, research_identity: Mapping[str, object] | None = None) -> None`
+  - Method L456: `write(self, snapshot: PaperLedgerSnapshot) -> Path`
+  - Method L482: `read(self) -> PaperLedgerSnapshot | None`
+- Class L526: `PaperEvaluationCounts`
+- Class L539: `PaperEvaluationStore`
+  - Method L544: `__init__(self, runtime_root: Path, execution_epoch: str) -> None`
+  - Method L597: `append(self, records: Sequence[PaperEvaluationObservation]) -> int`
+  - Method L646: `counts_by_variant(self) -> dict[str, PaperEvaluationCounts]`
+  - Method L695: `checkpoint(self) -> None`
+  - Method L698: `close(self) -> None`
+- Class L703: `PaperRuleSnapshotStore`
+  - Method L706: `__init__(self, runtime_root: Path, execution_epoch: str) -> None`
+  - Method L711: `write(self, market: MarketWindow, rules: Mapping[str, PaperMarketRules]) -> Path`
+  - Method L750: `read(self, market: MarketWindow) -> dict[str, PaperMarketRules]`
+  - Method L780: `load_or_create(self, market: MarketWindow, rules: Mapping[str, PaperMarketRules]) -> dict[str, PaperMarketRules]`
+  - Method L797: `_path(self, market_slug: str) -> Path`
+  - Method L801: `_validate_rules(market: MarketWindow, rules: Mapping[str, PaperMarketRules]) -> None`
+- Class L816: `ResearchPaperEngine`
+  - Method L819: `__init__(self, *, predictor: PaperPredictor, model_id: str, maker_config: MakerStrategyConfig, execution_config: PaperExecutionConfig, variant: PaperExecutionVariantConfig, ledger_store: PaperLedgerStore, starting_balance: float, kline_history: BinanceKlineHistory | None = None, stage_policy: StagePolicyConfig | None = None, clob_capture_end_seconds: float = 215.0, dashboard_primary_model_id: str | None = None, dashboard_dependency_model_id: str | None = None) -> None`
+  - Method L902: `active_placement(self) -> PaperPlacement | None`
+  - Method L906: `last_evaluation(self) -> PaperEvaluationObservation | None`
+  - Method L910: `active_model_id(self) -> str`
+  - Method L917: `_decision_model_id(self, prediction: OpeningMispricingPrediction) -> str`
+  - Method L925: `predict_current(self, *, now_ts_ns: int) -> OpeningMispricingPrediction | None`
+  - Method L933: `needs_prediction(self, *, now_ts_ns: int) -> bool`
+  - Method L948: `set_kline_history(self, history: BinanceKlineHistory) -> None`
+  - Method L951: `activate_market(self, market: MarketWindow, *, rules: Mapping[str, PaperMarketRules]) -> None`
+  - Method L988: `on_event(self, event: RawCollectorEvent) -> None`
+  - Method L1033: `_advance_execution_before(self, event_ts_ns: int) -> None`
+  - Method L1061: `on_trade(self, *, token_id: str, aggressor_side: str, price: float, size: float, available_ts_ns: int) -> None`
+  - Method L1079: `advance(self, *, now_ts_ns: int) -> None`
+  - Method L1100: `_unsafe_execution_reason(self, *, now_ts_ns: int) -> str | None`
+  - Method L1130: `decide(self, *, now_ts_ns: int, prediction: OpeningMispricingPrediction | None = None) -> str`
+  - Method L1599: `_evaluation_from_taker_decision(self, *, decision: TakerPlanDecision, stage_rule: StageRule, now_ts_ns: int, model_version: str, robust_candidate: RobustExecutableCost | None = None, market_anchor_up: float | None = None, probability_interval: ProbabilityInterval | None = None) -> PaperEvaluationObservation`
+  - Method L1657: `reevaluate(self, prediction: OpeningMispricingPrediction, *, now_ts_ns: int) -> str`
+  - Method L1696: `settle(self, *, market_slug: str, outcome: MarketOutcome, label_available_ts_ns: int) -> None`
+  - Method L1727: `requires_settlement_trade_evidence(self, market_slug: str) -> bool`
+  - Method L1740: `apply_settlement_trade_evidence(self, *, market_slug: str, trades: tuple[SettlementTrade, ...], assessed_at_ns: int) -> None`
+  - Method L1802: `dashboard_snapshot(self, *, now: datetime) -> BotDashboardSnapshot`
+  - Method L1837: `_sync_active_record(self) -> None`
+  - Method L1876: `_maybe_request_fak(self, *, now_ts_ns: int) -> None`
+  - Method L1913: `_prediction_safety_reason(self, prediction: OpeningMispricingPrediction) -> str | None`
+  - Method L1931: `_signal_observation(self, *, plan: OrderPlan | TakerOrderPlan, book: SideBook, now_ts_ns: int, signal_number: int) -> PaperSignalObservation`
+  - Method L1974: `_maybe_record_third_signal(self, *, prediction: OpeningMispricingPrediction, books: OutcomeBooks, now_ts_ns: int) -> None`
+  - Method L2018: `_outcome_books(self) -> OutcomeBooks | None`
+  - Method L2031: `_predict_current(self, *, books: OutcomeBooks, now_ts_ns: int) -> OpeningMispricingPrediction`
+  - Method L2056: `_validate_shared_prediction(self, prediction: OpeningMispricingPrediction, *, now_ts_ns: int) -> None`
+  - Method L2068: `_books_by_token(self) -> dict[str, SideBook]`
+  - Method L2087: `performance_snapshot(self, *, now: datetime) -> PerformanceSnapshot`
+  - Method L2188: `variant_performance(self) -> ExecutionVariantPerformance`
+  - Method L2226: `_performance_totals(self) -> tuple[float, float]`
+  - Method L2236: `_available_balance(self) -> float`
+  - Method L2240: `_cash_and_working_notional(self) -> tuple[float, float]`
+  - Method L2256: `_append_binance_kline(self, payload: Mapping[str, object]) -> None`
+  - Method L2289: `_persist(self) -> None`
+  - Method L2297: `_persist_taker_diagnostics(self, decision: TakerPlanDecision, *, now_ts_ns: int) -> None`
+- Class L2384: `ResearchPaperPortfolio`
+  - Method L2387: `__init__(self, engines: tuple[ResearchPaperEngine, ...]) -> None`
+  - Method L2414: `model_id(self) -> str`
+  - Method L2418: `market(self) -> MarketWindow | None`
+  - Method L2422: `records(self) -> tuple[PaperTradeRecord, ...]`
+  - Method L2426: `has_unfinished_placement(self) -> bool`
+  - Method L2434: `set_kline_history(self, history: BinanceKlineHistory) -> None`
+  - Method L2438: `activate_market(self, market: MarketWindow, *, rules: Mapping[str, PaperMarketRules]) -> None`
+  - Method L2448: `on_event(self, event: RawCollectorEvent) -> None`
+  - Method L2452: `advance(self, *, now_ts_ns: int) -> None`
+  - Method L2456: `decide(self, *, now_ts_ns: int) -> str`
+  - Method L2510: `settle(self, *, market_slug: str, outcome: MarketOutcome, label_available_ts_ns: int) -> None`
+  - Method L2531: `requires_settlement_trade_evidence(self, market_slug: str) -> bool`
+  - Method L2536: `deferred_fill_start_ns(self, market_slug: str) -> int | None`
+  - Method L2547: `apply_settlement_trade_evidence(self, *, market_slug: str, trades: tuple[SettlementTrade, ...], assessed_at_ns: int) -> None`
+  - Method L2561: `unresolved_market_slugs(self) -> tuple[str, ...]`
+  - Method L2564: `checkpoint_evaluations(self) -> None`
+  - Method L2568: `close(self) -> None`
+  - Method L2572: `dashboard_snapshot(self, *, now: datetime) -> BotDashboardSnapshot`
+  - Method L2642: `_decision_funnel(self) -> DecisionFunnelSnapshot`
 
 ### `btc_short_horizon/live/risk.py`
 - Imports: `__future__, dataclasses, datetime, math`
@@ -1457,21 +1460,21 @@ flowchart TD
 
 ### `btc_short_horizon/live/runtime.py`
 - Imports: `__future__, collections, dataclasses, datetime, hashlib, json, os, pathlib, shutil, subprocess, uuid`
-- Function L177: `build_runtime_identity(*, config_path: Path, ingest_version: str, model_sha256: str | None = None) -> dict[str, object]`
-- Function L196: `filesystem_usage(path: Path) -> dict[str, object]`
-- Function L213: `check_runtime_health(status: RuntimeStatus | None, *, now: datetime, max_age_seconds: float) -> RuntimeHealth`
-- Function L238: `_read_status(path: Path) -> RuntimeStatus`
-- Function L242: `_git_revision(config_path: Path) -> str`
-- Function L257: `_read_stop_request(path: Path) -> StopRequest`
-- Function L261: `_read_json(path: Path) -> object`
-- Function L268: `_atomic_write_json(path: Path, value: Mapping[str, object]) -> None`
-- Function L282: `_as_utc(value: datetime, name: str) -> datetime`
-- Function L288: `_parse_timestamp(value: object, name: str) -> datetime`
-- Function L298: `_require_identifier(value: object, name: str) -> None`
-- Function L304: `_text(value: object, name: str) -> str`
-- Function L310: `_bool(value: object, name: str) -> bool`
-- Function L316: `_json_mapping(value: object, name: str) -> dict[str, object]`
-- Function L322: `_json_value(value: object, name: str) -> object`
+- Function L183: `build_runtime_identity(*, config_path: Path, ingest_version: str, model_sha256: str | None = None) -> dict[str, object]`
+- Function L202: `filesystem_usage(path: Path) -> dict[str, object]`
+- Function L219: `check_runtime_health(status: RuntimeStatus | None, *, now: datetime, max_age_seconds: float) -> RuntimeHealth`
+- Function L244: `_read_status(path: Path) -> RuntimeStatus`
+- Function L248: `_git_revision(config_path: Path) -> str`
+- Function L263: `_read_stop_request(path: Path) -> StopRequest`
+- Function L267: `_read_json(path: Path) -> object`
+- Function L274: `_atomic_write_json(path: Path, value: Mapping[str, object]) -> None`
+- Function L288: `_as_utc(value: datetime, name: str) -> datetime`
+- Function L294: `_parse_timestamp(value: object, name: str) -> datetime`
+- Function L304: `_require_identifier(value: object, name: str) -> None`
+- Function L310: `_text(value: object, name: str) -> str`
+- Function L316: `_bool(value: object, name: str) -> bool`
+- Function L322: `_json_mapping(value: object, name: str) -> dict[str, object]`
+- Function L328: `_json_value(value: object, name: str) -> object`
 - Class L22: `RuntimeStatus`
   - Method L33: `__post_init__(self) -> None`
   - Method L48: `to_json(self) -> dict[str, object]`
@@ -1485,14 +1488,14 @@ flowchart TD
   - Method L116: `__init__(self, root: Path) -> None`
   - Method L119: `write(self, status: RuntimeStatus) -> Path`
   - Method L124: `read(self, service: str) -> RuntimeStatus | None`
-  - Method L131: `all(self) -> tuple[RuntimeStatus, ...]`
-  - Method L143: `status_path(self, service: str) -> Path`
-- Class L148: `RuntimeControl`
-  - Method L151: `__init__(self, root: Path) -> None`
-  - Method L155: `stop_path(self) -> Path`
-  - Method L158: `request_stop(self, *, reason: str, requested_at: datetime) -> StopRequest`
-  - Method L163: `stop_request(self) -> StopRequest | None`
-  - Method L169: `clear_stop(self) -> bool`
+  - Method L131: `all(self, services: Sequence[str] | None = None) -> tuple[RuntimeStatus, ...]`
+  - Method L149: `status_path(self, service: str) -> Path`
+- Class L154: `RuntimeControl`
+  - Method L157: `__init__(self, root: Path) -> None`
+  - Method L161: `stop_path(self) -> Path`
+  - Method L164: `request_stop(self, *, reason: str, requested_at: datetime) -> StopRequest`
+  - Method L169: `stop_request(self) -> StopRequest | None`
+  - Method L175: `clear_stop(self) -> bool`
 
 ### `btc_short_horizon/live/runtime_archive.py`
 - Imports: `__future__, btc_short_horizon, collections, dataclasses, datetime, hashlib, json, os, pathlib, re, shutil, typing, uuid`
@@ -4116,8 +4119,8 @@ flowchart TD
 - Imports: `__future__, argparse, btc_short_horizon, collections, datetime, hashlib, json, numpy, pathlib, subprocess`
 - Function L38: `parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace`
 - Function L50: `main(argv: Sequence[str] | None = None) -> int`
-- Function L154: `_source_hash(paths: Sequence[Path]) -> str`
-- Function L164: `_code_revision() -> str`
+- Function L155: `_source_hash(paths: Sequence[Path]) -> str`
+- Function L165: `_code_revision() -> str`
 
 ### `scripts/btc_market_relative_shadow_research.py`
 - Imports: `__future__, argparse, btc_short_horizon, collections, dataclasses, datetime, hashlib, json, pathlib`
@@ -4262,7 +4265,7 @@ flowchart TD
 ### `scripts/btc_runtime_dashboard.py`
 - Imports: `__future__, argparse, btc_short_horizon, collections, pathlib, scripts`
 - Function L20: `parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace`
-- Function L35: `main(argv: Sequence[str] | None = None) -> int`
+- Function L36: `main(argv: Sequence[str] | None = None) -> int`
 
 ### `scripts/btc_runtime_healthcheck.py`
 - Imports: `__future__, argparse, btc_short_horizon, collections, datetime, json, pathlib, scripts`
@@ -4281,12 +4284,13 @@ flowchart TD
 - Function L388: `main(argv: Sequence[str] | None = None) -> int`
 
 ### `scripts/btc_vps_preflight.py`
-- Imports: `__future__, argparse, btc_short_horizon, collections, datetime, httpx, json, math, pathlib, subprocess`
-- Function L29: `parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace`
-- Function L50: `main(argv: Sequence[str] | None = None) -> int`
-- Function L99: `_git_revision() -> str`
-- Function L124: `_compose_revision(path: Path) -> str`
-- Function L153: `_host_ntp_synchronized() -> bool`
+- Imports: `__future__, argparse, btc_short_horizon, collections, datetime, httpx, json, math, pathlib, re, subprocess`
+- Function L30: `parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace`
+- Function L51: `main(argv: Sequence[str] | None = None) -> int`
+- Function L104: `_git_revision() -> str`
+- Function L129: `_compose_revision(path: Path) -> str`
+- Function L158: `_full_git_revision(value: str, *, name: str) -> str`
+- Function L165: `_host_ntp_synchronized() -> bool`
 
 ### `scripts/generate_codebase_uml.py`
 - Imports: `__future__, ast, dataclasses, datetime, pathlib`

@@ -28,6 +28,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--health-service", default="forward_collector")
+    parser.add_argument("--active-service", action="append", default=[])
     parser.add_argument("--max-age-seconds", type=float, default=30.0)
     return parser.parse_args(argv)
 
@@ -40,6 +41,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             DashboardConfig(
                 runtime_root=runtime_root,
                 health_service=args.health_service,
+                active_services=tuple(args.active_service),
                 max_age_seconds=args.max_age_seconds,
             ),
             host=args.host,

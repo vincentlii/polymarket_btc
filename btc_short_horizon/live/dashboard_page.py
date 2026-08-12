@@ -230,8 +230,8 @@ footer { display:flex; align-items:center; justify-content:space-between; gap:20
         <p id="next-action" class="cycle-copy">发布流程尚未写入策略周期，页面不会自行猜测当前阶段。</p>
         <div class="progress"><span id="cycle-progress"></span></div><div class="progress-copy"><span id="progress-label">暂无进度目标</span><span id="progress-value">—</span></div>
         <dl class="cycle-list">
-          <div class="cycle-row"><dt>Champion</dt><dd id="champion-model">—</dd></div>
-          <div class="cycle-row"><dt>Challenger</dt><dd id="challenger-model">—</dd></div>
+          <div class="cycle-row"><dt id="primary-model-label">Champion</dt><dd id="champion-model">—</dd></div>
+          <div class="cycle-row"><dt id="secondary-model-label">Challenger</dt><dd id="challenger-model">—</dd></div>
           <div class="cycle-row"><dt>下次训练</dt><dd id="next-challenge">—</dd></div>
           <div class="cycle-row"><dt>下次评审</dt><dd id="next-review">—</dd></div>
           <div class="cycle-row"><dt>数据截止</dt><dd id="data-cutoff">—</dd></div>
@@ -282,8 +282,8 @@ footer { display:flex; align-items:center; justify-content:space-between; gap:20
 </main>
 <script>
 const byId = id => document.getElementById(id);
-const stageOrder = ['research','challenge','shadow','canary','live'];
-const stageLabels = {research:'研究',challenge:'挑战',shadow:'影子',canary:'小额',live:'实盘'};
+const stageOrder = ['research','challenge','shadow','paper','canary','live'];
+const stageLabels = {research:'研究',challenge:'挑战',shadow:'影子',paper:'模拟',canary:'小额',live:'实盘'};
 const gateLabels = {pending:'待开始',running:'进行中',go:'GO',no_go:'NO-GO',blocked:'已阻断'};
 const stateLabels = {ok:'正常',warning:'注意',error:'异常',unknown:'未上报'};
 const runtimeServiceLabels = {forward_collector:'前瞻数据采集',opening_shadow:'开盘 Shadow',research_paper:'Research Paper'};
@@ -329,7 +329,7 @@ function renderSummary(snapshot) {
   renderVariants(performance&&performance.variant_summaries,currency);
   renderDirectionHealth(performance&&performance.direction_health);
   renderFunnel(performance&&performance.decision_funnel,performance&&performance.paper_execution_epoch);
-  renderOrders(performance&&performance.recent_orders,currency);
+  renderOrders(performance&&performance.recent_orders,currency,performance&&performance.primary_variant_id);
 }
 
 function renderVariants(variants,currency) {
@@ -362,24 +362,29 @@ function svgNode(name,attributes={}) { const node=document.createElementNS('http
 function renderEquity(rawPoints,currency) {
   const points=(rawPoints||[]).filter(item=>item&&finite(item.equity)&&item.timestamp);
   const empty=byId('chart-empty'),wrap=byId('chart-wrap'),svg=byId('equity-chart'); svg.replaceChildren();
-  if(points.length<2) { empty.hidden=false; wrap.hidden=true; byId('curve-range').textContent='等待结算记录'; return; }
+  if(points.length===0) { empty.hidden=false; wrap.hidden=true; byId('curve-range').textContent='等待资金记录'; return; }
   empty.hidden=true; wrap.hidden=false;
-  const values=points.map(item=>item.equity), min=Math.min(...values), max=Math.max(...values), span=Math.max(max-min,Math.max(max,1)*.005);
+  const values=points.map(item=>item.equity), min=Math.min(...values), max=Math.max(...values), flat=max===min, span=Math.max(max-min,Math.max(max,1)*.005);
   const left=35,right=775,top=20,bottom=192;
-  const x=index=>left+(right-left)*(index/Math.max(points.length-1,1)); const y=value=>bottom-(bottom-top)*((value-min)/span);
+  const x=index=>left+(right-left)*(index/Math.max(points.length-1,1)); const y=value=>flat?(top+bottom)/2:bottom-(bottom-top)*((value-min)/span);
   const defs=svgNode('defs'),gradient=svgNode('linearGradient',{id:'equity-fill',x1:'0',x2:'0',y1:'0',y2:'1'}); gradient.append(svgNode('stop',{offset:'0%','stop-color':'#c9df8a','stop-opacity':'.2'}),svgNode('stop',{offset:'100%','stop-color':'#c9df8a','stop-opacity':'0'})); defs.append(gradient); svg.append(defs);
   for(const ratio of [0,.5,1]) { const gy=top+(bottom-top)*ratio; svg.append(svgNode('line',{x1:left,x2:right,y1:gy,y2:gy,class:'chart-grid'})); }
-  const line=points.map((item,index)=>`${index===0?'M':'L'} ${x(index).toFixed(2)} ${y(item.equity).toFixed(2)}`).join(' ');
+  const line=points.length===1
+    ? `M ${left} ${y(points[0].equity).toFixed(2)} L ${right} ${y(points[0].equity).toFixed(2)}`
+    : points.map((item,index)=>`${index===0?'M':'L'} ${x(index).toFixed(2)} ${y(item.equity).toFixed(2)}`).join(' ');
   const area=`${line} L ${right} ${bottom} L ${left} ${bottom} Z`;
-  svg.append(svgNode('path',{d:area,class:'chart-area'}),svgNode('path',{d:line,class:'chart-line'}),svgNode('circle',{cx:x(points.length-1),cy:y(points.at(-1).equity),r:4,class:'chart-dot'}));
+  const lastX=points.length===1?right:x(points.length-1);
+  svg.append(svgNode('path',{d:area,class:'chart-area'}),svgNode('path',{d:line,class:'chart-line'}),svgNode('circle',{cx:lastX,cy:y(points.at(-1).equity),r:4,class:'chart-dot'}));
   const maxLabel=svgNode('text',{x:left,y:12,class:'chart-label'}); maxLabel.textContent=money(max,currency);
   const minLabel=svgNode('text',{x:left,y:218,class:'chart-label'}); minLabel.textContent=money(min,currency);
   const lastLabel=svgNode('text',{x:right,y:218,'text-anchor':'end',class:'chart-label'}); lastLabel.textContent=localTime(points.at(-1).timestamp);
-  svg.append(maxLabel,minLabel,lastLabel);
-  byId('curve-range').textContent=`${localTime(points[0].timestamp)} → ${localTime(points.at(-1).timestamp)}`;
+  svg.append(maxLabel); if(!flat) svg.append(minLabel); svg.append(lastLabel);
+  byId('curve-range').textContent=points.length===1
+    ? `当前 epoch · 尚无已结算交易 · ${localTime(points[0].timestamp)}`
+    : `${localTime(points[0].timestamp)} → ${localTime(points.at(-1).timestamp)}`;
 }
 
-function renderLifecycle(strategy) {
+function renderLifecycle(strategy,runMode) {
   const track=byId('stage-track'); track.replaceChildren(); const activeIndex=strategy?stageOrder.indexOf(strategy.stage):-1;
   stageOrder.forEach((stage,index)=>{ const node=document.createElement('div'); node.className=`stage ${index<activeIndex?'complete':index===activeIndex?'active':''}`; node.textContent=stageLabels[stage]; track.append(node); });
   const gate=strategy?strategy.gate_state:'pending'; byId('gate-state').textContent=strategy?(gateLabels[gate]||gate):'未登记'; byId('gate-state').className=`pill ${gate==='go'?'ok':gate==='no_go'||gate==='blocked'?'error':gate==='running'?'warning':''}`;
@@ -387,13 +392,14 @@ function renderLifecycle(strategy) {
   byId('next-action').textContent=strategy?strategy.next_action:'发布流程尚未写入策略周期，页面不会自行猜测当前阶段。';
   const current=strategy&&strategy.progress_current,target=strategy&&strategy.progress_target,ratio=finite(current)&&finite(target)&&target>0?Math.min(1,current/target):0;
   byId('cycle-progress').style.width=`${ratio*100}%`; byId('progress-label').textContent=(strategy&&strategy.progress_label)||'暂无进度目标'; byId('progress-value').textContent=finite(current)&&finite(target)?`${current} / ${target}`:'—';
-  byId('champion-model').textContent=(strategy&&strategy.model_id)||'—'; byId('challenger-model').textContent=(strategy&&strategy.challenger_model_id)||'—';
+  byId('primary-model-label').textContent=runMode==='research_paper'?'主策略模型':'Champion'; byId('secondary-model-label').textContent=runMode==='research_paper'?'基础依赖模型':'Challenger'; byId('champion-model').textContent=(strategy&&strategy.model_id)||'—'; byId('challenger-model').textContent=(strategy&&strategy.challenger_model_id)||'—';
   const challengeCadence=strategy&&strategy.challenger_interval_days?`（每 ${strategy.challenger_interval_days} 天）`:''; const reviewCadence=strategy&&strategy.review_interval_days?`（每 ${strategy.review_interval_days} 天）`:'';
   byId('next-challenge').textContent=strategy&&strategy.next_challenge_at?`${localTime(strategy.next_challenge_at)} ${challengeCadence}`:'—'; byId('next-review').textContent=strategy&&strategy.next_review_at?`${localTime(strategy.next_review_at)} ${reviewCadence}`:'—'; byId('data-cutoff').textContent=localTime(strategy&&strategy.data_cutoff_at);
 }
 
 function healthFromRuntime(payload) {
-  const items=(payload.statuses||[]).map(item=>({key:`runtime-${item.service}`,label:runtimeServiceLabel(item.service),state:item.health&&item.health.healthy?'ok':'error',detail:`${runtimeModeLabel(item.mode)} · ${item.state==='running'?'运行中':readableIdentifier(item.state)}`,updated_at:item.updated_at,latency_ms:null,age_seconds:item.health&&item.health.age_seconds}));
+  const activeStatuses=(payload.statuses||[]).filter(item=>item.active!==false);
+  const items=activeStatuses.map(item=>({key:`runtime-${item.service}`,label:runtimeServiceLabel(item.service),state:item.health&&item.health.healthy?'ok':'error',detail:`${runtimeModeLabel(item.mode)} · ${item.state==='running'?'运行中':readableIdentifier(item.state)}`,updated_at:item.updated_at,latency_ms:null,age_seconds:item.health&&item.health.age_seconds}));
   const projection=payload.snapshot_health, hasLive=(payload.statuses||[]).some(item=>item.service==='live_operations'), isPaper=payload.snapshot&&payload.snapshot.run_mode==='research_paper';
   if(payload.snapshot||hasLive) items.push({key:'performance-projection',label:isPaper?'模拟资金与盈亏快照':'账户与盈亏快照',state:projection&&projection.healthy?'ok':'error',detail:projection&&projection.healthy?(isPaper?'Research Paper 模拟账本新鲜':'真实账户账本投影新鲜'):`投影不可用 · ${readableIdentifier(projection&&projection.reason||'missing_snapshot')}`,updated_at:payload.snapshot&&payload.snapshot.generated_at||payload.generated_at,latency_ms:null,age_seconds:projection&&projection.age_seconds});
   const shadow=payload.shadow, coverage=shadow&&shadow.coverage;
@@ -413,15 +419,17 @@ function renderHealth(payload,snapshot) {
   byId('quality-summary').textContent=quality?`接受 ${quality.accepted_events||0} · Gap ${quality.gap_events||0} · Stale ${quality.stale_events||0}`:'未收到数据质量摘要';
 }
 
-function renderOrders(orders,currency) {
+function renderOrders(orders,currency,primaryVariant) {
   const records=[...(orders||[])].sort((a,b)=>String(b.placed_at).localeCompare(String(a.placed_at)));
-  renderOrderRows(byId('trade-rows'),records,currency,{emptyText:'尚无订单记录；Shadow 信号不会伪装成成交。'});
+  renderOrderRows(byId('trade-rows'),records,currency,{emptyText:primaryVariant?`当前主策略 ${readableIdentifier(primaryVariant)} 尚无合格机会或订单。`:'尚无模拟订单记录。'});
 }
 
 function renderOrderRows(body,records,currency,{append=false,emptyText='尚无订单记录'}={}) {
   if(!append) body.replaceChildren();
   if(records.length===0&&!append) { const row=document.createElement('tr'),cell=document.createElement('td'); cell.colSpan=9; cell.className='table-empty'; cell.textContent=emptyText; row.append(cell); body.append(row); return; }
+  for(const item of records) item.display_lineage=[item.model_version&&`模型：${readableIdentifier(item.model_version)}`,item.execution_epoch&&`版本：${readableIdentifier(item.execution_epoch)}`].filter(Boolean).join(' ｜ ');
   for(const item of records) { const row=document.createElement('tr'); const pnl=item.filled_shares>0?(finite(item.realized_pnl)?item.realized_pnl:item.unrealized_pnl):null; const status=`${tradeStatusLabel(item.execution_status)} / ${tradeStatusLabel(item.settlement_status)}`; const values=[localTime(item.placed_at),orderStrategyLabel(item),item.market_slug,tradeSideLabel(item.side),status,`${finite(item.entry_price)?item.entry_price.toFixed(3):'—'} × ${finite(item.filled_shares)?item.filled_shares.toFixed(2):'—'}`,`${probability(item.p_fair)} / ${probability(item.market_price)}`,money(pnl,currency,true),latency(item.order_latency_ms)]; values.forEach((value,index)=>{ const cell=document.createElement('td'); if(index===2){cell.className='market-cell';cell.title=String(value);} if(index===3){const badge=document.createElement('span');badge.className='side';badge.textContent=String(value);cell.append(badge);}else{cell.textContent=String(value);} if(index===7) cell.classList.add(pnlTone(pnl)); row.append(cell); }); const details=[]; if(item.execution_route) details.push(`执行：${readableIdentifier(item.execution_route)}`); if(item.entry_regime) details.push(`阶段：${regimeLabels[item.entry_regime]||readableIdentifier(item.entry_regime)}`); if(item.price_bucket) details.push(`价格：${regimeLabels[item.price_bucket]||readableIdentifier(item.price_bucket)}${item.go_eligible===false?'（仅研究）':''}`); if(item.terminal_reason) details.push(`终止：${readableIdentifier(item.terminal_reason)}`); if((item.signal_observations||[]).length) details.push(`信号：${item.signal_observations.map(signal=>`#${signal.signal_number} edge ${finite(signal.taker_net_edge)?signal.taker_net_edge.toFixed(3):'—'}`).join(' → ')}`); if(details.length) row.title=details.join(' ｜ '); body.append(row); }
+  for(const [index,item] of records.entries()) if(item.display_lineage&&body.children[index]) body.children[index].title=[item.display_lineage,body.children[index].title].filter(Boolean).join(' ｜ ');
 }
 
 function updateHistoryVariants(variants) {
@@ -465,13 +473,13 @@ function renderAlerts(payload,snapshot) {
 }
 
 function render(payload) {
-  const snapshot=payload.snapshot||null; const snapshotHealth=(snapshot&&snapshot.health)||[]; const staleProjection=snapshot&&(!payload.snapshot_health||!payload.snapshot_health.healthy); const runtimeFailure=(payload.statuses||[]).some(item=>!item.health||!item.health.healthy); const overallState=!payload.health||!payload.health.healthy||runtimeFailure||(payload.errors||[]).length>0||staleProjection||snapshotHealth.some(item=>item.state==='error')?'error':payload.stop_request||snapshotHealth.some(item=>item.state==='warning'||item.state==='unknown')?'warning':'ok';
+  const snapshot=payload.snapshot||null; const snapshotHealth=(snapshot&&snapshot.health)||[]; const staleProjection=snapshot&&(!payload.snapshot_health||!payload.snapshot_health.healthy); const runtimeFailure=(payload.statuses||[]).some(item=>item.active!==false&&(!item.health||!item.health.healthy)); const overallState=!payload.health||!payload.health.healthy||runtimeFailure||(payload.errors||[]).length>0||staleProjection||snapshotHealth.some(item=>item.state==='error')?'error':payload.stop_request||snapshotHealth.some(item=>item.state==='warning'||item.state==='unknown')?'warning':'ok';
   const overall=byId('overall'); overall.className=`pill ${overallState}`; overall.replaceChildren(); const dot=document.createElement('span'); dot.className='dot'; const label=document.createElement('span'); label.textContent=overallState==='ok'?'Bot 运行正常':overallState==='warning'?'需要关注':'运行异常'; overall.append(dot,label);
   const mode=byId('run-mode'); mode.textContent=snapshot?String(snapshot.run_mode).replaceAll('_',' ').toUpperCase():payload.shadow?'POST-WINDOW SHADOW':'NO PERFORMANCE SNAPSHOT'; mode.className=`pill ${snapshot||payload.shadow?'ok':''}`;
   const collector=(payload.statuses||[]).find(item=>item.service==='forward_collector'); const market=collector&&collector.details&&(collector.details.active_market||collector.details.scheduled_market); byId('active-market').textContent=market?`当前市场 · ${market}`:'当前市场尚未上报';
   byId('freshness-title').textContent=payload.health&&payload.health.healthy?'运行状态新鲜':'运行状态不可用'; byId('freshness-time').textContent=`刷新 ${localTime(payload.generated_at)} · ${ageText(payload.health&&payload.health.age_seconds)}`;
   byId('snapshot-source').textContent=snapshot?`${snapshot.run_mode==='research_paper'?'Simulated ledger':'Account snapshot'} ${localTime(snapshot.generated_at)}${staleProjection?' · STALE':''}`:payload.shadow?'Shadow evidence · no account PnL':'Runtime status only';
-  renderAlerts(payload,snapshot); renderSummary(snapshot); renderLifecycle(snapshot&&snapshot.strategy); renderHealth(payload,snapshot);
+  renderAlerts(payload,snapshot); renderSummary(snapshot); renderLifecycle(snapshot&&snapshot.strategy,snapshot&&snapshot.run_mode); renderHealth(payload,snapshot);
 }
 
 async function refresh() { try { const response=await fetch('/api/status',{cache:'no-store'}); render(await response.json()); } catch(error) { render({generated_at:new Date().toISOString(),health:{healthy:false,reason:'dashboard_fetch_failed'},statuses:[],errors:[`看板读取失败：${String(error)}`]}); } }

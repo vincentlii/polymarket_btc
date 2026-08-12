@@ -193,8 +193,65 @@ def test_dashboard_payload_reports_service_health_and_stop_request(tmp_path) -> 
             "updated_at": (_now() - timedelta(seconds=2)).isoformat(),
             "details": {"current_market": "btc-updown-15m-1"},
             "health": {"healthy": True, "reason": "ok", "age_seconds": 2.0},
+            "active": True,
         }
     ]
+
+
+def test_dashboard_marks_disabled_runtime_status_inactive(tmp_path) -> None:
+    for service, healthy in (
+        ("forward_collector", True),
+        ("research_paper", True),
+        ("opening_shadow", False),
+    ):
+        RuntimeStatusStore(tmp_path).write(
+            RuntimeStatus(
+                service=service,
+                mode="test",
+                state="running" if healthy else "failed",
+                healthy=healthy,
+                started_at=_now() - timedelta(minutes=2),
+                updated_at=_now(),
+            )
+        )
+
+    payload = build_dashboard_payload(
+        DashboardConfig(
+            runtime_root=tmp_path,
+            active_services=("forward_collector", "research_paper"),
+        ),
+        now=_now(),
+    )
+
+    by_service = {item["service"]: item for item in payload["statuses"]}
+    assert by_service["forward_collector"]["active"] is True
+    assert by_service["research_paper"]["active"] is True
+    assert "opening_shadow" not in by_service
+
+
+def test_dashboard_reports_missing_active_runtime_service(tmp_path) -> None:
+    RuntimeStatusStore(tmp_path).write(
+        RuntimeStatus(
+            service="forward_collector",
+            mode="test",
+            state="running",
+            healthy=True,
+            started_at=_now() - timedelta(minutes=1),
+            updated_at=_now(),
+        )
+    )
+
+    payload = build_dashboard_payload(
+        DashboardConfig(
+            runtime_root=tmp_path,
+            active_services=("forward_collector", "research_paper"),
+        ),
+        now=_now(),
+    )
+
+    assert payload["errors"] == ["active runtime status missing: research_paper"]
+    assert payload["health"]["healthy"] is False
+    assert payload["health"]["reason"] == "missing_active_status"
 
 
 def test_dashboard_html_labels_research_paper_as_simulated_not_account_truth() -> None:
@@ -413,6 +470,8 @@ def test_dashboard_page_prioritizes_health_performance_and_lifecycle_without_raw
     assert "最近订单与逐单盈亏" in page
     assert "策略生命周期" in page
     assert "performance-projection" in page
+    assert "points.length===0" in page
+    assert "尚无已结算交易" in page
     assert "JSON.stringify(value,null,2)" not in page
 
 

@@ -90,7 +90,7 @@ FreqUI 官方明确区分 cumulative profit 与实际 wallet balance，并提醒
 生命周期使用一条短时间线：
 
 ```text
-Research → Challenge → Shadow → Canary → Live
+Research → Challenge → Shadow → Paper → Canary → Live
                 ↑ 当前阶段高亮
 ```
 

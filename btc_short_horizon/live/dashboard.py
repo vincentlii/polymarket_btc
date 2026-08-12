@@ -43,12 +43,19 @@ class _OrderHistoryRequestError(ValueError):
 class DashboardConfig:
     runtime_root: Path
     health_service: str = "forward_collector"
+    active_services: tuple[str, ...] = ()
     max_age_seconds: float = 30.0
     status_interval_grace_factor: float = 1.5
 
     def __post_init__(self) -> None:
         if not self.health_service.strip():
             raise ValueError("health_service is required")
+        if len(set(self.active_services)) != len(self.active_services) or any(
+            not service.strip() for service in self.active_services
+        ):
+            raise ValueError("active_services must contain unique non-empty service names")
+        if self.active_services and self.health_service not in self.active_services:
+            raise ValueError("health_service must be included in active_services")
         if self.max_age_seconds <= 0.0:
             raise ValueError("max_age_seconds must be > 0")
         if (
@@ -68,7 +75,7 @@ def build_dashboard_payload(
     current_time = (now or datetime.now(UTC)).astimezone(UTC)
     errors: list[str] = []
     try:
-        statuses = RuntimeStatusStore(config.runtime_root).all()
+        statuses = RuntimeStatusStore(config.runtime_root).all(config.active_services or None)
         stop_request = RuntimeControl(config.runtime_root).stop_request()
     except ValueError as exc:
         statuses = ()
@@ -82,6 +89,11 @@ def build_dashboard_payload(
         errors.append(str(exc))
 
     by_service = {status.service: status for status in statuses}
+    missing_active_services = tuple(
+        service for service in config.active_services if service not in by_service
+    )
+    for service in missing_active_services:
+        errors.append(f"active runtime status missing: {service}")
     primary_status = by_service.get(config.health_service)
     primary = check_runtime_health(
         primary_status,
@@ -90,7 +102,16 @@ def build_dashboard_payload(
     )
     if not statuses and errors:
         primary = RuntimeHealth(False, "invalid_runtime_status", primary.age_seconds)
-    shadow = _shadow_projection(by_service.get("opening_shadow"), errors)
+    shadow = _shadow_projection(
+        (
+            by_service.get("opening_shadow")
+            if not config.active_services or "opening_shadow" in config.active_services
+            else None
+        ),
+        errors,
+    )
+    if missing_active_services:
+        primary = RuntimeHealth(False, "missing_active_status", primary.age_seconds)
     snapshot_health = _snapshot_health(
         snapshot,
         now=current_time,
@@ -105,11 +126,14 @@ def build_dashboard_payload(
             "age_seconds": primary.age_seconds,
         },
         "statuses": [
-            _status_payload(
-                status,
-                current_time,
-                _status_max_age_seconds(status, config=config),
-            )
+            {
+                **_status_payload(
+                    status,
+                    current_time,
+                    _status_max_age_seconds(status, config=config),
+                ),
+                "active": not config.active_services or status.service in config.active_services,
+            }
             for status in statuses
         ],
         "snapshot": None if snapshot is None else snapshot.to_json(),
@@ -203,7 +227,7 @@ def _read_order_history(
             if not isinstance(raw, Mapping):
                 raise _OrderHistoryDataError
             schema_version = raw.get("schema_version")
-            if isinstance(schema_version, bool) or schema_version not in {2, 3, 4, 5}:
+            if isinstance(schema_version, bool) or schema_version not in {2, 3, 4, 5, 6}:
                 raise _OrderHistoryDataError
             raw_records = raw.get("records")
             if not isinstance(raw_records, list):
@@ -233,9 +257,11 @@ def _read_order_history(
                     "ledger.json",
                 ):
                     raise _OrderHistoryDataError
+            variants.add(ledger_variant)
+            epochs.add(execution_epoch)
             for raw_record in raw_records:
                 record_variant = ledger_variant
-                if schema_version in {3, 4, 5}:
+                if schema_version in {3, 4, 5, 6}:
                     record_variant = _data_variant_id(
                         raw_record.get("variant_id") if isinstance(raw_record, Mapping) else None
                     )
@@ -251,8 +277,6 @@ def _read_order_history(
                 if identity in seen:
                     raise _OrderHistoryDataError
                 seen.add(identity)
-                variants.add(record_variant)
-                epochs.add(execution_epoch)
                 records.append((key, projected))
     except _OrderHistoryDataError:
         raise

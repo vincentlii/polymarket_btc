@@ -319,6 +319,8 @@ Detailed guides have been filed away in the [docs index](https://evan-kolberg.gi
   - [Useful Smoke Checks](https://evan-kolberg.github.io/prediction-market-backtesting/testing/#useful-smoke-checks)
   - [Docs Validation](https://evan-kolberg.github.io/prediction-market-backtesting/testing/#docs-validation)
 - [Project Status](https://evan-kolberg.github.io/prediction-market-backtesting/project-status/)
+  - [2026-08-13 Paper Dashboard and Ledger Correctness](https://evan-kolberg.github.io/prediction-market-backtesting/project-status/#2026-08-13-paper-dashboard-and-ledger-correctness)
+  - [2026-08-12 Market-Relative 1x5s 2.0 Development Result](https://evan-kolberg.github.io/prediction-market-backtesting/project-status/#2026-08-12-market-relative-1x5s-20-development-result)
   - [2026-08-12 Chainlink 60-second TWAP Rule Boundary](https://evan-kolberg.github.io/prediction-market-backtesting/project-status/#2026-08-12-chainlink-60-second-twap-rule-boundary)
   - [2026-08-12 Paper v6 One-Signal Boundary](https://evan-kolberg.github.io/prediction-market-backtesting/project-status/#2026-08-12-paper-v6-one-signal-boundary)
   - [2026-08-11 Paper Recovery and Market-End Maker Control](https://evan-kolberg.github.io/prediction-market-backtesting/project-status/#2026-08-11-paper-recovery-and-market-end-maker-control)

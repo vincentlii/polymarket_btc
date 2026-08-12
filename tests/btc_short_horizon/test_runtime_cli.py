@@ -181,14 +181,33 @@ def test_vps_preflight_cli_persists_target_host_evidence(
 
 def test_vps_preflight_rejects_stale_compose_revision(tmp_path) -> None:
     compose_env = tmp_path / ".env"
-    compose_env.write_text("BTC_CODE_REVISION=old-revision\n", encoding="utf-8")
+    old_revision = "a" * 40
+    new_revision = "b" * 40
+    compose_env.write_text(f"BTC_CODE_REVISION={old_revision}\n", encoding="utf-8")
 
-    assert _compose_revision(compose_env) == "old-revision"
+    assert _compose_revision(compose_env) == old_revision
     with pytest.raises(RuntimeError, match="does not match release revision"):
         vps_preflight_main(
             [
                 "--code-revision",
-                "new-revision",
+                new_revision,
+                "--rule-epoch",
+                "btc-15m-current-v1",
+                "--compose-env-file",
+                str(compose_env),
+            ]
+        )
+
+
+def test_vps_preflight_rejects_abbreviated_release_revision(tmp_path) -> None:
+    compose_env = tmp_path / ".env"
+    compose_env.write_text("BTC_CODE_REVISION=abcdef0\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="full 40-character Git SHA"):
+        vps_preflight_main(
+            [
+                "--code-revision",
+                "abcdef0",
                 "--rule-epoch",
                 "btc-15m-current-v1",
                 "--compose-env-file",

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict, deque
 from collections.abc import Mapping
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from math import isfinite
 from pathlib import Path
@@ -248,6 +248,19 @@ class ModelPaperPredictor:
     def market_relative_model_id(self) -> str | None:
         return None if self._market_relative is None else self._market_relative.metadata.model_id
 
+    @property
+    def ledger_model_identity(self) -> dict[str, object]:
+        return {
+            "base_model_id": self.metadata.model_id,
+            "base_model_sha256": self.metadata.model_sha256,
+            "market_relative_model_id": self.market_relative_model_id,
+            "market_relative_model_sha256": (
+                None
+                if self._market_relative is None
+                else self._market_relative.metadata.model_sha256
+            ),
+        }
+
     def __call__(self, market, history, observation):  # type: ignore[no-untyped-def]
         if history is None:
             raise ValueError("Research Paper Binance bootstrap is unavailable")
@@ -313,10 +326,29 @@ def build_research_paper_portfolio(
                     runtime_root,
                     project.paper_execution_epoch,
                     variant.variant_id,
+                    research_identity={
+                        **getattr(predictor, "ledger_model_identity", {}),
+                        "market_rule_epoch": project.rule_epoch,
+                        "model_rule_epoch": project.model_rule_epoch,
+                        "variant": asdict(variant),
+                        "execution": asdict(scenario),
+                    },
                 ),
                 starting_balance=starting_balance,
                 stage_policy=stage_policy or project.stage_policy,
                 clob_capture_end_seconds=project.collection.opening_handoff_delay_seconds,
+                dashboard_primary_model_id=(
+                    getattr(predictor, "market_relative_model_id", None)
+                    if variant.opportunity_policy == "robust_independent_taker"
+                    and getattr(predictor, "market_relative_model_id", None) is not None
+                    else predictor.model_id
+                ),
+                dashboard_dependency_model_id=(
+                    predictor.model_id
+                    if variant.opportunity_policy == "robust_independent_taker"
+                    and getattr(predictor, "market_relative_model_id", None) is not None
+                    else None
+                ),
             )
             for variant in project.paper_execution_variants
             if variant.enabled
@@ -689,7 +721,7 @@ class ResearchPaperRuntime:
             "last_decision_result": self._last_decision_result,
             "prediction_errors": self._prediction_errors,
             "last_prediction_error": self._last_prediction_error,
-            "order_count": len(self.engine.records),
+            "order_count": sum(item.active_at_ns is not None for item in self.engine.records),
             "fill_count": sum(item.filled_shares > 0.0 for item in self.engine.records),
             "resolved_count": sum(item.realized_pnl is not None for item in self.engine.records),
             "execution_variants": [
@@ -701,7 +733,7 @@ class ResearchPaperRuntime:
                         engine.variant.variant_id,
                         "not_started",
                     ),
-                    "order_count": len(engine.records),
+                    "order_count": sum(item.active_at_ns is not None for item in engine.records),
                     "fill_count": sum(item.filled_shares > 0.0 for item in engine.records),
                 }
                 for engine in self.engine.engines

@@ -425,12 +425,24 @@ class PaperLedgerSnapshot:
 class PaperLedgerStore:
     """Atomic Paper-only ledger; it never impersonates the authenticated account ledger."""
 
-    def __init__(self, runtime_root: Path, execution_epoch: str, variant_id: str) -> None:
+    def __init__(
+        self,
+        runtime_root: Path,
+        execution_epoch: str,
+        variant_id: str,
+        *,
+        research_identity: Mapping[str, object] | None = None,
+    ) -> None:
         _identifier(execution_epoch, "execution_epoch")
         _identifier(variant_id, "variant_id")
         self.runtime_root = runtime_root
         self.execution_epoch = execution_epoch
         self.variant_id = variant_id
+        self.research_identity = (
+            None
+            if research_identity is None
+            else json.loads(json.dumps(research_identity, sort_keys=True, allow_nan=False))
+        )
         self.path = (
             runtime_root
             / "paper"
@@ -443,10 +455,15 @@ class PaperLedgerStore:
 
     def write(self, snapshot: PaperLedgerSnapshot) -> Path:
         payload = {
-            "schema_version": 5,
+            "schema_version": 6 if self.research_identity is not None else 5,
             "execution_epoch": self.execution_epoch,
             "variant_id": self.variant_id,
             "starting_balance": snapshot.starting_balance,
+            **(
+                {}
+                if self.research_identity is None
+                else {"research_identity": self.research_identity}
+            ),
             "records": [record.to_json() for record in snapshot.records],
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -469,22 +486,40 @@ class PaperLedgerStore:
             return None
         except json.JSONDecodeError as exc:
             raise ValueError("invalid Research Paper ledger JSON") from exc
-        if not isinstance(raw, Mapping) or raw.get("schema_version") not in {4, 5}:
+        if not isinstance(raw, Mapping) or raw.get("schema_version") not in {4, 5, 6}:
             raise ValueError("unsupported Research Paper ledger schema")
         if raw.get("execution_epoch") != self.execution_epoch:
             raise ValueError("Research Paper ledger epoch does not match its path")
         if raw.get("variant_id") != self.variant_id:
             raise ValueError("Research Paper ledger variant does not match its path")
+        if raw.get("schema_version") == 6:
+            if raw.get("research_identity") != self.research_identity:
+                raise ValueError("Research Paper ledger research identity mismatch")
+        elif self.research_identity is not None:
+            raise ValueError("Research Paper ledger is missing its research identity")
         records = raw.get("records")
         if not isinstance(records, list):
             raise ValueError("Research Paper ledger records must be an array")
         starting_balance = _number(raw.get("starting_balance"), "starting_balance")
         if starting_balance <= 0.0:
             raise ValueError("starting_balance must be > 0")
-        return PaperLedgerSnapshot(
-            starting_balance=starting_balance,
-            records=[PaperTradeRecord.from_json(item) for item in records],
-        )
+        parsed_records = [PaperTradeRecord.from_json(item) for item in records]
+        placement_ids: set[str] = set()
+        for record in parsed_records:
+            if record.variant_id != self.variant_id:
+                raise ValueError("Research Paper ledger record variant does not match its path")
+            if record.placement_id in placement_ids:
+                raise ValueError("Research Paper ledger placement IDs must be unique")
+            placement_ids.add(record.placement_id)
+            if record.side not in {"up", "down"}:
+                raise ValueError("Research Paper ledger record side is invalid")
+            if record.filled_shares < 0.0 or record.filled_shares > record.shares + 1e-9:
+                raise ValueError("Research Paper ledger filled shares are invalid")
+            if record.filled_notional < 0.0 or record.planned_notional < 0.0:
+                raise ValueError("Research Paper ledger notionals must be nonnegative")
+            if record.realized_pnl is not None and record.settled_at_ns is None:
+                raise ValueError("Research Paper realized PnL requires settlement time")
+        return PaperLedgerSnapshot(starting_balance=starting_balance, records=parsed_records)
 
 
 @dataclass(frozen=True, slots=True)
@@ -794,6 +829,8 @@ class ResearchPaperEngine:
         kline_history: BinanceKlineHistory | None = None,
         stage_policy: StagePolicyConfig | None = None,
         clob_capture_end_seconds: float = 215.0,
+        dashboard_primary_model_id: str | None = None,
+        dashboard_dependency_model_id: str | None = None,
     ) -> None:
         if not callable(predictor) or not model_id:
             raise ValueError("predictor and model_id are required")
@@ -801,6 +838,8 @@ class ResearchPaperEngine:
             raise ValueError("starting_balance must be finite and > 0")
         self.predictor = predictor
         self.model_id = model_id
+        self.dashboard_primary_model_id = dashboard_primary_model_id or model_id
+        self.dashboard_dependency_model_id = dashboard_dependency_model_id
         self.maker_config = maker_config
         self.variant = variant
         self.ledger_store = ledger_store
@@ -874,6 +913,14 @@ class ResearchPaperEngine:
             if self._latest_prediction is None
             else self._latest_prediction.model_version
         )
+
+    def _decision_model_id(self, prediction: OpeningMispricingPrediction) -> str:
+        if (
+            self.variant.opportunity_policy == "robust_independent_taker"
+            and prediction.market_relative_model_version is not None
+        ):
+            return prediction.market_relative_model_version
+        return prediction.model_version
 
     def predict_current(self, *, now_ts_ns: int) -> OpeningMispricingPrediction | None:
         if self.market is None:
@@ -1474,7 +1521,7 @@ class ResearchPaperEngine:
                 price_bucket=price_bucket,
                 go_eligible=price_bucket == "core",
                 decision_best_ask=side_book.best_ask,
-                model_version=prediction.model_version,
+                model_version=self._decision_model_id(prediction),
                 signal_observations=list(self._signal_observations),
                 terminal_reason="insufficient_virtual_balance",
                 execution_route=("direct_fak" if self.variant.mode == "immediate_fak" else "maker"),
@@ -1523,7 +1570,7 @@ class ResearchPaperEngine:
             price_bucket=price_bucket,
             go_eligible=price_bucket == "core",
             decision_best_ask=side_book.best_ask,
-            model_version=prediction.model_version,
+            model_version=self._decision_model_id(prediction),
             signal_observations=list(self._signal_observations),
             execution_route=placement.execution_route,
             active_at_ns=placement.active_ts_ns,
@@ -1759,15 +1806,11 @@ class ResearchPaperEngine:
             generated_at=now,
             run_mode="research_paper",
             strategy=StrategyCycle(
-                stage=StrategyStage.SHADOW,
+                stage=StrategyStage.PAPER,
                 gate_state=GateState.RUNNING,
                 next_action="继续积累实时模拟成交；正式 Maker Go 仍需悲观 BookReplay 与 Canary。",
-                model_id=self.active_model_id,
-                challenger_model_id=(
-                    None
-                    if self._latest_prediction is None
-                    else self._latest_prediction.market_relative_model_version
-                ),
+                model_id=self.dashboard_primary_model_id,
+                challenger_model_id=self.dashboard_dependency_model_id,
                 progress_label="已完成模拟市场",
                 progress_current=float(sum(item.realized_pnl is not None for item in self.records)),
                 progress_target=300.0,
@@ -2106,6 +2149,7 @@ class ResearchPaperEngine:
                 go_eligible=item.go_eligible,
                 decision_best_ask=item.decision_best_ask,
                 signal_edge_decay=_signal_edge_decay(item.signal_observations),
+                model_version=item.model_version,
             )
             for item in sorted(self.records, key=lambda value: value.placed_at_ns, reverse=True)[
                 :10
@@ -2132,9 +2176,9 @@ class ResearchPaperEngine:
                 else sum((item.realized_pnl or 0.0) > 0.0 for item in settled_fills)
                 / len(settled_fills)
             ),
-            order_count=len(self.records),
+            order_count=sum(item.active_at_ns is not None for item in self.records),
             fill_count=sum(item.filled_shares > 0.0 for item in self.records),
-            equity_curve=tuple(points),
+            equity_curve=_bounded_equity_curve(points),
             primary_variant_id=(self.variant.variant_id if self.variant.primary else None),
             variant_summaries=((self.variant_performance(),) if self.variant.primary else ()),
             recent_orders=recent,
@@ -2159,7 +2203,7 @@ class ResearchPaperEngine:
             starting_balance=self.starting_balance,
             equity=equity,
             realized_pnl=realized,
-            order_count=len(self.records),
+            order_count=sum(item.active_at_ns is not None for item in self.records),
             opportunity_count=len(self.records),
             fill_count=sum(item.filled_shares > 0.0 for item in self.records),
             taker_fees=sum(item.taker_fees for item in self.records),
@@ -2270,7 +2314,9 @@ class ResearchPaperEngine:
         entry = {
             "decision_ts_ns": now_ts_ns,
             "model_version": (
-                None if self._latest_prediction is None else self._latest_prediction.model_version
+                None
+                if self._latest_prediction is None
+                else self._decision_model_id(self._latest_prediction)
             ),
             "decision_reason": str(decision.reason),
             "selected_side": None if decision.plan is None else decision.plan.side.value,
@@ -2702,6 +2748,22 @@ def _direction_execution_performance(
             )
         )
     return tuple(summaries)
+
+
+def _bounded_equity_curve(
+    points: Sequence[EquityPoint],
+    *,
+    maximum_points: int = 2_000,
+) -> tuple[EquityPoint, ...]:
+    """Bound dashboard payload size while preserving the exact first and latest balances."""
+
+    if len(points) <= maximum_points:
+        return tuple(points)
+    last_index = len(points) - 1
+    indexes = {
+        round(position * last_index / (maximum_points - 1)) for position in range(maximum_points)
+    }
+    return tuple(points[index] for index in sorted(indexes))
 
 
 def _text(value: object, name: str) -> str:

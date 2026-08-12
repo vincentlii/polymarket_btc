@@ -1,5 +1,28 @@
 # Project Status
 
+## 2026-08-13 Paper dashboard and ledger correctness
+
+- Research Paper now reports a distinct `paper` lifecycle stage. The dashboard
+  renders a flat current-epoch equity line even before the first settlement and
+  states that no settled trade exists instead of hiding the chart.
+- Execution epoch `paper-v8-dashboard-ledger-identity` preserves v7 as
+  read-only history and binds new ledgers to both model hashes, rule epochs,
+  variant configuration and execution stress assumptions.
+- The current primary curve remains isolated to the primary variant and current
+  execution epoch. Legacy/control and older-epoch PnL are not spliced into it.
+- Dashboard health now evaluates only services declared active by the deployed
+  compose profile; stale status files from disabled services remain historical
+  evidence but no longer create a false runtime outage.
+- Market-relative 2.0 orders and lifecycle lineage now record 2.0 as the
+  decision model and Legacy as its base dependency. Rejected opportunities are
+  no longer counted as submitted orders.
+- Paper ledger restore rejects misplaced variants, duplicate placement IDs and
+  invalid fill/settlement invariants. Dashboard equity payloads retain exact
+  endpoints while bounding long-running curve size to 2,000 points.
+- VPS preflight rejects abbreviated or malformed release revisions. Deployment
+  identity must use the exact full 40-character Git SHA in Git, compose, image
+  labels and runtime status.
+
 ## 2026-08-12 Market-relative 1x5s 2.0 development result
 
 - The point-rule Shadow archive now contains 1,079 markets. Strict causal pair

@@ -30,12 +30,15 @@ from btc_short_horizon.live.paper_replay import (
 import btc_short_horizon.live.paper_runtime as paper_runtime_module
 import scripts.btc_research_paper_replay as paper_replay_script
 from btc_short_horizon.live.research_paper import (
+    _bounded_equity_curve,
+    PaperLedgerSnapshot,
     PaperLedgerStore,
     PaperRuleSnapshotStore,
     PaperTradeRecord,
     ResearchPaperEngine,
     ResearchPaperPortfolio,
 )
+from btc_short_horizon.live.dashboard_state import EquityPoint, StrategyStage
 from btc_short_horizon.live.settlement_trades import (
     PublicSettlementTradesClient,
     SettlementTrade,
@@ -52,6 +55,38 @@ T0_NS = int(T0.timestamp() * 1_000_000_000)
 UP = "1"
 DOWN = "2"
 CONDITION = "0x" + "ab" * 32
+
+
+def test_dashboard_equity_curve_is_bounded_without_losing_endpoints() -> None:
+    points = tuple(
+        EquityPoint(timestamp=T0 + timedelta(seconds=index), equity=1_000.0 + index)
+        for index in range(2_501)
+    )
+
+    bounded = _bounded_equity_curve(points)
+
+    assert len(bounded) <= 2_000
+    assert bounded[0] == points[0]
+    assert bounded[-1] == points[-1]
+
+
+def test_paper_ledger_rejects_research_identity_change_within_epoch(tmp_path) -> None:
+    original = PaperLedgerStore(
+        tmp_path,
+        "paper-v8",
+        "primary",
+        research_identity={"model_sha256": "a" * 64},
+    )
+    original.write(PaperLedgerSnapshot(starting_balance=1_000.0, records=[]))
+
+    changed = PaperLedgerStore(
+        tmp_path,
+        "paper-v8",
+        "primary",
+        research_identity={"model_sha256": "b" * 64},
+    )
+    with pytest.raises(ValueError, match="research identity mismatch"):
+        changed.read()
 
 
 def _market() -> MarketWindow:
@@ -900,6 +935,7 @@ def test_baseline_portfolio_contains_only_the_two_enabled_1x_variants(tmp_path) 
 
     class Predictor:
         model_id = "proxy-model"
+        market_relative_model_id = "market-relative-v1"
         include_interval = False
 
         def __call__(self, market, history, observation):  # type: ignore[no-untyped-def]
@@ -947,13 +983,16 @@ def test_baseline_portfolio_contains_only_the_two_enabled_1x_variants(tmp_path) 
     )
     assert legacy.side == "up"
     assert challenger.side == "down"
+    assert legacy.model_version == "proxy-model"
+    assert challenger.model_version == "market-relative-v1"
     portfolio.checkpoint_evaluations()
 
     snapshot = portfolio.dashboard_snapshot(now=T0 + timedelta(seconds=6))
 
     assert {record.variant_id for record in portfolio.records} == enabled_variant_ids
     assert snapshot.performance is not None
-    assert snapshot.strategy.challenger_model_id == "market-relative-v1"
+    assert snapshot.strategy.model_id == "market-relative-v1"
+    assert snapshot.strategy.challenger_model_id == "proxy-model"
     assert {
         item.variant_id for item in snapshot.performance.variant_summaries
     } == enabled_variant_ids
@@ -1296,6 +1335,10 @@ def test_research_paper_rejects_plan_above_virtual_available_balance(tmp_path) -
     assert engine.records[0].execution_status == "rejected"
     assert engine.records[0].terminal_reason == "insufficient_virtual_balance"
     assert engine.active_placement is None
+    snapshot = engine.dashboard_snapshot(now=T0 + timedelta(seconds=11))
+    assert snapshot.performance is not None
+    assert snapshot.performance.order_count == 0
+    assert snapshot.performance.variant_summaries[0].opportunity_count == 1
 
 
 def test_unfilled_resolved_order_does_not_count_as_a_losing_trade(tmp_path) -> None:
@@ -1349,6 +1392,8 @@ def test_research_paper_settlement_is_persisted_and_projected_as_simulated_pnl(t
     restored = PaperLedgerStore(tmp_path, "test-paper-v2", "maker_15s").read()
 
     assert snapshot.run_mode == "research_paper"
+    assert snapshot.strategy is not None
+    assert snapshot.strategy.stage is StrategyStage.PAPER
     assert snapshot.performance is not None
     assert snapshot.performance.realized_pnl == 3.0
     assert snapshot.performance.equity == 1_003.0

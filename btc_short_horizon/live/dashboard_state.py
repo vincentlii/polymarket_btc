@@ -27,6 +27,7 @@ class StrategyStage(StrEnum):
     RESEARCH = "research"
     CHALLENGE = "challenge"
     SHADOW = "shadow"
+    PAPER = "paper"
     CANARY = "canary"
     LIVE = "live"
 
@@ -131,6 +132,7 @@ class OrderPerformance:
     go_eligible: bool | None = None
     decision_best_ask: float | None = None
     signal_edge_decay: float | None = None
+    model_version: str | None = None
 
     def __post_init__(self) -> None:
         _require_identifier(self.variant_id, "variant_id")
@@ -161,7 +163,7 @@ class OrderPerformance:
         _nonnegative(self.taker_fees, "taker_fees")
         _nonnegative(self.initial_queue_ahead, "initial_queue_ahead")
         _nonnegative(self.remaining_queue_ahead, "remaining_queue_ahead")
-        for name in ("opportunity_id", "entry_regime", "price_bucket"):
+        for name in ("opportunity_id", "entry_regime", "price_bucket", "model_version"):
             value = getattr(self, name)
             if value is not None:
                 _require_text(value, name)
@@ -201,6 +203,7 @@ class OrderPerformance:
             "go_eligible": self.go_eligible,
             "decision_best_ask": self.decision_best_ask,
             "signal_edge_decay": self.signal_edge_decay,
+            "model_version": self.model_version,
         }
 
     @classmethod
@@ -237,6 +240,7 @@ class OrderPerformance:
             go_eligible=_optional_bool(value.get("go_eligible"), "go_eligible"),
             decision_best_ask=_optional_float(value.get("decision_best_ask"), "decision_best_ask"),
             signal_edge_decay=_optional_float(value.get("signal_edge_decay"), "signal_edge_decay"),
+            model_version=_optional_text(value.get("model_version"), "model_version"),
         )
 
 

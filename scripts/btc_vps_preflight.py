@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 import json
 from math import ceil, isfinite
 from pathlib import Path
+import re
 import subprocess
 
 import httpx
@@ -49,8 +50,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    compose_revision = _compose_revision(args.compose_env_file)
-    if compose_revision.casefold() != args.code_revision.strip().casefold():
+    release_revision = _full_git_revision(args.code_revision, name="release revision")
+    compose_revision = _full_git_revision(
+        _compose_revision(args.compose_env_file),
+        name="compose BTC_CODE_REVISION",
+    )
+    if compose_revision != release_revision:
         raise RuntimeError(
             "compose BTC_CODE_REVISION does not match release revision: "
             f"{compose_revision} != {args.code_revision}"
@@ -58,7 +63,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not isfinite(args.minimum_free_gib) or args.minimum_free_gib <= 0.0:
         raise ValueError("minimum-free-gib must be finite and > 0")
     config = DeploymentPreflightConfig(
-        release_revision=args.code_revision,
+        release_revision=release_revision,
         observed_revision=_git_revision(),
         rule_epoch=args.rule_epoch,
         data_root=args.data_root,
@@ -148,6 +153,13 @@ def _compose_revision(path: Path) -> str:
     if len(values) != 1 or not values[0]:
         raise RuntimeError("compose environment must define BTC_CODE_REVISION exactly once")
     return values[0]
+
+
+def _full_git_revision(value: str, *, name: str) -> str:
+    normalized = value.strip().casefold()
+    if re.fullmatch(r"[0-9a-f]{40}", normalized) is None:
+        raise RuntimeError(f"{name} must be a full 40-character Git SHA")
+    return normalized
 
 
 def _host_ntp_synchronized() -> bool:
