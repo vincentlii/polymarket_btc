@@ -7,6 +7,7 @@ import asyncio
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from math import isfinite
 from pathlib import Path
 
@@ -486,7 +487,7 @@ def next_market_slug(family: BtcMarketFamily, now: datetime) -> str:
 def _write_single_market_catalog(
     *, directory: Path, family: BtcMarketFamily, market: MarketWindow
 ) -> Path:
-    path = directory / f"{market.slug}-{market.rule_hash}.json"
+    path = _single_market_catalog_path(directory=directory, market=market)
     if path.exists():
         existing = read_market_catalog(path)
         if existing.families != (family,) or existing.windows() != (market,):
@@ -499,6 +500,11 @@ def _write_single_market_catalog(
         catalog=MarketCatalog(families=(family,), windows=(market,)),
     )
     return path
+
+
+def _single_market_catalog_path(*, directory: Path, market: MarketWindow) -> Path:
+    contract_hash = sha256(f"{market.rule_epoch}\n{market.rule_hash}".encode("utf-8")).hexdigest()
+    return directory / f"{market.slug}-{contract_hash}.json"
 
 
 def _validate_follow_current_args(args: argparse.Namespace) -> None:

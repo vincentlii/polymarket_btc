@@ -1,8 +1,8 @@
 # Codebase UML Inventory
 
 This file is generated from Python AST metadata and excludes `tests/` plus git-ignored private strategy/research directories.
-Generated: 2026-08-12T04:44:18+00:00
-Modules: 237 | Classes: 497 | Functions/methods: 3346
+Generated: 2026-08-12T05:32:06+00:00
+Modules: 237 | Classes: 497 | Functions/methods: 3347
 
 ## Backtesting Data Flow
 
@@ -4024,26 +4024,27 @@ flowchart TD
 - Function L218: `main(argv: Sequence[str] | None = None) -> int`
 
 ### `scripts/btc_forward_collector.py`
-- Imports: `__future__, argparse, asyncio, btc_short_horizon, collections, dataclasses, datetime, httpx, math, pathlib`
-- Function L61: `parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace`
-- Function L158: `build_collector(args: argparse.Namespace, *, config: BtcProjectConfig | None = None) -> BtcForwardCollector`
-- Function L191: `_token_ids(args: argparse.Namespace) -> tuple[str, ...]`
-- Function L209: `async collect(args: argparse.Namespace) -> None`
-- Function L222: `async _collect_with_storage_lease(args: argparse.Namespace, *, config: BtcProjectConfig) -> None`
-- Function L293: `async collect_current_market_windows(*, family: BtcMarketFamily, rule_epoch: str, raw_data_root: Path, catalog_directory: Path, flush_size: int, flush_interval_seconds: float, shutdown_flush_timeout_seconds: float, max_pending_events: int, max_pending_bytes: int, binance_spot_depth_snapshot_limit: int, binance_futures_depth_snapshot_limit: int, binance_depth_snapshot_retry_initial_seconds: float, binance_depth_snapshot_retry_max_seconds: float, polymarket_source_timestamp_regression_tolerance_seconds: float, ingest_version: str, binance_streams: Sequence[str], binance_futures_market_streams: Sequence[str], binance_futures_public_streams: Sequence[str], rotation_poll_seconds: float, polymarket_capture_lead_seconds: float, opening_handoff_delay_seconds: float, stop_event: asyncio.Event, gamma_client: GammaMarketClient | None = None, collector_factory: Callable[[Path, tuple[tuple[str, ...], ...], WindowCollectorSettings], BtcForwardCollector] | None = None, on_market_active: Callable[[MarketWindow, MarketWindow | None, BtcForwardCollector], None] | None = None, now: Callable[[], datetime] = lambda: datetime.now(UTC)) -> None`
-- Function L472: `current_market_slug(family: BtcMarketFamily, now: datetime) -> str`
-- Function L479: `next_market_slug(family: BtcMarketFamily, now: datetime) -> str`
-- Function L486: `_write_single_market_catalog(*, directory: Path, family: BtcMarketFamily, market: MarketWindow) -> Path`
-- Function L504: `_validate_follow_current_args(args: argparse.Namespace) -> None`
-- Function L513: `_follow_family(config: BtcProjectConfig, name: str) -> BtcMarketFamily`
-- Function L521: `_collection_settings(args: argparse.Namespace, config: BtcProjectConfig) -> tuple[int, float, float]`
-- Function L539: `_build_window_collector(raw_data_root: Path, token_groups: tuple[tuple[str, ...], ...], settings: WindowCollectorSettings) -> BtcForwardCollector`
-- Function L571: `async _wait_or_stop(stop_event: asyncio.Event, seconds: float) -> None`
-- Function L578: `async _wait_for_market_rotation(*, stop_event: asyncio.Event, worker: asyncio.Task[None], market: MarketWindow, handoff_delay_seconds: float, now: Callable[[], datetime]) -> None`
-- Function L595: `async _wait_for_collector_deadline(*, stop_event: asyncio.Event, worker: asyncio.Task[None], deadline: datetime, now: Callable[[], datetime]) -> None`
-- Function L621: `_as_utc(value: datetime) -> datetime`
-- Function L627: `main(argv: Sequence[str] | None = None) -> int`
-- Class L45: `WindowCollectorSettings`
+- Imports: `__future__, argparse, asyncio, btc_short_horizon, collections, dataclasses, datetime, hashlib, httpx, math, pathlib`
+- Function L62: `parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace`
+- Function L159: `build_collector(args: argparse.Namespace, *, config: BtcProjectConfig | None = None) -> BtcForwardCollector`
+- Function L192: `_token_ids(args: argparse.Namespace) -> tuple[str, ...]`
+- Function L210: `async collect(args: argparse.Namespace) -> None`
+- Function L223: `async _collect_with_storage_lease(args: argparse.Namespace, *, config: BtcProjectConfig) -> None`
+- Function L294: `async collect_current_market_windows(*, family: BtcMarketFamily, rule_epoch: str, raw_data_root: Path, catalog_directory: Path, flush_size: int, flush_interval_seconds: float, shutdown_flush_timeout_seconds: float, max_pending_events: int, max_pending_bytes: int, binance_spot_depth_snapshot_limit: int, binance_futures_depth_snapshot_limit: int, binance_depth_snapshot_retry_initial_seconds: float, binance_depth_snapshot_retry_max_seconds: float, polymarket_source_timestamp_regression_tolerance_seconds: float, ingest_version: str, binance_streams: Sequence[str], binance_futures_market_streams: Sequence[str], binance_futures_public_streams: Sequence[str], rotation_poll_seconds: float, polymarket_capture_lead_seconds: float, opening_handoff_delay_seconds: float, stop_event: asyncio.Event, gamma_client: GammaMarketClient | None = None, collector_factory: Callable[[Path, tuple[tuple[str, ...], ...], WindowCollectorSettings], BtcForwardCollector] | None = None, on_market_active: Callable[[MarketWindow, MarketWindow | None, BtcForwardCollector], None] | None = None, now: Callable[[], datetime] = lambda: datetime.now(UTC)) -> None`
+- Function L473: `current_market_slug(family: BtcMarketFamily, now: datetime) -> str`
+- Function L480: `next_market_slug(family: BtcMarketFamily, now: datetime) -> str`
+- Function L487: `_write_single_market_catalog(*, directory: Path, family: BtcMarketFamily, market: MarketWindow) -> Path`
+- Function L505: `_single_market_catalog_path(*, directory: Path, market: MarketWindow) -> Path`
+- Function L510: `_validate_follow_current_args(args: argparse.Namespace) -> None`
+- Function L519: `_follow_family(config: BtcProjectConfig, name: str) -> BtcMarketFamily`
+- Function L527: `_collection_settings(args: argparse.Namespace, config: BtcProjectConfig) -> tuple[int, float, float]`
+- Function L545: `_build_window_collector(raw_data_root: Path, token_groups: tuple[tuple[str, ...], ...], settings: WindowCollectorSettings) -> BtcForwardCollector`
+- Function L577: `async _wait_or_stop(stop_event: asyncio.Event, seconds: float) -> None`
+- Function L584: `async _wait_for_market_rotation(*, stop_event: asyncio.Event, worker: asyncio.Task[None], market: MarketWindow, handoff_delay_seconds: float, now: Callable[[], datetime]) -> None`
+- Function L601: `async _wait_for_collector_deadline(*, stop_event: asyncio.Event, worker: asyncio.Task[None], deadline: datetime, now: Callable[[], datetime]) -> None`
+- Function L627: `_as_utc(value: datetime) -> datetime`
+- Function L633: `main(argv: Sequence[str] | None = None) -> int`
+- Class L46: `WindowCollectorSettings`
 
 ### `scripts/btc_forward_runtime.py`
 - Imports: `__future__, argparse, asyncio, btc_short_horizon, collections, dataclasses, datetime, math, pathlib, scripts, signal`
