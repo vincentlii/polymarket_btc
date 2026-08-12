@@ -895,7 +895,7 @@ class ResearchPaperEngine:
         self._signal_observations: list[PaperSignalObservation] = []
         self._last_evaluation: PaperEvaluationObservation | None = None
         self._confirmation_stage: str | None = None
-        if changed:
+        if restored is None or changed:
             self._persist()
 
     @property
