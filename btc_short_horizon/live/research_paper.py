@@ -1763,6 +1763,11 @@ class ResearchPaperEngine:
                 gate_state=GateState.RUNNING,
                 next_action="继续积累实时模拟成交；正式 Maker Go 仍需悲观 BookReplay 与 Canary。",
                 model_id=self.active_model_id,
+                challenger_model_id=(
+                    None
+                    if self._latest_prediction is None
+                    else self._latest_prediction.market_relative_model_version
+                ),
                 progress_label="已完成模拟市场",
                 progress_current=float(sum(item.realized_pnl is not None for item in self.records)),
                 progress_target=300.0,

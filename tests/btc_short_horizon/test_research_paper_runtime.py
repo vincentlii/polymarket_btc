@@ -953,6 +953,7 @@ def test_baseline_portfolio_contains_only_the_two_enabled_1x_variants(tmp_path) 
 
     assert {record.variant_id for record in portfolio.records} == enabled_variant_ids
     assert snapshot.performance is not None
+    assert snapshot.strategy.challenger_model_id == "market-relative-v1"
     assert {
         item.variant_id for item in snapshot.performance.variant_summaries
     } == enabled_variant_ids
