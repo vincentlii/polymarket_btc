@@ -8,6 +8,7 @@ from btc_short_horizon.research import (
     ResearchSample,
     WalkForwardConfig,
     build_walk_forward_plan,
+    direction_horizon_protocols,
 )
 
 
@@ -143,4 +144,44 @@ def test_walk_forward_rejects_overlapping_oof_windows_and_boolean_labels() -> No
             feature_ts=time,
             label_available_ts=time + timedelta(minutes=15),
             label=1,
+        )
+
+
+def test_direction_horizon_protocols_freeze_90_180_and_expanding_windows() -> None:
+    protocols = direction_horizon_protocols()
+
+    assert set(protocols) == {"rolling_90d", "rolling_180d", "expanding_90d_minimum"}
+    assert protocols["rolling_90d"].train_duration == timedelta(days=90)
+    assert protocols["rolling_180d"].train_duration == timedelta(days=180)
+    assert protocols["expanding_90d_minimum"].training_window == "expanding"
+    for config in protocols.values():
+        assert config.calibration_duration == timedelta(days=21)
+        assert config.test_duration == timedelta(days=14)
+        assert config.step_duration == timedelta(days=14)
+        assert config.embargo_duration == timedelta(hours=4, minutes=15)
+        assert config.sealed_holdout_duration == timedelta(days=28)
+
+
+def test_expanding_protocol_keeps_first_training_boundary_and_group_causality() -> None:
+    samples = _samples(count=230, spacing=timedelta(days=1))
+    config = WalkForwardConfig(
+        train_duration=timedelta(days=90),
+        calibration_duration=timedelta(days=21),
+        test_duration=timedelta(days=14),
+        step_duration=timedelta(days=14),
+        embargo_duration=timedelta(hours=1),
+        sealed_holdout_duration=timedelta(days=28),
+        training_window="expanding",
+    )
+
+    plan = build_walk_forward_plan(samples, config=config)
+
+    assert len(plan.folds) >= 2
+    assert {fold.train_start for fold in plan.folds} == {samples[0].feature_ts}
+    assert len(plan.folds[1].train_indices) > len(plan.folds[0].train_indices)
+    for fold in plan.folds:
+        assert set(fold.train_indices).isdisjoint(fold.calibration_indices)
+        assert set(fold.train_indices).isdisjoint(fold.test_indices)
+        assert all(
+            samples[index].label_available_ts <= fold.train_end for index in fold.train_indices
         )

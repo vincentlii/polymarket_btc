@@ -273,6 +273,16 @@ Grafana建议刷新频率应匹配数据变化速度，并为 panel 添加说明
 
 ## 推荐实施顺序
 
+### 当前 v6 Research Paper 边界
+
+`paper-v6-1x5s-v2` 的当前看板快照只包含两张启用中的执行卡：
+`independent_fak_1x5s`（当前 primary）和 `independent_fak_1x5s_2_0`（challenger）。
+两者都是单信号 immediate-FAK 策略并使用隔离账本。maker、2x5 和 3x5 仅保留为
+rollback/history 代码，不进入当前快照。
+
+分页 `/api/orders` 历史读取保持只读，并继续发现旧 execution epoch；不同 epoch 的
+余额和资金曲线不得与 v6 primary 曲线合并。
+
 1. 先完成概览：真实权益/PnL、资金曲线、关键链路健康、生命周期、最近交易、活跃告警。
 2. 再完成交易页：市场级主表、订单/fill 展开、实际与 Proxy 口径隔离。
 3. 最后完成运维页：分阶段延迟、数据质量、告警历史和诊断链接。
@@ -280,11 +290,13 @@ Grafana建议刷新频率应匹配数据变化速度，并为 panel 添加说明
 
 这一顺序优先满足“打开后几秒内知道是否正常、是否赚钱、是否该行动”，同时为后续 Shadow、Canary 和 Live 逐步补齐真实数据留出稳定接口。
 
-Research Paper 的首页默认只显示启用中的三张策略卡：首次合格信号立即提交的 1x5
-对照、两次五秒确认的 2x5 主策略，以及带 edge 稳定约束的 Stable 3x5 对照。三个
-暂停的 maker-gated 历史策略仍保留在状态与账本中，但只有用户切换到“全部”筛选后
-才显示。筛选只影响前端展示，不删除历史数据，也不改变 runtime 决策。各变体资金、
-订单、成交与 PnL 账本完全隔离；主资金曲线只采用标记为 primary 的 2x5。卡片显示
+Research Paper 的首页默认只显示启用中的两张策略卡：首次合格信号立即提交的
+`independent_fak_1x5s` 当前主策略，以及 `independent_fak_1x5s_2_0` challenger。
+两者共享当前模型和执行假设，但订单、成交与 PnL 账本完全隔离。maker、2x5 和 3x5
+只保留为 rollback/history 代码，不会进入当前 runtime snapshot。历史 execution epoch
+仍可通过只读订单 API 按 epoch 筛选；不同 epoch 的 starting balance 与资金曲线不得合并。
+在 2.0 通过开发 Gate 并发布可加载 artifact 前，主资金曲线继续采用 Legacy 1x5s；
+不得仅因代码路径存在就提前切换 primary。卡片显示
 全样本 PnL、核心与全样本已结算机会 EV、按已成交份额计算的 conditional EV、
 成交率、评估/合格信号、核心/尾部样本和 taker fee，并按 3--30 秒、35--90 秒、
 95--180 秒及价格区间分层。Promotion 只读取核心样本 EV；尾部研究样本不能靠较大

@@ -5,29 +5,41 @@ from collections import defaultdict, deque
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 import json
+from pathlib import Path
+import sqlite3
 from types import SimpleNamespace
 
+import httpx
 import numpy as np
 import pytest
 
-from btc_short_horizon.config import PaperExecutionVariantConfig
+from btc_short_horizon.config import PaperExecutionVariantConfig, load_btc_project_config
 from btc_short_horizon.data import BTC_15M_MARKET_FAMILY, MarketOutcome, MarketWindow
 from btc_short_horizon.data.collector import RawCollectorEvent
 from btc_short_horizon.data.contracts import TimedMarketEvent
 from btc_short_horizon.data.forward import AdmittedEventBuffer
 from btc_short_horizon.live.paper_execution import PaperExecutionConfig, PaperMarketRules
-from btc_short_horizon.live.paper_runtime import ResearchPaperRuntime
+from btc_short_horizon.live.paper_runtime import (
+    ResearchPaperRuntime,
+    build_research_paper_portfolio,
+)
 from btc_short_horizon.live.paper_replay import (
     build_replay_binance_history,
     replay_research_paper,
 )
 import btc_short_horizon.live.paper_runtime as paper_runtime_module
+import scripts.btc_research_paper_replay as paper_replay_script
 from btc_short_horizon.live.research_paper import (
     PaperLedgerStore,
     PaperRuleSnapshotStore,
     PaperTradeRecord,
     ResearchPaperEngine,
     ResearchPaperPortfolio,
+)
+from btc_short_horizon.live.settlement_trades import (
+    PublicSettlementTradesClient,
+    SettlementTrade,
+    SettlementTradeEvidenceStore,
 )
 from btc_short_horizon.models import OpeningMispricingPrediction
 from btc_short_horizon.research.binance_history import BinanceKlineHistory
@@ -185,20 +197,25 @@ def _variant(
     confirmation_policy: str = "side_only",
     confirmation_signals: int = 2,
     maximum_edge_decay: float = 0.0,
+    maker_expiry_policy: str = "fixed_duration",
+    maker_fill_evidence_policy: str = "live_stream",
 ) -> PaperExecutionVariantConfig:
+    uses_independent_filter = opportunity_policy == "independent_taker"
     return PaperExecutionVariantConfig(
         variant_id=variant_id,
         label=variant_id.replace("_", " ").title(),
         mode=mode,
         maker_work_seconds=maker_work_seconds,
         primary=primary,
-        minimum_taker_net_edge=0.03 if mode != "maker" else 0.0,
-        slippage_buffer=0.005 if mode != "maker" else 0.0,
-        model_uncertainty_buffer=0.03 if mode != "maker" else 0.0,
+        minimum_taker_net_edge=0.03 if mode != "maker" or uses_independent_filter else 0.0,
+        slippage_buffer=0.005 if mode != "maker" or uses_independent_filter else 0.0,
+        model_uncertainty_buffer=0.03 if mode != "maker" or uses_independent_filter else 0.0,
         opportunity_policy=opportunity_policy,
         confirmation_policy=confirmation_policy,
         confirmation_signals=confirmation_signals,
         maximum_edge_decay=maximum_edge_decay,
+        maker_expiry_policy=maker_expiry_policy,
+        maker_fill_evidence_policy=maker_fill_evidence_policy,
     )
 
 
@@ -567,6 +584,30 @@ def test_regime_boundary_accepts_only_configured_scheduler_tolerance(tmp_path) -
     assert engine.records[0].entry_regime == "early_3s_to_30s"
 
 
+def test_direction_evidence_uses_the_same_boundary_tolerance_as_execution(tmp_path) -> None:
+    engine = _engine(
+        tmp_path,
+        variant=_variant(
+            "independent_fak_1x5s",
+            mode="immediate_fak",
+            maker_work_seconds=0.0,
+            opportunity_policy="independent_taker",
+            confirmation_signals=1,
+        ),
+    )
+    portfolio = ResearchPaperPortfolio((engine,))
+    portfolio.activate_market(_market(), rules={UP: _rules(UP), DOWN: _rules(DOWN)})
+    portfolio.on_event(_book(UP, bid="0.40", ask="0.42", second=29))
+    portfolio.on_event(_book(DOWN, bid="0.56", ask="0.58", second=29))
+
+    result = portfolio.decide(now_ts_ns=T0_NS + 30_058_000_000)
+
+    assert result == "submitted"
+    summary = portfolio.direction_store.snapshot()
+    assert summary.prediction_count == 1
+    assert [item.stage for item in summary.stage_summaries] == ["early_3s_to_30s"]
+
+
 @pytest.mark.parametrize(
     ("confirmation_policy", "maximum_edge_decay"),
     (("side_only", 0.0), ("edge_stable", 0.02)),
@@ -774,6 +815,203 @@ def test_independent_fak_submits_when_shared_maker_gate_has_no_plan(tmp_path) ->
         T0_NS + 10_500_000_000,
     ]
     assert all(len(item["evaluations"]) == 2 for item in diagnostic["entries"])
+
+
+def test_independent_maker_reuses_1x5_filter_and_works_until_market_end(tmp_path) -> None:
+    maker = _engine(
+        tmp_path,
+        predictor=lambda _market, _history, observation: _prediction(observation, p_up=0.68),
+        variant=_variant(
+            "independent_maker_1x5s_market_end",
+            mode="maker",
+            maker_work_seconds=0.0,
+            opportunity_policy="independent_taker",
+            confirmation_signals=1,
+            maker_expiry_policy="market_end",
+            maker_fill_evidence_policy="settlement_trades",
+        ),
+    )
+    fak = _engine(
+        tmp_path,
+        predictor=lambda _market, _history, observation: _prediction(observation, p_up=0.68),
+        variant=_variant(
+            "independent_fak_1x5s",
+            mode="immediate_fak",
+            maker_work_seconds=0.0,
+            primary=False,
+            opportunity_policy="independent_taker",
+            confirmation_signals=1,
+        ),
+    )
+    portfolio = ResearchPaperPortfolio((maker, fak))
+    market = _market()
+    portfolio.activate_market(market, rules={UP: _rules(UP), DOWN: _rules(DOWN)})
+    portfolio.on_event(_book(UP, bid="0.58", ask="0.59", second=5))
+    portfolio.on_event(_book(DOWN, bid="0.40", ask="0.41", second=5))
+
+    portfolio.decide(now_ts_ns=T0_NS + 5_500_000_000)
+    maker.advance(now_ts_ns=T0_NS + 5_550_000_000)
+
+    assert maker.records[0].side == fak.records[0].side == "up"
+    assert maker.records[0].execution_route == "maker"
+    assert maker.active_placement is not None
+    assert maker.active_placement.plan.expires_ts_ns == int(market.t1.timestamp() * 1_000_000_000)
+    assert maker.active_placement.status == "working"
+
+    maker.advance(now_ts_ns=T0_NS + 300_200_000_000)
+
+    assert maker.active_placement.status == "working"
+    maker.advance(now_ts_ns=int(market.t1.timestamp() * 1_000_000_000))
+    maker.advance(now_ts_ns=int(market.t1.timestamp() * 1_000_000_000) + 100_000_000)
+    assert maker.requires_settlement_trade_evidence(market.slug)
+    record = maker.records[0]
+    assert record.maker_limit_price is not None
+    maker.apply_settlement_trade_evidence(
+        market_slug=market.slug,
+        trades=(
+            SettlementTrade(
+                token_id=UP,
+                price=record.maker_limit_price,
+                size=210.0,
+                timestamp_seconds=int((T0 + timedelta(seconds=400)).timestamp()),
+                evidence_id="a" * 64,
+            ),
+        ),
+        assessed_at_ns=T0_NS + 901_000_000_000,
+    )
+
+    assert record.filled_shares == 5.0
+    assert record.maker_filled_shares == 5.0
+    assert record.execution_status == "filled"
+    assert not maker.requires_settlement_trade_evidence(market.slug)
+
+
+def test_baseline_portfolio_contains_only_the_two_enabled_1x_variants(tmp_path) -> None:
+    project = load_btc_project_config(Path("configs/btc_short_horizon/baseline.toml"))
+    enabled_variant_ids = {
+        "independent_fak_1x5s",
+        "independent_fak_1x5s_2_0",
+    }
+    disabled_variant_ids = {
+        "independent_maker_1x5s_market_end",
+        "independent_fak_2x5s",
+        "independent_fak_stable_3x5s",
+    }
+
+    class Predictor:
+        model_id = "proxy-model"
+        include_interval = False
+
+        def __call__(self, market, history, observation):  # type: ignore[no-untyped-def]
+            prediction = _prediction(observation)
+            return (
+                replace(
+                    prediction,
+                    p_up_lower=prediction.p_up - 0.03,
+                    p_up_upper=prediction.p_up + 0.03,
+                )
+                if self.include_interval
+                else prediction
+            )
+
+    predictor = Predictor()
+    portfolio = build_research_paper_portfolio(
+        project=project,
+        predictor=predictor,  # type: ignore[arg-type]
+        runtime_root=tmp_path,
+        starting_balance=1_000.0,
+    )
+    assert [engine.variant.variant_id for engine in portfolio.engines] == [
+        "independent_fak_1x5s",
+        "independent_fak_1x5s_2_0",
+    ]
+    assert portfolio.primary.variant.variant_id == "independent_fak_1x5s"
+    portfolio.activate_market(_market(), rules={UP: _rules(UP), DOWN: _rules(DOWN)})
+    portfolio.on_event(_book(UP, bid="0.40", ask="0.42", second=5))
+    portfolio.on_event(_book(DOWN, bid="0.56", ask="0.58", second=5))
+    assert portfolio.decide(now_ts_ns=T0_NS + 5_500_000_000) == "submitted"
+    assert (
+        portfolio.last_decisions["independent_fak_1x5s_2_0"] == "probability_interval_unavailable"
+    )
+    predictor.include_interval = True
+    portfolio.on_event(_book(UP, bid="0.40", ask="0.42", second=10))
+    portfolio.on_event(_book(DOWN, bid="0.56", ask="0.58", second=10))
+    assert portfolio.decide(now_ts_ns=T0_NS + 10_500_000_000) == "placement_cycle_used"
+    assert portfolio.last_decisions["independent_fak_1x5s_2_0"] == "submitted"
+    portfolio.checkpoint_evaluations()
+
+    snapshot = portfolio.dashboard_snapshot(now=T0 + timedelta(seconds=6))
+
+    assert {record.variant_id for record in portfolio.records} == enabled_variant_ids
+    assert snapshot.performance is not None
+    assert {
+        item.variant_id for item in snapshot.performance.variant_summaries
+    } == enabled_variant_ids
+    robust_summary = next(
+        item
+        for item in snapshot.performance.variant_summaries
+        if item.variant_id == "independent_fak_1x5s_2_0"
+    )
+    assert dict(robust_summary.rejection_counts) == {"probability_interval_unavailable": 1}
+    assert robust_summary.mean_gross_edge is not None
+    assert robust_summary.mean_fee_per_share is not None
+    assert robust_summary.mean_net_edge is not None
+    assert portfolio.requires_settlement_trade_evidence(_market().slug) is False
+
+    epoch_root = tmp_path / "paper" / "epochs" / project.paper_execution_epoch
+    assert {path.name for path in (epoch_root / "variants").iterdir()} == enabled_variant_ids
+    with sqlite3.connect(epoch_root / "evaluations.sqlite3") as connection:
+        persisted_evaluation_variants = {
+            row[0] for row in connection.execute("SELECT DISTINCT variant_id FROM evaluations")
+        }
+    assert persisted_evaluation_variants == enabled_variant_ids
+    frozen_rules = (epoch_root / "rules" / f"{_market().slug}.json").read_text(encoding="utf-8")
+    assert all(variant_id not in frozen_rules for variant_id in disabled_variant_ids)
+
+
+def test_replay_final_decision_horizon_ignores_disabled_maker_variants() -> None:
+    project = load_btc_project_config(Path("configs/btc_short_horizon/baseline.toml"))
+
+    final_decision_ns = paper_replay_script._final_decision_ts_ns(project, T0_NS)
+
+    assert final_decision_ns == T0_NS + 180_000_000_000
+
+
+def test_public_settlement_trade_client_validates_deduplicates_and_persists(tmp_path) -> None:
+    market = _market()
+    timestamp = int((T0 + timedelta(seconds=300)).timestamp())
+    row = {
+        "asset": UP,
+        "conditionId": CONDITION,
+        "side": "SELL",
+        "price": 0.58,
+        "size": 12.0,
+        "timestamp": timestamp,
+        "transactionHash": "0xtrade",
+        "proxyWallet": "0xwallet",
+    }
+
+    async def run() -> object:
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.params["market"] == CONDITION
+            assert request.url.params["side"] == "SELL"
+            assert request.url.params["takerOnly"] == "true"
+            return httpx.Response(200, json=[row, row])
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await PublicSettlementTradesClient().fetch(
+                market,
+                start_seconds=timestamp - 1,
+                end_seconds=timestamp + 1,
+                client=client,
+            )
+
+    evidence = asyncio.run(run())
+    assert len(evidence.trades) == 1  # type: ignore[union-attr]
+    path = SettlementTradeEvidenceStore(tmp_path, "paper-v7").write(evidence)  # type: ignore[arg-type]
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert persisted["trade_count"] == 1
+    assert persisted["trades"][0]["token_id"] == UP
 
 
 def test_balance_rejection_is_a_zero_fill_confirmed_opportunity(tmp_path) -> None:
@@ -1154,7 +1392,7 @@ def test_paper_runtime_surfaces_prediction_failure_until_a_successful_decision()
             max_work_seconds=15.0,
             signal_cadence_seconds=5.0,
         ),
-        paper_execution_variants=(SimpleNamespace(maker_work_seconds=15.0),),
+        paper_execution_variants=(SimpleNamespace(maker_work_seconds=15.0, enabled=True),),
     )
     runtime._next_decision_ns = T0_NS + 5_000_000_000
     runtime._prediction_errors = 0
@@ -1223,7 +1461,7 @@ def test_paper_runtime_fails_closed_for_a_non_data_prediction_value_error() -> N
             max_work_seconds=15.0,
             signal_cadence_seconds=5.0,
         ),
-        paper_execution_variants=(SimpleNamespace(maker_work_seconds=15.0),),
+        paper_execution_variants=(SimpleNamespace(maker_work_seconds=15.0, enabled=True),),
     )
     runtime._next_decision_ns = T0_NS + 5_000_000_000
 

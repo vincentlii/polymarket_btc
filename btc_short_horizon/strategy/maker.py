@@ -114,6 +114,8 @@ def plan_opening_mispricing_orders(
     decision_ts_ns: int,
     elapsed_seconds: float,
     config: MakerStrategyConfig,
+    selected_side: TokenSide | None = None,
+    expires_ts_ns: int | None = None,
 ) -> PlanDecision:
     """Select only the side with the highest viable passive executable edge."""
 
@@ -127,10 +129,21 @@ def plan_opening_mispricing_orders(
         raise ValueError("elapsed_seconds must be finite and >= 0")
     if not config.entry_start_seconds <= elapsed_seconds <= config.entry_end_seconds:
         return PlanDecision(plan=None, reason="outside_entry_window")
+    if selected_side is not None and not isinstance(selected_side, TokenSide):
+        raise TypeError("selected_side must be a TokenSide")
+    effective_expiry_ts_ns = (
+        decision_ts_ns + round(config.max_work_seconds * _NANOS_PER_SECOND)
+        if expires_ts_ns is None
+        else expires_ts_ns
+    )
+    if effective_expiry_ts_ns <= decision_ts_ns:
+        raise ValueError("expires_ts_ns must be after decision_ts_ns")
 
     candidates: list[OrderPlan] = []
     p_market_mid_up = books.implied_up_midpoint
     for side in (TokenSide.UP, TokenSide.DOWN):
+        if selected_side is not None and side is not selected_side:
+            continue
         fair = p_up if side is TokenSide.UP else 1.0 - p_up
         boundary = p_boundary_up if side is TokenSide.UP else 1.0 - p_boundary_up
         market = p_market_mid_up if side is TokenSide.UP else 1.0 - p_market_mid_up
@@ -149,7 +162,7 @@ def plan_opening_mispricing_orders(
                 safety_buffer=config.safety_buffer,
                 minimum_edge=config.minimum_edge,
                 created_ts_ns=decision_ts_ns,
-                expires_ts_ns=decision_ts_ns + round(config.max_work_seconds * _NANOS_PER_SECOND),
+                expires_ts_ns=effective_expiry_ts_ns,
                 layers=layers,
             )
         )

@@ -42,7 +42,9 @@ from btc_short_horizon.live.paper_execution import (
     PaperMarketRules,
     PaperPlacement,
 )
+from btc_short_horizon.live.settlement_trades import SettlementTrade
 from btc_short_horizon.models import OpeningMispricingPrediction
+from btc_short_horizon.models.market_relative import ProbabilityInterval
 from btc_short_horizon.research.binance_history import BinanceKlineHistory
 from btc_short_horizon.research.opening_evidence import OpeningMarketObservation
 from btc_short_horizon.research.opening_proxy import (
@@ -66,6 +68,13 @@ from btc_short_horizon.strategy import (
     StagePolicyConfig,
     StageRule,
 )
+from btc_short_horizon.strategy.causal_pair import (
+    CausalPairSession,
+    PairBookEvidence,
+    PairValidationError,
+)
+from btc_short_horizon.strategy.robust_taker import OneSignalTakerPolicy, RobustExecutableCost
+from btc_short_horizon.strategy.taker import TakerCandidateEvaluation, TakerRejectionReason
 
 
 type PaperPredictor = Callable[
@@ -141,6 +150,14 @@ class PaperEvaluationObservation:
     executable_vwap: float | None
     net_edge: float | None
     model_version: str
+    point_fair_probability: float | None = None
+    probability_lower: float | None = None
+    probability_upper: float | None = None
+    market_anchor: float | None = None
+    gross_edge: float | None = None
+    fee_per_share: float | None = None
+    slippage_stress: float | None = None
+    latency_stress: float | None = None
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -156,6 +173,14 @@ class PaperEvaluationObservation:
             "executable_vwap": self.executable_vwap,
             "net_edge": self.net_edge,
             "model_version": self.model_version,
+            "point_fair_probability": self.point_fair_probability,
+            "probability_lower": self.probability_lower,
+            "probability_upper": self.probability_upper,
+            "market_anchor": self.market_anchor,
+            "gross_edge": self.gross_edge,
+            "fee_per_share": self.fee_per_share,
+            "slippage_stress": self.slippage_stress,
+            "latency_stress": self.latency_stress,
         }
 
     @classmethod
@@ -174,6 +199,16 @@ class PaperEvaluationObservation:
             executable_vwap=_optional_number(value.get("executable_vwap"), "executable_vwap"),
             net_edge=_optional_number(value.get("net_edge"), "net_edge"),
             model_version=_text(value.get("model_version"), "model_version"),
+            point_fair_probability=_optional_number(
+                value.get("point_fair_probability"), "point_fair_probability"
+            ),
+            probability_lower=_optional_number(value.get("probability_lower"), "probability_lower"),
+            probability_upper=_optional_number(value.get("probability_upper"), "probability_upper"),
+            market_anchor=_optional_number(value.get("market_anchor"), "market_anchor"),
+            gross_edge=_optional_number(value.get("gross_edge"), "gross_edge"),
+            fee_per_share=_optional_number(value.get("fee_per_share"), "fee_per_share"),
+            slippage_stress=_optional_number(value.get("slippage_stress"), "slippage_stress"),
+            latency_stress=_optional_number(value.get("latency_stress"), "latency_stress"),
         )
 
 
@@ -226,6 +261,9 @@ class PaperTradeRecord:
     settled_at_ns: int | None = None
     realized_pnl: float | None = None
     execution_evidence_valid: bool = True
+    maker_limit_price: float | None = None
+    deferred_fill_start_ns: int | None = None
+    deferred_fill_assessed_at_ns: int | None = None
 
     @property
     def entry_price(self) -> float | None:
@@ -280,6 +318,9 @@ class PaperTradeRecord:
             "settled_at_ns": self.settled_at_ns,
             "realized_pnl": self.realized_pnl,
             "execution_evidence_valid": self.execution_evidence_valid,
+            "maker_limit_price": self.maker_limit_price,
+            "deferred_fill_start_ns": self.deferred_fill_start_ns,
+            "deferred_fill_assessed_at_ns": self.deferred_fill_assessed_at_ns,
         }
 
     @classmethod
@@ -364,6 +405,14 @@ class PaperTradeRecord:
                 raw.get("execution_evidence_valid"),
                 "execution_evidence_valid",
             ),
+            maker_limit_price=_optional_number(raw.get("maker_limit_price"), "maker_limit_price"),
+            deferred_fill_start_ns=_optional_integer(
+                raw.get("deferred_fill_start_ns"), "deferred_fill_start_ns"
+            ),
+            deferred_fill_assessed_at_ns=_optional_integer(
+                raw.get("deferred_fill_assessed_at_ns"),
+                "deferred_fill_assessed_at_ns",
+            ),
         )
 
 
@@ -444,12 +493,18 @@ class PaperEvaluationCounts:
     qualified_signal_count: int
     qualified_up_count: int = 0
     qualified_down_count: int = 0
+    rejection_counts: tuple[tuple[str, int], ...] = ()
+    mean_gross_edge: float | None = None
+    mean_fee_per_share: float | None = None
+    mean_slippage_stress: float | None = None
+    mean_latency_stress: float | None = None
+    mean_net_edge: float | None = None
 
 
 class PaperEvaluationStore:
     """Disk-backed immutable evaluation journal with bounded process memory."""
 
-    _SCHEMA_VERSION = 1
+    _SCHEMA_VERSION = 2
 
     def __init__(self, runtime_root: Path, execution_epoch: str) -> None:
         _identifier(execution_epoch, "execution_epoch")
@@ -459,7 +514,7 @@ class PaperEvaluationStore:
         self._connection.execute("PRAGMA journal_mode=WAL")
         self._connection.execute("PRAGMA synchronous=FULL")
         version = int(self._connection.execute("PRAGMA user_version").fetchone()[0])
-        if version not in {0, self._SCHEMA_VERSION}:
+        if version not in {0, 1, self._SCHEMA_VERSION}:
             self._connection.close()
             raise ValueError("unsupported Research Paper evaluation schema")
         self._connection.execute(
@@ -477,10 +532,30 @@ class PaperEvaluationStore:
                 executable_vwap REAL,
                 net_edge REAL,
                 model_version TEXT NOT NULL,
+                point_fair_probability REAL,
+                probability_lower REAL,
+                probability_upper REAL,
+                market_anchor REAL,
+                gross_edge REAL,
+                fee_per_share REAL,
+                slippage_stress REAL,
+                latency_stress REAL,
                 PRIMARY KEY (variant_id, evaluation_id)
             ) WITHOUT ROWID
             """
         )
+        if version == 1:
+            for name in (
+                "point_fair_probability",
+                "probability_lower",
+                "probability_upper",
+                "market_anchor",
+                "gross_edge",
+                "fee_per_share",
+                "slippage_stress",
+                "latency_stress",
+            ):
+                self._connection.execute(f"ALTER TABLE evaluations ADD COLUMN {name} REAL")
         self._connection.execute(f"PRAGMA user_version={self._SCHEMA_VERSION}")
         self._connection.commit()
 
@@ -501,9 +576,17 @@ class PaperEvaluationStore:
                     record.executable_vwap,
                     record.net_edge,
                     record.model_version,
+                    record.point_fair_probability,
+                    record.probability_lower,
+                    record.probability_upper,
+                    record.market_anchor,
+                    record.gross_edge,
+                    record.fee_per_share,
+                    record.slippage_stress,
+                    record.latency_stress,
                 )
                 cursor = self._connection.execute(
-                    "INSERT OR IGNORE INTO evaluations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT OR IGNORE INTO evaluations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     values,
                 )
                 if cursor.rowcount:
@@ -513,7 +596,10 @@ class PaperEvaluationStore:
                     """
                     SELECT variant_id, evaluation_id, market_slug, decision_ts_ns,
                            entry_regime, price_bucket, reason, selected_side,
-                           fair_probability, executable_vwap, net_edge, model_version
+                           fair_probability, executable_vwap, net_edge, model_version,
+                           point_fair_probability, probability_lower, probability_upper,
+                           market_anchor, gross_edge, fee_per_share, slippage_stress,
+                           latency_stress
                     FROM evaluations WHERE variant_id = ? AND evaluation_id = ?
                     """,
                     (record.variant_id, record.evaluation_id),
@@ -528,18 +614,47 @@ class PaperEvaluationStore:
             SELECT variant_id, COUNT(*),
                    SUM(CASE WHEN selected_side IS NOT NULL THEN 1 ELSE 0 END),
                    SUM(CASE WHEN selected_side = 'up' THEN 1 ELSE 0 END),
-                   SUM(CASE WHEN selected_side = 'down' THEN 1 ELSE 0 END)
+                   SUM(CASE WHEN selected_side = 'down' THEN 1 ELSE 0 END),
+                   AVG(gross_edge), AVG(fee_per_share), AVG(slippage_stress),
+                   AVG(latency_stress), AVG(net_edge)
             FROM evaluations GROUP BY variant_id
             """
         )
+        rejection_rows = self._connection.execute(
+            """
+            SELECT variant_id, reason, COUNT(*) FROM evaluations
+            WHERE selected_side IS NULL GROUP BY variant_id, reason
+            ORDER BY variant_id, reason
+            """
+        )
+        rejections: dict[str, list[tuple[str, int]]] = {}
+        for variant_id, reason, count in rejection_rows:
+            rejections.setdefault(str(variant_id), []).append((str(reason), int(count)))
         return {
             str(variant_id): PaperEvaluationCounts(
                 int(total),
                 int(qualified or 0),
                 int(qualified_up or 0),
                 int(qualified_down or 0),
+                tuple(rejections.get(str(variant_id), ())),
+                None if mean_gross is None else float(mean_gross),
+                None if mean_fee is None else float(mean_fee),
+                None if mean_slippage is None else float(mean_slippage),
+                None if mean_latency is None else float(mean_latency),
+                None if mean_net is None else float(mean_net),
             )
-            for variant_id, total, qualified, qualified_up, qualified_down in rows
+            for (
+                variant_id,
+                total,
+                qualified,
+                qualified_up,
+                qualified_down,
+                mean_gross,
+                mean_fee,
+                mean_slippage,
+                mean_latency,
+                mean_net,
+            ) in rows
         }
 
     def checkpoint(self) -> None:
@@ -678,6 +793,7 @@ class ResearchPaperEngine:
         starting_balance: float,
         kline_history: BinanceKlineHistory | None = None,
         stage_policy: StagePolicyConfig | None = None,
+        clob_capture_end_seconds: float = 215.0,
     ) -> None:
         if not callable(predictor) or not model_id:
             raise ValueError("predictor and model_id are required")
@@ -690,6 +806,9 @@ class ResearchPaperEngine:
         self.ledger_store = ledger_store
         self.kline_history = kline_history
         self.stage_policy = stage_policy or StagePolicyConfig.default()
+        if not isfinite(clob_capture_end_seconds) or clob_capture_end_seconds <= 0.0:
+            raise ValueError("clob_capture_end_seconds must be finite and > 0")
+        self.clob_capture_end_seconds = clob_capture_end_seconds
         restored = ledger_store.read()
         if restored is not None and abs(restored.starting_balance - starting_balance) > 1e-9:
             raise ValueError("configured Paper starting balance differs from persisted ledger")
@@ -713,7 +832,8 @@ class ResearchPaperEngine:
         self.market: MarketWindow | None = None
         self.rules: dict[str, PaperMarketRules] = {}
         self._normalizers: dict[str, PolymarketL2Normalizer] = {}
-        self._last_books: dict[str, tuple[int, int]] = {}
+        self._last_books: dict[str, tuple[int, int, int, str]] = {}
+        self._robust_taker_policy = OneSignalTakerPolicy()
         self._gapped_tokens: set[str] = set()
         self._tick_changed_tokens: set[str] = set()
         self._binance_gap = False
@@ -843,8 +963,10 @@ class ResearchPaperEngine:
         result = normalizer.apply(event.payload, collector_receive_ts=receive_ts)
         if result.book_top is not None and result.timing is not None:
             self._last_books[event.timing.instrument] = (
+                int(result.timing.source_ts.timestamp() * 1_000_000_000),
                 int(result.timing.available_ts.timestamp() * 1_000_000_000),
                 event.epoch_id,
+                event.collector_session_id,
             )
             if event.event_type == "book":
                 self._gapped_tokens.discard(event.timing.instrument)
@@ -943,10 +1065,18 @@ class ResearchPaperEngine:
             return "tick_changed"
         if self.market is None:
             return "book_stale_connection_unobserved"
+        capture_end_ns = int(self.market.t0.timestamp() * 1_000_000_000) + round(
+            self.clob_capture_end_seconds * 1_000_000_000
+        )
+        if (
+            self.variant.maker_fill_evidence_policy == "settlement_trades"
+            and now_ts_ns >= capture_end_ns
+        ):
+            return None
         stale_after_ns = round(self.maker_config.stale_after_seconds * 1_000_000_000)
         for token_id in (self.market.up_token_id, self.market.down_token_id):
             metadata = self._last_books.get(token_id)
-            if metadata is None or now_ts_ns - metadata[0] > stale_after_ns:
+            if metadata is None or now_ts_ns - metadata[1] > stale_after_ns:
                 return "book_stale_connection_unobserved"
         return None
 
@@ -1022,8 +1152,168 @@ class ResearchPaperEngine:
             self._confirmation.reset()
             self._signal_observations.clear()
             return safety_reason
-        if self.variant.opportunity_policy == "independent_taker":
-            decision = plan_independent_taker_order(
+        robust_candidate: RobustExecutableCost | None = None
+        market_anchor_up: float | None = None
+        if self.variant.opportunity_policy == "robust_independent_taker":
+            if prediction.p_up_lower is None or prediction.p_up_upper is None:
+                self._last_evaluation = PaperEvaluationObservation(
+                    variant_id=self.variant.variant_id,
+                    evaluation_id=f"{self.market.slug}:{now_ts_ns}",
+                    market_slug=self.market.slug,
+                    decision_ts_ns=now_ts_ns,
+                    entry_regime=stage_rule.stage.value,
+                    price_bucket="unavailable",
+                    reason="probability_interval_unavailable",
+                    selected_side=None,
+                    fair_probability=prediction.p_up,
+                    executable_vwap=None,
+                    net_edge=None,
+                    model_version=prediction.model_version,
+                )
+                return "probability_interval_unavailable"
+            up_meta = self._last_books[self.market.up_token_id]
+            down_meta = self._last_books[self.market.down_token_id]
+            session = CausalPairSession(
+                market_slug=self.market.slug,
+                condition_id=self.market.condition_id,
+                rule_epoch=self.market.rule_epoch,
+                rule_hash=self.market.rule_hash,
+                up_token_id=self.market.up_token_id,
+                down_token_id=self.market.down_token_id,
+                t0_ns=int(self.market.t0.timestamp() * 1_000_000_000),
+                t1_ns=int(self.market.t1.timestamp() * 1_000_000_000),
+            )
+            try:
+                pair = session.validate(
+                    up=PairBookEvidence(
+                        side=TokenSide.UP,
+                        token_id=self.market.up_token_id,
+                        book=books.up,
+                        source_ts_ns=up_meta[0],
+                        receive_ts_ns=up_meta[1],
+                        update_epoch=up_meta[2],
+                        gap_epoch=int(self.market.up_token_id in self._gapped_tokens),
+                        collector_session_id=up_meta[3],
+                        sequence_valid=self.market.up_token_id not in self._gapped_tokens,
+                        full_depth_available=True,
+                    ),
+                    down=PairBookEvidence(
+                        side=TokenSide.DOWN,
+                        token_id=self.market.down_token_id,
+                        book=books.down,
+                        source_ts_ns=down_meta[0],
+                        receive_ts_ns=down_meta[1],
+                        update_epoch=down_meta[2],
+                        gap_epoch=int(self.market.down_token_id in self._gapped_tokens),
+                        collector_session_id=down_meta[3],
+                        sequence_valid=self.market.down_token_id not in self._gapped_tokens,
+                        full_depth_available=True,
+                    ),
+                    decision_ts_ns=now_ts_ns,
+                    maximum_age_ns=round(self.maker_config.stale_after_seconds * 1_000_000_000),
+                )
+            except PairValidationError:
+                return "causal_pair_invalid"
+            market_anchor_up = pair.p_market_up
+            robust_decision = self._robust_taker_policy.evaluate(
+                session=session,
+                pair=pair,
+                interval=ProbabilityInterval(
+                    up_lower=prediction.p_up_lower,
+                    up_point=prediction.p_up,
+                    up_upper=prediction.p_up_upper,
+                ),
+                requested_shares=self.maker_config.max_shares,
+                fee_rate_by_side={
+                    TokenSide.UP: self.rules[self.market.up_token_id].taker_fee_rate,
+                    TokenSide.DOWN: self.rules[self.market.down_token_id].taker_fee_rate,
+                },
+                slippage_stress=self.variant.slippage_buffer,
+                latency_stress=self.variant.model_uncertainty_buffer,
+                minimum_net_edge=max(
+                    self.variant.minimum_taker_net_edge,
+                    stage_rule.minimum_net_edge,
+                ),
+                available_balance=self._available_balance(),
+                minimum_price=max(0.35, stage_rule.minimum_price),
+                maximum_price=stage_rule.maximum_price,
+            )
+            if not robust_decision.evaluations:
+                return robust_decision.reason.value
+            robust_candidate = max(
+                robust_decision.evaluations,
+                key=lambda item: (
+                    float("-inf") if item.robust_net_edge is None else item.robust_net_edge,
+                    1 if item.side is TokenSide.UP else 0,
+                ),
+            )
+            evaluations = tuple(
+                TakerCandidateEvaluation(
+                    side=item.side,
+                    token_id=books.for_side(item.side).token_id,
+                    fair_probability=item.robust_fair,
+                    requested_size=item.requested_shares,
+                    filled_size=item.executable_shares,
+                    executable_vwap=item.executable_vwap,
+                    taker_fee_per_share=item.fee_per_share,
+                    gross_edge=item.gross_edge,
+                    total_buffer=item.slippage_stress + item.latency_stress,
+                    net_edge=item.robust_net_edge,
+                    reason=(
+                        TakerRejectionReason.SELECTED
+                        if item.reason.value == "selected"
+                        else TakerRejectionReason.INSUFFICIENT_BALANCE
+                        if item.reason.value == "insufficient_balance"
+                        else TakerRejectionReason(item.reason.value)
+                    ),
+                    limit_price=item.limit_price,
+                    filled_notional=item.filled_notional,
+                    taker_fees=item.taker_fees,
+                )
+                for item in robust_decision.evaluations
+            )
+            robust_plan = robust_decision.plan
+            plan = (
+                None
+                if robust_plan is None
+                else TakerOrderPlan(
+                    market_slug=robust_plan.market_slug,
+                    token_id=robust_plan.token_id,
+                    side=robust_plan.side,
+                    p_boundary=(
+                        prediction.p_boundary_up
+                        if robust_plan.side is TokenSide.UP
+                        else 1.0 - prediction.p_boundary_up
+                    ),
+                    p_fair=robust_plan.evaluation.robust_fair,
+                    p_market=robust_plan.evaluation.executable_vwap,
+                    created_ts_ns=now_ts_ns,
+                    total_size=robust_plan.evaluation.executable_shares,
+                    filled_notional=robust_plan.evaluation.filled_notional,
+                    taker_fees=robust_plan.evaluation.taker_fees,
+                    slippage_buffer=robust_plan.evaluation.slippage_stress,
+                    model_uncertainty_buffer=robust_plan.evaluation.latency_stress,
+                    minimum_edge=max(
+                        self.variant.minimum_taker_net_edge,
+                        stage_rule.minimum_net_edge,
+                    ),
+                    limit_price=robust_plan.evaluation.limit_price,
+                )
+            )
+            decision = TakerPlanDecision(
+                plan=plan,
+                reason=(
+                    TakerRejectionReason.SELECTED
+                    if robust_decision.reason.value == "selected"
+                    else TakerRejectionReason.INSUFFICIENT_BALANCE
+                    if robust_decision.reason.value == "insufficient_balance"
+                    else TakerRejectionReason(robust_decision.reason.value)
+                ),
+                evaluations=evaluations,
+            )
+            plan_reason = str(decision.reason)
+        elif self.variant.opportunity_policy == "independent_taker":
+            taker_decision = plan_independent_taker_order(
                 market_slug=self.market.slug,
                 p_boundary_up=prediction.p_boundary_up,
                 p_up=prediction.p_up,
@@ -1044,6 +1334,31 @@ class ResearchPaperEngine:
                 minimum_price=stage_rule.minimum_price,
                 maximum_price=stage_rule.maximum_price,
             )
+            decision = taker_decision
+            plan_reason = str(taker_decision.reason)
+            plan = taker_decision.plan
+            if plan is not None and self.variant.mode == "maker":
+                maker_decision = plan_opening_mispricing_orders(
+                    market_slug=self.market.slug,
+                    p_boundary_up=prediction.p_boundary_up,
+                    p_up=prediction.p_up,
+                    books=books,
+                    decision_ts_ns=now_ts_ns,
+                    elapsed_seconds=elapsed,
+                    config=replace(
+                        self.maker_config,
+                        minimum_edge=0.0,
+                        safety_buffer=self.variant.model_uncertainty_buffer,
+                    ),
+                    selected_side=plan.side,
+                    expires_ts_ns=(
+                        int(self.market.t1.timestamp() * 1_000_000_000)
+                        if self.variant.maker_expiry_policy == "market_end"
+                        else None
+                    ),
+                )
+                plan = maker_decision.plan
+                plan_reason = maker_decision.reason
         else:
             decision = plan_opening_mispricing_orders(
                 market_slug=self.market.slug,
@@ -1054,28 +1369,41 @@ class ResearchPaperEngine:
                 elapsed_seconds=elapsed,
                 config=self.maker_config,
             )
+            plan_reason = decision.reason
+            plan = decision.plan
         if isinstance(decision, TakerPlanDecision):
             self._last_evaluation = self._evaluation_from_taker_decision(
                 decision=decision,
                 stage_rule=stage_rule,
                 now_ts_ns=now_ts_ns,
                 model_version=prediction.model_version,
+                robust_candidate=robust_candidate,
+                market_anchor_up=market_anchor_up,
+                probability_interval=(
+                    None
+                    if prediction.p_up_lower is None or prediction.p_up_upper is None
+                    else ProbabilityInterval(
+                        up_lower=prediction.p_up_lower,
+                        up_point=prediction.p_up,
+                        up_upper=prediction.p_up_upper,
+                    )
+                ),
             )
-        if decision.plan is None:
+        if plan is None:
             if isinstance(decision, TakerPlanDecision):
                 self._persist_taker_diagnostics(decision, now_ts_ns=now_ts_ns)
             self._confirmation.reset()
             self._signal_observations.clear()
-            return str(decision.reason)
+            return plan_reason
         if isinstance(decision, TakerPlanDecision):
             self._persist_taker_diagnostics(decision, now_ts_ns=now_ts_ns)
         if isinstance(self._confirmation, EdgeStableSignalConfirmation):
             net_edge = (
-                decision.plan.net_edge_per_share
-                if isinstance(decision.plan, TakerOrderPlan)
+                plan.net_edge_per_share
+                if isinstance(plan, TakerOrderPlan)
                 else self._signal_observation(
-                    plan=decision.plan,
-                    book=books.for_side(decision.plan.side),
+                    plan=plan,
+                    book=books.for_side(plan.side),
                     now_ts_ns=now_ts_ns,
                     signal_number=1,
                 ).taker_net_edge
@@ -1085,18 +1413,18 @@ class ResearchPaperEngine:
                 self._signal_observations.clear()
                 return "edge_below_threshold"
             confirmed = self._confirmation.observe(
-                decision.plan.side,
+                plan.side,
                 net_edge=net_edge,
                 signal_ts_ns=now_ts_ns,
             )
         else:
-            confirmed = self._confirmation.observe(decision.plan.side, signal_ts_ns=now_ts_ns)
+            confirmed = self._confirmation.observe(plan.side, signal_ts_ns=now_ts_ns)
         if self._confirmation.count == 1:
             self._signal_observations.clear()
-        side_book = books.for_side(decision.plan.side)
+        side_book = books.for_side(plan.side)
         self._signal_observations.append(
             self._signal_observation(
-                plan=decision.plan,
+                plan=plan,
                 book=side_book,
                 now_ts_ns=now_ts_ns,
                 signal_number=self._confirmation.count,
@@ -1104,33 +1432,33 @@ class ResearchPaperEngine:
         )
         if not confirmed:
             return "confirmation_pending"
-        selected_probability = decision.plan.p_fair
+        selected_probability = plan.p_fair
         planned_notional = (
-            decision.plan.total_notional
-            if isinstance(decision.plan, TakerOrderPlan)
+            plan.total_notional
+            if isinstance(plan, TakerOrderPlan)
             else (
-                decision.plan.total_size * selected_probability
+                plan.total_size * selected_probability
                 if self.variant.mode == "immediate_fak"
-                else decision.plan.total_notional
+                else plan.total_notional
             )
         )
-        opportunity_id = f"{decision.plan.market_slug}:{decision.plan.created_ts_ns}"
+        opportunity_id = f"{plan.market_slug}:{plan.created_ts_ns}"
         regime = stage_rule.stage.value
         price_bucket = _price_bucket(side_book.best_ask)
         if planned_notional > self._available_balance() + 1e-12:
             self._active_record = PaperTradeRecord(
                 variant_id=self.variant.variant_id,
                 placement_id=opportunity_id,
-                market_slug=decision.plan.market_slug,
-                token_id=decision.plan.token_id,
-                side=decision.plan.side.value,
+                market_slug=plan.market_slug,
+                token_id=plan.token_id,
+                side=plan.side.value,
                 placed_at_ns=now_ts_ns,
-                shares=decision.plan.total_size,
+                shares=plan.total_size,
                 filled_shares=0.0,
                 filled_notional=0.0,
                 planned_notional=planned_notional,
-                p_fair=decision.plan.p_fair,
-                market_price=decision.plan.p_market,
+                p_fair=plan.p_fair,
+                market_price=plan.p_market,
                 execution_status="rejected",
                 opportunity_id=opportunity_id,
                 entry_regime=regime,
@@ -1150,8 +1478,8 @@ class ResearchPaperEngine:
             return "insufficient_virtual_balance"
         if self.variant.mode == "immediate_fak":
             placement = self.simulator.submit_direct_fak(
-                plan=decision.plan,
-                rules=self.rules[decision.plan.token_id],
+                plan=plan,
+                rules=self.rules[plan.token_id],
                 book=side_book,
                 now_ts_ns=now_ts_ns,
                 selected_probability=selected_probability,
@@ -1161,8 +1489,8 @@ class ResearchPaperEngine:
             )
         else:
             placement = self.simulator.submit(
-                plan=decision.plan,
-                rules=self.rules[decision.plan.token_id],
+                plan=plan,
+                rules=self.rules[plan.token_id],
                 book=side_book,
                 now_ts_ns=now_ts_ns,
             )
@@ -1170,16 +1498,16 @@ class ResearchPaperEngine:
         self._active_record = PaperTradeRecord(
             variant_id=self.variant.variant_id,
             placement_id=placement.placement_id,
-            market_slug=decision.plan.market_slug,
-            token_id=decision.plan.token_id,
-            side=decision.plan.side.value,
+            market_slug=plan.market_slug,
+            token_id=plan.token_id,
+            side=plan.side.value,
             placed_at_ns=now_ts_ns,
-            shares=decision.plan.total_size,
+            shares=plan.total_size,
             filled_shares=0.0,
             filled_notional=0.0,
             planned_notional=planned_notional,
-            p_fair=decision.plan.p_fair,
-            market_price=decision.plan.p_market,
+            p_fair=plan.p_fair,
+            market_price=plan.p_market,
             execution_status=placement.status,
             opportunity_id=opportunity_id,
             entry_regime=regime,
@@ -1196,6 +1524,17 @@ class ResearchPaperEngine:
             fak_total_latency_ms=placement.fak_total_latency_ms,
             initial_queue_ahead=sum(layer.initial_queue_ahead for layer in placement.layers),
             remaining_queue_ahead=sum(layer.queue_ahead for layer in placement.layers),
+            maker_limit_price=(
+                placement.layers[0].price
+                if self.variant.maker_fill_evidence_policy == "settlement_trades"
+                else None
+            ),
+            deferred_fill_start_ns=(
+                int(self.market.t0.timestamp() * 1_000_000_000)
+                + round(self.clob_capture_end_seconds * 1_000_000_000)
+                if self.variant.maker_fill_evidence_policy == "settlement_trades"
+                else None
+            ),
         )
         self.records.append(self._active_record)
         self._persist()
@@ -1208,6 +1547,9 @@ class ResearchPaperEngine:
         stage_rule: StageRule,
         now_ts_ns: int,
         model_version: str,
+        robust_candidate: RobustExecutableCost | None = None,
+        market_anchor_up: float | None = None,
+        probability_interval: ProbabilityInterval | None = None,
     ) -> PaperEvaluationObservation:
         assert self.market is not None
         candidate = max(
@@ -1215,6 +1557,20 @@ class ResearchPaperEngine:
             key=lambda item: float("-inf") if item.net_edge is None else item.net_edge,
         )
         price = candidate.executable_vwap
+        selected_interval: tuple[float, float] | None = None
+        market_anchor: float | None = None
+        if robust_candidate is not None and probability_interval is not None:
+            selected_interval = (
+                (probability_interval.up_lower, probability_interval.up_upper)
+                if robust_candidate.side is TokenSide.UP
+                else (1.0 - probability_interval.up_upper, 1.0 - probability_interval.up_lower)
+            )
+            if market_anchor_up is not None:
+                market_anchor = (
+                    market_anchor_up
+                    if robust_candidate.side is TokenSide.UP
+                    else 1.0 - market_anchor_up
+                )
         return PaperEvaluationObservation(
             variant_id=self.variant.variant_id,
             evaluation_id=f"{self.market.slug}:{now_ts_ns}",
@@ -1228,6 +1584,18 @@ class ResearchPaperEngine:
             executable_vwap=price,
             net_edge=candidate.net_edge,
             model_version=model_version,
+            point_fair_probability=(
+                None if robust_candidate is None else robust_candidate.point_fair
+            ),
+            probability_lower=None if selected_interval is None else selected_interval[0],
+            probability_upper=None if selected_interval is None else selected_interval[1],
+            market_anchor=market_anchor,
+            gross_edge=None if robust_candidate is None else robust_candidate.gross_edge,
+            fee_per_share=None if robust_candidate is None else robust_candidate.fee_per_share,
+            slippage_stress=(
+                None if robust_candidate is None else robust_candidate.slippage_stress
+            ),
+            latency_stress=(None if robust_candidate is None else robust_candidate.latency_stress),
         )
 
     def reevaluate(self, prediction: OpeningMispricingPrediction, *, now_ts_ns: int) -> str:
@@ -1296,6 +1664,81 @@ class ResearchPaperEngine:
             record.outcome = outcome.value
             record.settled_at_ns = label_available_ts_ns
             record.settlement_status = "void" if outcome is MarketOutcome.VOID else "resolved"
+            changed = True
+        if changed:
+            self._persist()
+
+    def requires_settlement_trade_evidence(self, market_slug: str) -> bool:
+        if self.variant.maker_fill_evidence_policy != "settlement_trades":
+            return False
+        return any(
+            record.market_slug == market_slug
+            and record.deferred_fill_assessed_at_ns is None
+            and record.maker_limit_price is not None
+            and record.execution_evidence_valid
+            and record.terminal_reason == "max_work_age"
+            and record.filled_shares < record.shares - 1e-12
+            for record in self.records
+        )
+
+    def apply_settlement_trade_evidence(
+        self,
+        *,
+        market_slug: str,
+        trades: tuple[SettlementTrade, ...],
+        assessed_at_ns: int,
+    ) -> None:
+        changed = False
+        for record in self.records:
+            if (
+                record.market_slug != market_slug
+                or record.deferred_fill_assessed_at_ns is not None
+                or record.maker_limit_price is None
+                or not record.execution_evidence_valid
+                or record.terminal_reason != "max_work_age"
+                or record.filled_shares >= record.shares - 1e-12
+            ):
+                continue
+            if record.deferred_fill_start_ns is None:
+                raise ValueError("deferred maker record has no evidence boundary")
+            queue_ahead = record.remaining_queue_ahead
+            remaining = record.shares - record.filled_shares
+            limit_price = record.maker_limit_price
+            for trade in trades:
+                trade_ns = trade.timestamp_seconds * 1_000_000_000
+                if (
+                    trade.token_id != record.token_id
+                    or trade_ns < record.deferred_fill_start_ns
+                    or trade.price > limit_price + 1e-12
+                ):
+                    continue
+                record.raw_eligible_sell_volume += trade.size
+                stressed = trade.size * self.simulator.config.trade_volume_multiplier
+                record.stressed_eligible_sell_volume += stressed
+                queue_consumed = min(queue_ahead, stressed)
+                queue_ahead -= queue_consumed
+                fill = min(remaining, stressed - queue_consumed)
+                if fill <= 0.0:
+                    continue
+                record.filled_shares += fill
+                record.maker_filled_shares += fill
+                notional = fill * limit_price
+                record.filled_notional += notional
+                record.maker_filled_notional += notional
+                remaining -= fill
+                record.terminal_at_ns = trade_ns
+                if remaining <= 1e-12:
+                    break
+            record.remaining_queue_ahead = queue_ahead
+            record.deferred_fill_assessed_at_ns = assessed_at_ns
+            record.execution_status = (
+                "filled"
+                if record.filled_shares >= record.shares - 1e-12
+                else "partially_filled"
+                if record.filled_shares > 0.0
+                else "canceled"
+            )
+            record.terminal_reason = "settlement_trade_evidence_assessed"
             changed = True
         if changed:
             self._persist()
@@ -1537,16 +1980,16 @@ class ResearchPaperEngine:
         assert self.market is not None
         up_meta = self._last_books[self.market.up_token_id]
         down_meta = self._last_books[self.market.down_token_id]
-        data_age = max(now_ts_ns - up_meta[0], now_ts_ns - down_meta[0]) / 1e9
+        data_age = max(now_ts_ns - up_meta[1], now_ts_ns - down_meta[1]) / 1e9
         observation = OpeningMarketObservation(
             market_slug=self.market.slug,
             decision_ts_ns=now_ts_ns,
             p_market_mid_up=books.implied_up_midpoint,
             data_age_seconds=max(0.0, data_age),
-            up_available_ts_ns=up_meta[0],
-            down_available_ts_ns=down_meta[0],
-            up_epoch_id=up_meta[1],
-            down_epoch_id=down_meta[1],
+            up_available_ts_ns=up_meta[1],
+            down_available_ts_ns=down_meta[1],
+            up_epoch_id=up_meta[2],
+            down_epoch_id=down_meta[2],
             has_data_gap=bool(self._gapped_tokens) or self._binance_gap,
             structure_valid=True,
             tick_unchanged=not self._tick_changed_tokens,
@@ -1919,6 +2362,15 @@ class ResearchPaperPortfolio:
     def records(self) -> tuple[PaperTradeRecord, ...]:
         return tuple(record for engine in self.engines for record in engine.records)
 
+    @property
+    def has_unfinished_placement(self) -> bool:
+        return any(
+            engine.active_placement is not None
+            and engine.active_placement.status
+            in {"insert_pending", "working", "cancel_pending", "fak_pending"}
+            for engine in self.engines
+        )
+
     def set_kline_history(self, history: BinanceKlineHistory) -> None:
         for engine in self.engines:
             engine.kline_history = history
@@ -1950,7 +2402,12 @@ class ResearchPaperPortfolio:
         )
         if prediction is not None:
             self.decision_counts["predictions"] += 1
-            self.direction_store.append_prediction(prediction)
+            try:
+                stage = self.primary.stage_policy.rule_for(prediction.elapsed_seconds).stage
+            except ValueError:
+                pass
+            else:
+                self.direction_store.append_prediction(prediction, stage=stage)
         primary_records_before = len(self.primary.records)
         primary_result = self.primary.decide(
             now_ts_ns=now_ts_ns,
@@ -2011,6 +2468,36 @@ class ResearchPaperPortfolio:
         self.evaluation_store.checkpoint()
         self.direction_store.checkpoint()
 
+    def requires_settlement_trade_evidence(self, market_slug: str) -> bool:
+        return any(
+            engine.requires_settlement_trade_evidence(market_slug) for engine in self.engines
+        )
+
+    def deferred_fill_start_ns(self, market_slug: str) -> int | None:
+        boundaries = {
+            record.deferred_fill_start_ns
+            for engine in self.engines
+            for record in engine.records
+            if record.market_slug == market_slug
+            and engine.requires_settlement_trade_evidence(market_slug)
+            and record.deferred_fill_start_ns is not None
+        }
+        return None if not boundaries else min(boundaries)
+
+    def apply_settlement_trade_evidence(
+        self,
+        *,
+        market_slug: str,
+        trades: tuple[SettlementTrade, ...],
+        assessed_at_ns: int,
+    ) -> None:
+        for engine in self.engines:
+            engine.apply_settlement_trade_evidence(
+                market_slug=market_slug,
+                trades=trades,
+                assessed_at_ns=assessed_at_ns,
+            )
+
     def unresolved_market_slugs(self) -> tuple[str, ...]:
         return self.direction_store.unresolved_market_slugs()
 
@@ -2037,6 +2524,30 @@ class ResearchPaperPortfolio:
                     engine.variant.variant_id,
                     PaperEvaluationCounts(0, 0),
                 ).qualified_signal_count,
+                rejection_counts=evaluation_counts.get(
+                    engine.variant.variant_id,
+                    PaperEvaluationCounts(0, 0),
+                ).rejection_counts,
+                mean_gross_edge=evaluation_counts.get(
+                    engine.variant.variant_id,
+                    PaperEvaluationCounts(0, 0),
+                ).mean_gross_edge,
+                mean_fee_per_share=evaluation_counts.get(
+                    engine.variant.variant_id,
+                    PaperEvaluationCounts(0, 0),
+                ).mean_fee_per_share,
+                mean_slippage_stress=evaluation_counts.get(
+                    engine.variant.variant_id,
+                    PaperEvaluationCounts(0, 0),
+                ).mean_slippage_stress,
+                mean_latency_stress=evaluation_counts.get(
+                    engine.variant.variant_id,
+                    PaperEvaluationCounts(0, 0),
+                ).mean_latency_stress,
+                mean_net_edge=evaluation_counts.get(
+                    engine.variant.variant_id,
+                    PaperEvaluationCounts(0, 0),
+                ).mean_net_edge,
                 direction_summaries=_direction_execution_performance(
                     engine.records,
                     evaluation_counts.get(

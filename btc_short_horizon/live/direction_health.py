@@ -14,7 +14,7 @@ from btc_short_horizon.live.dashboard_state import (
     DirectionStageSummary,
 )
 from btc_short_horizon.models.opening_mispricing import OpeningMispricingPrediction
-from btc_short_horizon.research.opening_proxy import opening_regime_for_elapsed_seconds
+from btc_short_horizon.strategy.stage_policy import OpeningStage
 
 
 _MINIMUM_BIAS_SAMPLE = 100
@@ -75,13 +75,18 @@ class DirectionEvidenceStore:
             if existing != values:
                 raise ValueError("immutable direction market conflict")
 
-    def append_prediction(self, prediction: OpeningMispricingPrediction) -> None:
-        stage = opening_regime_for_elapsed_seconds(prediction.elapsed_seconds).value
+    def append_prediction(
+        self,
+        prediction: OpeningMispricingPrediction,
+        *,
+        stage: OpeningStage | str,
+    ) -> None:
+        stage_value = OpeningStage(stage).value
         values = (
             prediction.market_slug,
             prediction.trigger_ts_ns,
             prediction.model_version,
-            stage,
+            stage_value,
             prediction.p_up,
         )
         try:

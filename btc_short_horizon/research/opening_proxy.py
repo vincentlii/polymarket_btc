@@ -15,8 +15,10 @@ from btc_short_horizon.data import BTC_15M_MARKET_FAMILY
 from btc_short_horizon.data.contracts import MarketOutcome, MarketWindow
 from btc_short_horizon.features.schema import FeatureSchema
 from btc_short_horizon.research.binance_history import BinanceKlineHistory
+from btc_short_horizon.research.opening_dataset import market_stage_sample_weights
 from btc_short_horizon.research.pipeline import DirectionDataset
 from btc_short_horizon.research.walk_forward import ResearchSample
+from btc_short_horizon.strategy import OpeningStage
 
 
 _NANOS_PER_SECOND = 1_000_000_000
@@ -282,11 +284,16 @@ def build_opening_proxy_dataset(
         if failure is not None:
             excluded_history += 1
             continue
-        per_snapshot_weight = 1.0 / len(market_samples)
-        for sample, vector in market_samples:
+        market_weights = market_stage_sample_weights(
+            tuple(
+                OpeningStage(opening_regime_for_elapsed_seconds(elapsed_seconds).value)
+                for elapsed_seconds in snapshot_offsets
+            )
+        )
+        for (sample, vector), sample_weight in zip(market_samples, market_weights, strict=True):
             samples.append(sample)
             vectors.append(vector)
-            weights.append(per_snapshot_weight)
+            weights.append(sample_weight)
 
     if not samples:
         raise ValueError("no resolved markets have complete causal Binance opening-proxy history")

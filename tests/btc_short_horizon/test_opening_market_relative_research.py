@@ -79,6 +79,7 @@ def _predictions(probability_shift: float = 0.0) -> tuple[OofPrediction, ...]:
                 (datetime(2026, 1, 1, tzinfo=UTC) + timedelta(days=index)).timestamp()
                 * 1_000_000_000
             ),
+            raw_p_up=(0.35 - probability_shift if index % 2 == 0 else 0.65 + probability_shift),
             p_up=(0.35 - probability_shift if index % 2 == 0 else 0.65 + probability_shift),
             label=index % 2,
         )
@@ -109,6 +110,7 @@ def _sealed_model_run() -> SealedHoldoutModelRun:
         sample_index=2,
         sample_id="m2@5",
         feature_ts_ns=2,
+        raw_p_up=0.70,
         p_up=0.70,
         label=1,
     )

@@ -1,5 +1,64 @@
 # Project Status
 
+## 2026-08-12 Chainlink 60-second TWAP rule boundary
+
+- Added fail-closed Gamma rule-metadata classification for the point-price and
+  official 60-second TWAP epochs, plus config/artifact/runtime mismatch checks.
+- Forward collection now stores point-price and 60-second TWAP RTDS evidence as
+  separate streams and separate quality keys. TWAP remains evidence only; there
+  is no TWAP-trained or promoted probability model.
+- Cross-epoch artifacts reject by default. The configured point-to-TWAP
+  exception is a visibly labelled, non-promotable Research Paper transition
+  proxy only; Shadow, Canary, and live paths remain strict. Epoch-less legacy
+  artifacts fail closed and must not be silently relabelled.
+
+## 2026-08-12 Paper v6 one-signal boundary
+
+- Opened execution epoch `paper-v6-1x5s-v2` without mutating v5 or older
+  ledgers, evaluations, frozen rules, or direction evidence.
+- The live Paper portfolio now instantiates only `independent_fak_1x5s` as the
+  current primary and `independent_fak_1x5s_2_0` as the fail-closed challenger.
+  Both use one five-second cadence and isolated ledgers. The challenger records
+  why it abstains but cannot become primary before an artifact passes the
+  development gate.
+- Maker, 2x5, and 3x5 variants remain declared but disabled rollback/history
+  code. They do not receive current events or appear in the active dashboard
+  projection. Historical order API reads remain read-only and epoch-filterable.
+- The local Binance 1-second history is materialized as 302 verified daily
+  Parquet partitions from 2025-10-09 through 2026-08-06: 26,092,800 rows and
+  zero manifest gaps. Training can read those parts directly without restoring
+  the source ZIPs. A full development run keeps the sealed holdout closed unless
+  the explicit one-shot command and eligibility checks pass.
+- The completed full-profile development run used 27,979 resolved markets and
+  1,007,244 five-second snapshots. OOF evidence covered 13,439 effective market
+  weights. Logistic C=0.1 remained selected (log loss 0.661348, Brier 0.234655,
+  weighted calibration error 0.005196, threshold accuracy 59.55%). Both bounded
+  LightGBM candidates had worse log loss/Brier and failed their paired
+  replacement rule, so no model was promoted. The 28-day sealed holdout remains
+  unopened.
+- Direction samples now give equal total weight to early, price-discovery and
+  mid-early stages. Calibration compares guarded identity/sigmoid/temperature/
+  beta/isotonic candidates and cannot worsen either weighted log loss or Brier.
+- The 2.0 challenger validates one causal dual-token collector session, uses a
+  market-logit residual probability with uncertainty bounds, walks full ask
+  depth, and deducts fee, slippage and latency exactly once. Evaluation storage
+  and the dashboard expose Gross edge, each deduction, robust Net edge and the
+  leading rejection reasons. It remains non-primary until its development gate
+  passes and a compatible artifact is published.
+
+## 2026-08-11 Paper recovery and market-end maker control
+
+- Fixed the live `t0+30.058s` failure by making direction evidence persist the
+  exact tolerance-aware stage selected by the execution policy. Research Paper
+  now closes and recreates a failed runtime after a bounded delay while raw
+  collection and immutable ledgers continue.
+- Added an isolated `independent_maker_1x5s_market_end` control for the prior
+  v5 epoch. It remains rollback/history code after v6 disabled it.
+- Kept the bounded CLOB window at `t0+215s`. The market-end maker control
+  defers its remaining fill assessment until resolution, then persists public
+  seller-initiated trades and consumes the remaining queue under the same 50%
+  volume stress. Missing or ambiguous evidence cannot create a simulated fill.
+
 ## 2026-08-10 Direction health and release identity
 
 - Added durable market-level direction evidence for every activated BTC 15m
@@ -478,11 +537,11 @@ the input/output contract and operational commands.
   confirmation, separates evaluations/qualified signals/opportunities/fills,
   records actual model provenance, stores evaluation diagnostics in SQLite,
   and keeps all older epoch ledgers available through dashboard history.
-- Three independent FAK variants are active for new paper decisions: 2x5 is the
-  primary, 1x5 is the immediate control, and Stable 3x5 is the conservative
-  control. Confirmation count is variant-owned in every stage. The three older
-  maker-gated variants remain readable but paused and are hidden by default on
-  the dashboard; the user can reveal them with the strategy filter.
+- The v6 active portfolio contains only two one-signal immediate-FAK variants:
+  `independent_fak_1x5s` is the legacy control and
+  `independent_fak_1x5s_2_0` is the non-primary challenger. Maker, 2x5, and 3x5 variants remain
+  disabled rollback/history code; previous epochs remain readable through the
+  dashboard history filter.
 - Stage rules, common opportunity logging, optional stage-specific artifacts,
   core price-band protection, and the bounded LightGBM grid are implemented.
 - This remains a Research Paper challenger. It is not a real-money Go decision

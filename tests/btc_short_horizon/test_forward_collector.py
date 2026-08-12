@@ -46,6 +46,66 @@ def test_default_forward_collection_is_lightweight_for_bounded_vps_storage() -> 
     assert DEFAULT_OKX_SUBSCRIPTIONS == ()
 
 
+def test_collector_persists_point_and_twap_as_distinct_required_streams(tmp_path) -> None:
+    collector = BtcForwardCollector(
+        raw_data_root=tmp_path,
+        polymarket_token_ids=("up-token",),
+        flush_size=2,
+    )
+    observed_at = datetime(2026, 8, 7, tzinfo=UTC)
+
+    assert (
+        collector.handle_chainlink_rtds(
+            {
+                "topic": "crypto_prices_chainlink",
+                "type": "update",
+                "timestamp": int(observed_at.timestamp() * 1_000),
+                "payload": {
+                    "symbol": "btc/usd",
+                    "timestamp": int(observed_at.timestamp() * 1_000),
+                    "value": 100_000.0,
+                },
+            },
+            collector_receive_ts=observed_at,
+        ).accepted_events
+        == 1
+    )
+    assert (
+        collector.handle_chainlink_twap_60s_rtds(
+            {
+                "topic": "crypto_prices_twap_sixty",
+                "type": "update",
+                "timestamp": int(observed_at.timestamp() * 1_000) + 123,
+                "payload": {
+                    "symbol": "btc/usd",
+                    "timestamp": int(observed_at.timestamp() * 1_000),
+                    "value": 100_000.0,
+                    "full_accuracy_value": "100000000000000000000000",
+                    "window_s": 60,
+                },
+            },
+            collector_receive_ts=observed_at,
+        ).accepted_events
+        == 1
+    )
+    collector.flush()
+
+    sources = {
+        row["source"]
+        for path in tmp_path.rglob("part-*.parquet")
+        for row in pq.read_table(path).to_pylist()
+    }
+    assert sources == {
+        "polymarket_rtds_chainlink",
+        "polymarket_rtds_chainlink_twap_60s",
+    }
+    health = collector.feed_health(now=observed_at, stale_after_seconds=1.0)
+    assert {item["key"] for item in health.feeds if item["key"].startswith("polymarket_rtds")} == {
+        "polymarket_rtds_chainlink:btc/usd:price",
+        "polymarket_rtds_chainlink_twap_60s:btc/usd:twap_60s",
+    }
+
+
 @pytest.mark.asyncio
 async def test_business_payload_inactivity_records_one_gap_before_recovered_data(
     tmp_path,
@@ -78,7 +138,8 @@ async def test_business_payload_inactivity_records_one_gap_before_recovered_data
             )
         )
         recovered_at = datetime.now(UTC)
-        accepted = await on_payload(
+        topic = websocket_collector.subscription.subscribe_payload["subscriptions"][0]["topic"]
+        message = (
             {
                 "topic": "crypto_prices_chainlink",
                 "type": "update",
@@ -88,9 +149,22 @@ async def test_business_payload_inactivity_records_one_gap_before_recovered_data
                     "timestamp": int(recovered_at.timestamp() * 1_000),
                     "value": 100_000.0,
                 },
-            },
-            recovered_at,
+            }
+            if topic == "crypto_prices_chainlink"
+            else {
+                "topic": "crypto_prices_twap_sixty",
+                "type": "update",
+                "timestamp": int(recovered_at.timestamp() * 1_000),
+                "payload": {
+                    "symbol": "btc/usd",
+                    "timestamp": int(recovered_at.timestamp() * 1_000),
+                    "value": 100_000.0,
+                    "full_accuracy_value": "100000000000000000000000",
+                    "window_s": 60,
+                },
+            }
         )
+        accepted = await on_payload(message, recovered_at)
         assert accepted
         stop_event.set()
 
@@ -103,23 +177,39 @@ async def test_business_payload_inactivity_records_one_gap_before_recovered_data
         timeout=1.0,
     )
 
-    rows = sorted(
-        (
-            row
-            for path in tmp_path.rglob("part-*.parquet")
-            for row in pq.read_table(path).to_pylist()
-            if row["source"] == "polymarket_rtds_chainlink"
-        ),
-        key=lambda row: row["admission_sequence"],
-    )
+    rows_by_source: dict[str, list[dict[str, object]]] = {}
+    for path in tmp_path.rglob("part-*.parquet"):
+        for row in pq.read_table(path).to_pylist():
+            if row["source"] in {
+                "polymarket_rtds_chainlink",
+                "polymarket_rtds_chainlink_twap_60s",
+            }:
+                rows_by_source.setdefault(row["source"], []).append(row)
+    for rows in rows_by_source.values():
+        rows.sort(key=lambda row: row["admission_sequence"])
 
-    assert [row["event_type"] for row in rows] == [
+    assert set(rows_by_source) == {
+        "polymarket_rtds_chainlink",
+        "polymarket_rtds_chainlink_twap_60s",
+    }
+    assert [row["event_type"] for row in rows_by_source["polymarket_rtds_chainlink"]] == [
         "continuity_gap",
         "crypto_prices_chainlink",
     ]
-    assert json.loads(rows[0]["payload_json"])["reason"] == ("BusinessPayloadInactivityError")
-    assert rows[0]["epoch_id"] == rows[1]["epoch_id"] == 1
+    assert [row["event_type"] for row in rows_by_source["polymarket_rtds_chainlink_twap_60s"]] == [
+        "continuity_gap",
+        "crypto_prices_twap_sixty",
+    ]
+    for rows in rows_by_source.values():
+        assert json.loads(rows[0]["payload_json"])["reason"] == "BusinessPayloadInactivityError"
+        assert rows[0]["epoch_id"] == rows[1]["epoch_id"] == 1
     assert collector.quality_stats[("polymarket_rtds_chainlink", "btc/usd", "price")].epochs == 2
+    assert (
+        collector.quality_stats[
+            ("polymarket_rtds_chainlink_twap_60s", "btc/usd", "twap_60s")
+        ].epochs
+        == 2
+    )
 
 
 @pytest.mark.asyncio
@@ -184,7 +274,7 @@ async def test_storage_session_rotates_without_stopping_public_feed_tasks(
     stop_event.set()
     await asyncio.wait_for(task, timeout=1.0)
 
-    assert feed_stops == 1
+    assert feed_stops == 2
     assert collector._session_inventory.snapshot().status == SESSION_STATUS_COMPLETE
 
 
@@ -631,6 +721,7 @@ def test_forward_collector_feed_health_fails_closed_for_silent_and_stale_require
         "binance_spot:BTCUSDT:kline_1s",
         "polymarket_clob:up-token:market",
         "polymarket_rtds_chainlink:btc/usd:price",
+        "polymarket_rtds_chainlink_twap_60s:btc/usd:twap_60s",
     }
 
     collector.handle_binance(

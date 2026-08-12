@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from btc_short_horizon.data import (
 from btc_short_horizon.data.forward import PolymarketSubscriptionWindow
 from scripts.btc_forward_collector import (
     WindowCollectorSettings,
+    _single_market_catalog_path,
     _write_single_market_catalog,
     build_collector,
     collect_current_market_windows,
@@ -217,14 +219,14 @@ def test_follow_current_rotates_from_exact_gamma_catalog_and_persists_metadata(t
             ),
         )
     ]
-    assert (tmp_path / "metadata" / f"{market.slug}-{market.rule_hash}.json").exists()
-    assert (tmp_path / "metadata" / f"{next_market.slug}-{next_market.rule_hash}.json").exists()
+    assert _single_market_catalog_path(directory=tmp_path / "metadata", market=market).exists()
+    assert _single_market_catalog_path(directory=tmp_path / "metadata", market=next_market).exists()
 
 
 def test_follow_catalog_preserves_first_discovery_timestamp(tmp_path: Path) -> None:
     t0 = datetime(2026, 4, 13, tzinfo=UTC)
     market = _market(t0)
-    path = tmp_path / f"{market.slug}-{market.rule_hash}.json"
+    path = _single_market_catalog_path(directory=tmp_path, market=market)
     write_market_catalog(
         path=path,
         catalog=MarketCatalog(families=(BTC_15M_MARKET_FAMILY,), windows=(market,)),
@@ -241,6 +243,27 @@ def test_follow_catalog_preserves_first_discovery_timestamp(tmp_path: Path) -> N
     assert returned == path
     assert path.read_text(encoding="utf-8") == first_contents
     assert read_market_catalog(path).require(market.slug) == market
+
+
+def test_follow_catalog_keeps_rule_epochs_in_separate_immutable_files(tmp_path: Path) -> None:
+    market = _market(datetime(2026, 4, 13, tzinfo=UTC))
+    point_market = replace(market, rule_epoch="chainlink-btc-usd-point-v1")
+    twap_market = replace(market, rule_epoch="chainlink-btc-usd-twap-60s-v1")
+
+    point_path = _write_single_market_catalog(
+        directory=tmp_path,
+        family=BTC_15M_MARKET_FAMILY,
+        market=point_market,
+    )
+    twap_path = _write_single_market_catalog(
+        directory=tmp_path,
+        family=BTC_15M_MARKET_FAMILY,
+        market=twap_market,
+    )
+
+    assert point_path != twap_path
+    assert read_market_catalog(point_path).require(market.slug) == point_market
+    assert read_market_catalog(twap_path).require(market.slug) == twap_market
 
 
 @pytest.mark.asyncio
@@ -387,7 +410,7 @@ async def test_follow_current_rotates_storage_without_restarting_shared_feeds(
 def test_follow_catalog_rejects_same_path_with_conflicting_metadata(tmp_path: Path) -> None:
     t0 = datetime(2026, 4, 13, tzinfo=UTC)
     market = _market(t0)
-    path = tmp_path / f"{market.slug}-{market.rule_hash}.json"
+    path = _single_market_catalog_path(directory=tmp_path, market=market)
     conflicting = MarketWindow(
         family=market.family,
         slug=market.slug,

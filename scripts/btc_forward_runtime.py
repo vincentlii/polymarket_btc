@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from math import isfinite
@@ -163,6 +163,45 @@ def _initialize_research_paper(
         )
         return None, None
     return buffer, runtime
+
+
+async def _run_research_paper_supervisor(
+    *,
+    initial_runtime: ResearchPaperRuntime,
+    create_runtime: Callable[[], ResearchPaperRuntime],
+    on_runtime: Callable[[ResearchPaperRuntime], None],
+    stop_event: asyncio.Event,
+    retry_seconds: float = 1.0,
+) -> None:
+    runtime = initial_runtime
+    while not stop_event.is_set():
+        try:
+            await runtime.run(stop_event=stop_event)
+        except Exception:
+            runtime.close()
+            if stop_event.is_set():
+                return
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=retry_seconds)
+            except TimeoutError:
+                pass
+            if stop_event.is_set():
+                return
+            while not stop_event.is_set():
+                try:
+                    runtime = create_runtime()
+                except Exception:
+                    try:
+                        await asyncio.wait_for(stop_event.wait(), timeout=retry_seconds)
+                    except TimeoutError:
+                        continue
+                else:
+                    break
+            if stop_event.is_set():
+                return
+            on_runtime(runtime)
+            continue
+        return
 
 
 async def run_async(args: argparse.Namespace) -> None:
@@ -333,11 +372,33 @@ async def run_async(args: argparse.Namespace) -> None:
         return details
 
     async def collect(stop_event: asyncio.Event) -> None:
+        def create_paper_runtime() -> ResearchPaperRuntime:
+            assert paper_buffer is not None
+            return ResearchPaperRuntime(
+                project=project,
+                model_directory=args.paper_model_directory,
+                runtime_root=runtime_root,
+                rule_epoch=args.rule_epoch,
+                event_buffer=paper_buffer,
+                starting_balance=args.paper_starting_balance,
+            )
+
+        def on_paper_runtime(runtime: ResearchPaperRuntime) -> None:
+            nonlocal paper_runtime
+            paper_runtime = runtime
+            if active is not None:
+                runtime.register_markets(active.market, active.lookahead)
+
         paper_task = (
             None
             if paper_runtime is None
             else asyncio.create_task(
-                paper_runtime.run(stop_event=stop_event),
+                _run_research_paper_supervisor(
+                    initial_runtime=paper_runtime,
+                    create_runtime=create_paper_runtime,
+                    on_runtime=on_paper_runtime,
+                    stop_event=stop_event,
+                ),
                 name="btc-research-paper",
             )
         )

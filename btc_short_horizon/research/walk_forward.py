@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from numbers import Integral
-from typing import Mapping, Sequence
+from typing import Literal, Mapping, Sequence
 
 
 def _as_utc(value: datetime, name: str) -> datetime:
@@ -68,6 +68,7 @@ class WalkForwardConfig:
     step_duration: timedelta = timedelta(days=14)
     embargo_duration: timedelta = timedelta(hours=4, minutes=15)
     sealed_holdout_duration: timedelta = timedelta(days=28)
+    training_window: Literal["rolling", "expanding"] = "rolling"
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -83,6 +84,8 @@ class WalkForwardConfig:
             raise ValueError(
                 "step_duration must be >= test_duration to prevent overlapping OOF tests"
             )
+        if self.training_window not in {"rolling", "expanding"}:
+            raise ValueError("training_window must be 'rolling' or 'expanding'")
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,7 +255,11 @@ def build_walk_forward_plan(
         calibration_end = test_start - effective_config.embargo_duration
         calibration_start = calibration_end - effective_config.calibration_duration
         train_end = calibration_start - effective_config.embargo_duration
-        train_start = train_end - effective_config.train_duration
+        train_start = (
+            first_feature_ts
+            if effective_config.training_window == "expanding"
+            else train_end - effective_config.train_duration
+        )
         train_indices = _partition_indices(
             samples,
             development_indices,
@@ -298,6 +305,27 @@ def build_walk_forward_plan(
         sealed_holdout_indices=sealed_holdout_indices,
         sealed_holdout_start=sealed_holdout_start,
     )
+
+
+def direction_horizon_protocols() -> dict[str, WalkForwardConfig]:
+    """Frozen grouped protocols for development-only horizon comparison."""
+
+    shared = {
+        "calibration_duration": timedelta(days=21),
+        "test_duration": timedelta(days=14),
+        "step_duration": timedelta(days=14),
+        "embargo_duration": timedelta(hours=4, minutes=15),
+        "sealed_holdout_duration": timedelta(days=28),
+    }
+    return {
+        "rolling_90d": WalkForwardConfig(train_duration=timedelta(days=90), **shared),
+        "rolling_180d": WalkForwardConfig(train_duration=timedelta(days=180), **shared),
+        "expanding_90d_minimum": WalkForwardConfig(
+            train_duration=timedelta(days=90),
+            training_window="expanding",
+            **shared,
+        ),
+    }
 
 
 def _partition_indices(

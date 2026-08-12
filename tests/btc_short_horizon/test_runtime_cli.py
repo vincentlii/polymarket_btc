@@ -61,6 +61,7 @@ def test_forward_runtime_only_requires_clob_during_capture_window() -> None:
         ).slug
         == "lookahead"
     )
+
     assert (
         _captured_market(
             window,

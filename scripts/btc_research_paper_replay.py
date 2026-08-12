@@ -32,6 +32,20 @@ from btc_short_horizon.live.paper_runtime import (  # noqa: E402
 from btc_short_horizon.live.research_paper import PaperRuleSnapshotStore  # noqa: E402
 
 
+def _final_decision_ts_ns(project, market_start_ns: int) -> int:  # type: ignore[no-untyped-def]
+    return market_start_ns + round(
+        (
+            project.research_timing.entry_end_seconds
+            + max(
+                variant.maker_work_seconds
+                for variant in project.paper_execution_variants
+                if variant.enabled
+            )
+        )
+        * 1_000_000_000
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -57,6 +71,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     project = load_btc_project_config(args.config)
+    enabled_variants = tuple(
+        variant for variant in project.paper_execution_variants if variant.enabled
+    )
     market = read_market_catalog(args.market_catalog).require(args.market_slug)
     rules = PaperRuleSnapshotStore(
         args.rules_runtime_root,
@@ -78,9 +95,6 @@ def main(argv: list[str] | None = None) -> int:
         runtime_root=args.output_root,
         starting_balance=args.starting_balance,
     )
-    maximum_work_seconds = max(
-        variant.maker_work_seconds for variant in project.paper_execution_variants
-    )
     scenario = project.require_scenario("p99_half_volume_book_first").execution
     latency = scenario.latency_model
     maximum_taker_server_delay_ms = max(rule.taker_server_delay_ms for rule in rules.values())
@@ -92,7 +106,7 @@ def main(argv: list[str] | None = None) -> int:
             taker_latency_ms=latency.base_latency_ms + latency.insert_latency_ms,
             taker_server_delay_ms=maximum_taker_server_delay_ms,
         )
-        for variant in project.paper_execution_variants
+        for variant in enabled_variants
     )
     replay_end = market.t0 + timedelta(
         seconds=(project.research_timing.entry_end_seconds + lifecycle_tail_seconds + 1.0)
@@ -126,9 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         * 1_000_000_000
     )
-    final_decision_ns = market_start_ns + round(
-        (project.maker.entry_end_seconds + maximum_work_seconds) * 1_000_000_000
-    )
+    final_decision_ns = _final_decision_ts_ns(project, market_start_ns)
     decisions = tuple(range(first_decision_ns, final_decision_ns + 1, cadence_ns))
     replay_end_ns = int(replay_end.timestamp() * 1_000_000_000)
     settlement = (

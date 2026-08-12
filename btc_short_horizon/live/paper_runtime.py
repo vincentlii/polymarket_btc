@@ -27,6 +27,10 @@ from btc_short_horizon.live.research_paper import (
     ResearchPaperPortfolio,
 )
 from btc_short_horizon.live.runtime import RuntimeStatus, RuntimeStatusStore
+from btc_short_horizon.live.settlement_trades import (
+    PublicSettlementTradesClient,
+    SettlementTradeEvidenceStore,
+)
 from btc_short_horizon.models import ModelArtifactStore
 from btc_short_horizon.research.binance_history import fetch_binance_spot_kline_history
 from btc_short_horizon.research.opening_proxy import (
@@ -152,6 +156,7 @@ class ModelPaperPredictor:
         self.model, self.metadata = ModelArtifactStore.load(
             directory=model_directory,
             expected_schema_hash=schema.hash,
+            expected_rule_epoch=project.model_rule_epoch,
         )
         self._stage_models: dict[str, tuple[object, object]] = {}
         for rule in project.stage_policy.rules:
@@ -161,9 +166,11 @@ class ModelPaperPredictor:
             stage_model, stage_metadata = ModelArtifactStore.load(
                 directory=stage_directory,
                 expected_schema_hash=schema.hash,
+                expected_rule_epoch=project.model_rule_epoch,
             )
             self._stage_models[rule.stage.value] = (stage_model, stage_metadata)
         self._stage_policy = project.stage_policy
+        self.is_rule_epoch_transition_proxy = project.model_rule_epoch != project.rule_epoch
         protocol = opening_proxy_protocol(
             entry_start_seconds=project.research_timing.entry_start_seconds,
             entry_end_seconds=project.research_timing.entry_end_seconds,
@@ -233,6 +240,7 @@ def build_research_paper_portfolio(
                     max_work_seconds=(
                         variant.maker_work_seconds
                         if variant.mode == "maker"
+                        and variant.maker_expiry_policy == "fixed_duration"
                         else project.maker.max_work_seconds
                     ),
                 ),
@@ -245,8 +253,10 @@ def build_research_paper_portfolio(
                 ),
                 starting_balance=starting_balance,
                 stage_policy=stage_policy or project.stage_policy,
+                clob_capture_end_seconds=project.collection.opening_handoff_delay_seconds,
             )
             for variant in project.paper_execution_variants
+            if variant.enabled
         )
     )
 
@@ -265,7 +275,12 @@ class ResearchPaperRuntime:
         starting_balance: float = 1_000.0,
         rules_client: PublicPaperRulesClient | None = None,
         gamma_client: GammaMarketClient | None = None,
+        settlement_trades_client: PublicSettlementTradesClient | None = None,
     ) -> None:
+        if rule_epoch != project.rule_epoch:
+            raise ValueError(
+                f"Research Paper rule epoch mismatch: expected {project.rule_epoch!r}, got {rule_epoch!r}"
+            )
         predictor = ModelPaperPredictor(project=project, model_directory=model_directory)
         self.predictor = predictor
         self.engine = build_research_paper_portfolio(
@@ -281,6 +296,11 @@ class ResearchPaperRuntime:
         self.event_buffer = event_buffer
         self.rules_client = rules_client or PublicPaperRulesClient()
         self.gamma_client = gamma_client or GammaMarketClient()
+        self.settlement_trades_client = settlement_trades_client or PublicSettlementTradesClient()
+        self.settlement_trade_store = SettlementTradeEvidenceStore(
+            runtime_root,
+            project.paper_execution_epoch,
+        )
         self._markets: dict[str, MarketWindow] = {}
         self._rules: dict[str, dict[str, PaperMarketRules]] = {}
         self._rule_tasks: dict[str, asyncio.Task[None]] = {}
@@ -358,6 +378,13 @@ class ResearchPaperRuntime:
             self._last_error = f"{type(exc).__name__}: {exc}"
             self._checkpoint_evaluations()
             self._publish(now=datetime.now(UTC), state="failed", healthy=False)
+            raise
+
+    def close(self) -> None:
+        for task in self._rule_tasks.values():
+            if not task.done():
+                task.cancel()
+        self.engine.close()
 
     def _checkpoint_evaluations(self) -> None:
         checkpoint = getattr(getattr(self, "engine", None), "checkpoint_evaluations", None)
@@ -447,6 +474,10 @@ class ResearchPaperRuntime:
         market = max(candidates, key=lambda item: item.t0)
         if market.slug == self._active_slug:
             return
+        if self.engine.market is not None and self.engine.market.slug != market.slug:
+            self.engine.advance(now_ts_ns=int(now.timestamp() * 1_000_000_000))
+            if self.engine.has_unfinished_placement:
+                return
         rules = self._rules.get(market.slug)
         if rules is None:
             self._schedule_rule_fetch(market, now=now)
@@ -493,7 +524,9 @@ class ResearchPaperRuntime:
             (
                 self.project.maker.entry_end_seconds
                 + max(
-                    variant.maker_work_seconds for variant in self.project.paper_execution_variants
+                    variant.maker_work_seconds
+                    for variant in self.project.paper_execution_variants
+                    if variant.enabled
                 )
             )
             * 1_000_000_000
@@ -533,6 +566,21 @@ class ResearchPaperRuntime:
         for market in catalog.windows():
             if market.resolution is None or market.label_available_ts is None:
                 continue
+            if self.engine.requires_settlement_trade_evidence(market.slug):
+                boundary_ns = self.engine.deferred_fill_start_ns(market.slug)
+                if boundary_ns is None:
+                    raise RuntimeError("deferred maker evidence boundary is unavailable")
+                evidence = await self.settlement_trades_client.fetch(
+                    market,
+                    start_seconds=boundary_ns // 1_000_000_000 + 1,
+                    end_seconds=int(market.t1.timestamp()),
+                )
+                self.settlement_trade_store.write(evidence)
+                self.engine.apply_settlement_trade_evidence(
+                    market_slug=market.slug,
+                    trades=evidence.trades,
+                    assessed_at_ns=int(evidence.fetched_at.timestamp() * 1_000_000_000),
+                )
             self.engine.settle(
                 market_slug=market.slug,
                 outcome=market.resolution,
@@ -564,6 +612,9 @@ class ResearchPaperRuntime:
             "default_model_id": self.predictor.metadata.model_id,
             "stage_model_ids": self.predictor.stage_model_ids,
             "paper_execution_epoch": self.project.paper_execution_epoch,
+            "market_rule_epoch": self.project.rule_epoch,
+            "model_rule_epoch": self.project.model_rule_epoch,
+            "rule_epoch_transition_proxy": self.predictor.is_rule_epoch_transition_proxy,
             "active_market": self._active_slug,
             "ready": self._ready,
             "last_decision_result": self._last_decision_result,

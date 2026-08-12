@@ -255,11 +255,12 @@ receipt 默认全部保留在本地；60G 空间首先通过已验证的 raw-ses
 
 ## Pre-Purchase Validation Status
 
-本地购买前验收已覆盖完整 180 秒决策窗口。当前 v13 采集到 `t0+200s`，并在
-每个 `t0+200s` CLOB handoff 后只轮换 durable session、不重连连续 BTC feeds，
-用于覆盖最后一次决策
-产生订单的 15 秒工作期与 P99 cancel race。实时 Research
-Paper 复用相同模型/确认规则，模拟 ledger 与看板明确隔离于真实账户。
+本地购买前验收已覆盖完整 180 秒决策窗口。Polymarket CLOB 原始采集仍限制为
+`t0-90s` 至 `t0+215s`。market-end maker 的剩余 SELL 成交证据在结算后通过公开
+Data API 一次性补取，并与 Paper ledger 一起持久化；不会为每个市场保留完整
+15 分钟的原始 CLOB。证据缺失时该结果保持未结算且运行状态异常，不得推定成交。
+handoff 后只轮换 durable session、不重连连续 BTC feeds。实时 Research Paper
+复用相同模型/确认规则，模拟 ledger 与看板明确隔离于真实账户。
 
 首尔 VPS 仍必须在目标 IP 上完成、且不能由本地替代的检查包括：Geo-block/法律
 资格、到 CLOB/RTDS/Binance 的实际 P50/P95/P99 RTT、NTP 偏差、Docker 镜像构建

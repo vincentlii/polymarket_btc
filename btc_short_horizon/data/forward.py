@@ -45,7 +45,10 @@ from btc_short_horizon.data.polymarket import (
     PolymarketL2Status,
 )
 from btc_short_horizon.data.quality import DataQualityStats, EventQualityValidator
-from btc_short_horizon.data.rtds import normalize_chainlink_btc_usd
+from btc_short_horizon.data.rtds import (
+    normalize_chainlink_btc_usd,
+    normalize_chainlink_btc_usd_twap_60s,
+)
 from btc_short_horizon.data.session_inventory import (
     SESSION_INVENTORY_MANIFEST_ATTRIBUTE,
     SESSION_INVENTORY_SCHEMA_VERSION,
@@ -60,6 +63,7 @@ from btc_short_horizon.data.subscriptions import (
     okx_public_subscription,
     polymarket_market_subscription,
     polymarket_rtds_chainlink_btc_subscription,
+    polymarket_rtds_chainlink_btc_twap_60s_subscription,
 )
 
 DEFAULT_BINANCE_STREAMS = ("btcusdt@kline_1s",)
@@ -72,6 +76,7 @@ _OKX_PUBLIC_INSTRUMENTS_URL = "https://www.okx.com/api/v5/public/instruments"
 
 _MARKET_STREAM = "market"
 _PRICE_STREAM = "price"
+_TWAP_60S_STREAM = "twap_60s"
 _TRADE_STREAM = "trade"
 _KLINE_STREAM = "kline_1s"
 _DEPTH_STREAM = "depth"
@@ -386,6 +391,9 @@ class BtcForwardCollector:
             ("polymarket_clob", token_id, _MARKET_STREAM) for token_id in token_ids
         }
         self._required_feed_keys.add(("polymarket_rtds_chainlink", "btc/usd", _PRICE_STREAM))
+        self._required_feed_keys.add(
+            ("polymarket_rtds_chainlink_twap_60s", "btc/usd", _TWAP_60S_STREAM)
+        )
         self._last_feed_event_at: dict[_QualityStreamKey, datetime] = {}
         self._next_admission_sequence = 0
         self._lock = RLock()
@@ -897,6 +905,23 @@ class BtcForwardCollector:
             event_type="crypto_prices_chainlink",
             payload=payload,
             stream_id=_PRICE_STREAM,
+        )
+
+    def handle_chainlink_twap_60s_rtds(
+        self, payload: Mapping[str, object], *, collector_receive_ts: datetime
+    ) -> CollectorIngressResult:
+        try:
+            record = normalize_chainlink_btc_usd_twap_60s(
+                payload,
+                collector_receive_ts=collector_receive_ts,
+            )
+        except ValueError as exc:
+            return _rejected(str(exc))
+        return self._ingest(
+            timing=record.timing,
+            event_type="crypto_prices_twap_sixty",
+            payload=payload,
+            stream_id=_TWAP_60S_STREAM,
         )
 
     def invalidate_polymarket_token(self, token_id: str) -> None:
@@ -2060,6 +2085,16 @@ class BtcForwardCollector:
                     )
                 return result.accepted_events > 0
 
+            async def on_twap_rtds(payload: Mapping[str, object], received: datetime) -> bool:
+                async with ingress_lock:
+                    result = await admit_with_backpressure(
+                        lambda: self.handle_chainlink_twap_60s_rtds(
+                            payload,
+                            collector_receive_ts=received,
+                        )
+                    )
+                return result.accepted_events > 0
+
             def on_binance(source: str):
                 async def receive(payload: Mapping[str, object], received: datetime) -> bool:
                     async with ingress_lock:
@@ -2138,6 +2173,17 @@ class BtcForwardCollector:
                             source="polymarket_rtds_chainlink",
                             instrument="btc/usd",
                             stream_id=_PRICE_STREAM,
+                            reason=type(exc).__name__,
+                        )
+                    )
+
+            async def on_twap_rtds_error(exc: Exception) -> None:
+                async with ingress_lock:
+                    await admit_with_backpressure(
+                        lambda: self.mark_gap(
+                            source="polymarket_rtds_chainlink_twap_60s",
+                            instrument="btc/usd",
+                            stream_id=_TWAP_60S_STREAM,
                             reason=type(exc).__name__,
                         )
                     )
@@ -2277,6 +2323,13 @@ class BtcForwardCollector:
                     stop_event=stop_event,
                     on_payload=on_rtds,
                     on_error=on_rtds_error,
+                ),
+                JsonWebSocketCollector(
+                    polymarket_rtds_chainlink_btc_twap_60s_subscription()
+                ).collect_forever(
+                    stop_event=stop_event,
+                    on_payload=on_twap_rtds,
+                    on_error=on_twap_rtds_error,
                 ),
                 supervise_depth_refreshes(),
             ]

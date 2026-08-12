@@ -15,6 +15,7 @@ from btc_short_horizon.data.contracts import (
     MarketWindow,
 )
 from btc_short_horizon.data.market_catalog import MarketCatalog
+from btc_short_horizon.data.rule_contract import require_btc_15m_rule_epoch
 
 _GAMMA_MARKETS_KEYSET_URL = "https://gamma-api.polymarket.com/markets/keyset"
 
@@ -105,6 +106,7 @@ def gamma_market_to_window(
 ) -> MarketWindow:
     """Convert one Gamma response into a market window without outcome look-ahead."""
 
+    verified_rule_epoch = require_btc_15m_rule_epoch(payload, expected_epoch=rule_epoch)
     slug = _text(payload.get("slug"), "slug")
     t0 = family.parse_slug(slug)
     outcomes = _string_list(payload.get("outcomes"), "outcomes")
@@ -138,7 +140,7 @@ def gamma_market_to_window(
         down_token_id=down_token_id,
         t0=t0,
         t1=t0 + family.window_seconds_as_timedelta,
-        rule_epoch=rule_epoch,
+        rule_epoch=verified_rule_epoch,
         rule_hash=gamma_rule_hash(payload),
         resolution=resolution,
         label_available_ts=label_available_ts,
