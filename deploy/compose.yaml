@@ -39,6 +39,7 @@ services:
       - btcusdt@depth@100ms
     environment:
       PYTHONUNBUFFERED: "1"
+      BTC_MARKET_RELATIVE_MODEL_DIRECTORY: "${BTC_MARKET_RELATIVE_MODEL_DIRECTORY:-}"
     logging: *runtime-logging
     volumes:
       - type: bind

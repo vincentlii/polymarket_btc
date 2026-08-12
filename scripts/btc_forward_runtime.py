@@ -8,6 +8,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from math import isfinite
+import os
 from pathlib import Path
 import signal
 
@@ -119,6 +120,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--binance-futures-market-stream", action="append", default=None)
     parser.add_argument("--binance-futures-public-stream", action="append", default=None)
     parser.add_argument("--paper-model-directory", type=Path)
+    market_relative_directory = os.environ.get("BTC_MARKET_RELATIVE_MODEL_DIRECTORY", "").strip()
+    parser.add_argument(
+        "--paper-market-relative-model-directory",
+        type=Path,
+        default=Path(market_relative_directory) if market_relative_directory else None,
+    )
     parser.add_argument("--paper-starting-balance", type=float, default=1_000.0)
     parser.add_argument("--paper-event-buffer-size", type=int, default=20_000)
     return parser.parse_args(argv)
@@ -128,6 +135,7 @@ def _initialize_research_paper(
     *,
     project: BtcProjectConfig,
     model_directory: Path,
+    market_relative_model_directory: Path | None = None,
     runtime_root: Path,
     rule_epoch: str,
     starting_balance: float,
@@ -139,6 +147,7 @@ def _initialize_research_paper(
         runtime = ResearchPaperRuntime(
             project=project,
             model_directory=model_directory,
+            market_relative_model_directory=market_relative_model_directory,
             runtime_root=runtime_root,
             rule_epoch=rule_epoch,
             event_buffer=buffer,
@@ -249,6 +258,7 @@ async def run_async(args: argparse.Namespace) -> None:
         paper_buffer, paper_runtime = _initialize_research_paper(
             project=project,
             model_directory=args.paper_model_directory,
+            market_relative_model_directory=args.paper_market_relative_model_directory,
             runtime_root=runtime_root,
             rule_epoch=args.rule_epoch,
             starting_balance=args.paper_starting_balance,
@@ -377,6 +387,7 @@ async def run_async(args: argparse.Namespace) -> None:
             return ResearchPaperRuntime(
                 project=project,
                 model_directory=args.paper_model_directory,
+                market_relative_model_directory=args.paper_market_relative_model_directory,
                 runtime_root=runtime_root,
                 rule_epoch=args.rule_epoch,
                 event_buffer=paper_buffer,

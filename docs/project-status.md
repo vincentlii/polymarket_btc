@@ -1,5 +1,35 @@
 # Project Status
 
+## 2026-08-12 Market-relative 1x5s 2.0 development result
+
+- The point-rule Shadow archive now contains 1,079 markets. Strict causal pair
+  freshness, quality and complete-stage filtering retained 1,033 markets and
+  34,080 snapshots; the 493 post-boundary TWAP markets were not mixed into the
+  point-rule study.
+- Legacy and 2.0 probabilities now have separate runtime fields and model
+  lineage. Loading a 2.0 artifact cannot overwrite Legacy `p_up`; a missing or
+  mismatched 2.0 artifact keeps only the challenger abstained.
+- Five Logistic residual candidates all failed against the causal Polymarket
+  probability baseline. The bounded 64-candidate residual LightGBM grid found a
+  best OOS candidate at log loss/Brier 0.652535/0.230936 versus
+  0.654680/0.231826 for Polymarket across 640 markets and seven UTC days.
+- The nominal paired interval was positive, but after the pre-registered
+  64-comparison correction the Brier improvement interval crossed zero. The
+  development gate therefore remains No-Go and the sealed holdout stays closed.
+  This blocks Canary/live promotion, but no longer blocks a clearly labelled
+  Paper-only challenger.
+- Shared stage interactions beat three separately fitted stage models on the
+  same OOS markets. No individual stage independently cleared its probability
+  gate. Trading-threshold tuning remains blocked because retained Shadow output
+  has midpoint probabilities but no executable ask ladders, fee-rounded VWAP,
+  latency-stressed fills or outcomes.
+- The frozen `market_relative_lightgbm_v1` Paper artifact was fitted from all
+  1,033 eligible markets, with the final UTC day isolated for early stopping.
+  It stores a single 3-cent probability uncertainty radius and is explicitly
+  marked ineligible for runtime promotion. Execution epoch
+  `paper-v7-market-relative-lightgbm` makes 2.0 the Paper primary and runs
+  Legacy 1x5s simultaneously as the control; v6 remains read-only history.
+
 ## 2026-08-12 Chainlink 60-second TWAP rule boundary
 
 - Added fail-closed Gamma rule-metadata classification for the point-price and

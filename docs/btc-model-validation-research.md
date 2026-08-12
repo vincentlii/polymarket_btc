@@ -109,9 +109,13 @@ The sealed holdout is closed by default. The proxy runner produces a
 development-only result unless `--consume-sealed-holdout` is explicitly set;
 that option additionally requires the full exact profile, complete catalog,
 clean code provenance and an atomic one-shot protocol receipt. A development
-run cannot publish a runtime model. The 2.0 Paper challenger therefore abstains
-without a compatible interval-producing artifact, while Legacy 1x5s remains
-primary.
+run cannot publish a Canary/live model. A development LightGBM may be published
+only as an explicitly labelled Paper experiment: its artifact must carry
+`paper_experiment_only=true`, `runtime_promotion_eligible=false`, and
+`sealed_holdout_evaluated=false`. The initial v7 experiment uses one 3-cent
+probability-radius safety margin inside the artifact; the robust taker route
+must not subtract a second model-uncertainty margin. Legacy 1x5s runs in the
+same epoch as the control.
 
 ## 验收标准
 

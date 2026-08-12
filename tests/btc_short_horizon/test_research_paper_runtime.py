@@ -907,8 +907,11 @@ def test_baseline_portfolio_contains_only_the_two_enabled_1x_variants(tmp_path) 
             return (
                 replace(
                     prediction,
-                    p_up_lower=prediction.p_up - 0.03,
-                    p_up_upper=prediction.p_up + 0.03,
+                    market_relative_model_version="market-relative-v1",
+                    market_relative_feature_schema_hash="c" * 64,
+                    market_relative_p_up=0.20,
+                    market_relative_p_up_lower=0.15,
+                    market_relative_p_up_upper=0.25,
                 )
                 if self.include_interval
                 else prediction
@@ -925,19 +928,25 @@ def test_baseline_portfolio_contains_only_the_two_enabled_1x_variants(tmp_path) 
         "independent_fak_1x5s",
         "independent_fak_1x5s_2_0",
     ]
-    assert portfolio.primary.variant.variant_id == "independent_fak_1x5s"
+    assert portfolio.primary.variant.variant_id == "independent_fak_1x5s_2_0"
     portfolio.activate_market(_market(), rules={UP: _rules(UP), DOWN: _rules(DOWN)})
     portfolio.on_event(_book(UP, bid="0.40", ask="0.42", second=5))
     portfolio.on_event(_book(DOWN, bid="0.56", ask="0.58", second=5))
-    assert portfolio.decide(now_ts_ns=T0_NS + 5_500_000_000) == "submitted"
+    assert portfolio.decide(now_ts_ns=T0_NS + 5_500_000_000) == "probability_interval_unavailable"
     assert (
         portfolio.last_decisions["independent_fak_1x5s_2_0"] == "probability_interval_unavailable"
     )
     predictor.include_interval = True
     portfolio.on_event(_book(UP, bid="0.40", ask="0.42", second=10))
     portfolio.on_event(_book(DOWN, bid="0.56", ask="0.58", second=10))
-    assert portfolio.decide(now_ts_ns=T0_NS + 10_500_000_000) == "placement_cycle_used"
+    assert portfolio.decide(now_ts_ns=T0_NS + 10_500_000_000) == "submitted"
     assert portfolio.last_decisions["independent_fak_1x5s_2_0"] == "submitted"
+    legacy = next(item for item in portfolio.records if item.variant_id == "independent_fak_1x5s")
+    challenger = next(
+        item for item in portfolio.records if item.variant_id == "independent_fak_1x5s_2_0"
+    )
+    assert legacy.side == "up"
+    assert challenger.side == "down"
     portfolio.checkpoint_evaluations()
 
     snapshot = portfolio.dashboard_snapshot(now=T0 + timedelta(seconds=6))

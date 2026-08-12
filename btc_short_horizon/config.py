@@ -183,15 +183,12 @@ class PaperExecutionVariantConfig:
             )
         ):
             raise ValueError("maker-only paper variants cannot configure taker buffers")
-        if self.mode in {"immediate_fak", "maker_then_fak"} and any(
-            value <= 0.0
-            for value in (
-                self.minimum_taker_net_edge,
-                self.slippage_buffer,
-                self.model_uncertainty_buffer,
-            )
-        ):
-            raise ValueError("FAK paper variants require positive taker safety buffers")
+        if self.mode in {"immediate_fak", "maker_then_fak"}:
+            required_buffers = [self.minimum_taker_net_edge, self.slippage_buffer]
+            if self.opportunity_policy != "robust_independent_taker":
+                required_buffers.append(self.model_uncertainty_buffer)
+            if any(value <= 0.0 for value in required_buffers):
+                raise ValueError("FAK paper variants require positive taker safety buffers")
         if (
             self.minimum_taker_net_edge + self.slippage_buffer + self.model_uncertainty_buffer
             >= 1.0

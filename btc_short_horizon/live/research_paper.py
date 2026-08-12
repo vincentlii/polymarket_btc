@@ -1155,7 +1155,12 @@ class ResearchPaperEngine:
         robust_candidate: RobustExecutableCost | None = None
         market_anchor_up: float | None = None
         if self.variant.opportunity_policy == "robust_independent_taker":
-            if prediction.p_up_lower is None or prediction.p_up_upper is None:
+            if (
+                prediction.market_relative_p_up is None
+                or prediction.market_relative_p_up_lower is None
+                or prediction.market_relative_p_up_upper is None
+                or prediction.market_relative_model_version is None
+            ):
                 self._last_evaluation = PaperEvaluationObservation(
                     variant_id=self.variant.variant_id,
                     evaluation_id=f"{self.market.slug}:{now_ts_ns}",
@@ -1168,9 +1173,16 @@ class ResearchPaperEngine:
                     fair_probability=prediction.p_up,
                     executable_vwap=None,
                     net_edge=None,
-                    model_version=prediction.model_version,
+                    model_version=(
+                        prediction.market_relative_model_version or prediction.model_version
+                    ),
                 )
                 return "probability_interval_unavailable"
+            probability_interval = ProbabilityInterval(
+                up_lower=prediction.market_relative_p_up_lower,
+                up_point=prediction.market_relative_p_up,
+                up_upper=prediction.market_relative_p_up_upper,
+            )
             up_meta = self._last_books[self.market.up_token_id]
             down_meta = self._last_books[self.market.down_token_id]
             session = CausalPairSession(
@@ -1218,11 +1230,7 @@ class ResearchPaperEngine:
             robust_decision = self._robust_taker_policy.evaluate(
                 session=session,
                 pair=pair,
-                interval=ProbabilityInterval(
-                    up_lower=prediction.p_up_lower,
-                    up_point=prediction.p_up,
-                    up_upper=prediction.p_up_upper,
-                ),
+                interval=probability_interval,
                 requested_shares=self.maker_config.max_shares,
                 fee_rate_by_side={
                     TokenSide.UP: self.rules[self.market.up_token_id].taker_fee_rate,
@@ -1376,17 +1384,18 @@ class ResearchPaperEngine:
                 decision=decision,
                 stage_rule=stage_rule,
                 now_ts_ns=now_ts_ns,
-                model_version=prediction.model_version,
+                model_version=(
+                    prediction.market_relative_model_version
+                    if self.variant.opportunity_policy == "robust_independent_taker"
+                    and prediction.market_relative_model_version is not None
+                    else prediction.model_version
+                ),
                 robust_candidate=robust_candidate,
                 market_anchor_up=market_anchor_up,
                 probability_interval=(
-                    None
-                    if prediction.p_up_lower is None or prediction.p_up_upper is None
-                    else ProbabilityInterval(
-                        up_lower=prediction.p_up_lower,
-                        up_point=prediction.p_up,
-                        up_upper=prediction.p_up_upper,
-                    )
+                    probability_interval
+                    if self.variant.opportunity_policy == "robust_independent_taker"
+                    else None
                 ),
             )
         if plan is None:

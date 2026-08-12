@@ -12,6 +12,7 @@ from pathlib import Path
 from queue import Empty
 
 import httpx
+import numpy as np
 
 from btc_short_horizon.config import BtcProjectConfig
 from btc_short_horizon.data import MarketWindow
@@ -31,7 +32,12 @@ from btc_short_horizon.live.settlement_trades import (
     PublicSettlementTradesClient,
     SettlementTradeEvidenceStore,
 )
-from btc_short_horizon.models import ModelArtifactStore
+from btc_short_horizon.models import ModelArtifactStore, OpeningMispricingPrediction
+from btc_short_horizon.models.market_relative import (
+    market_relative_runtime_feature_schema,
+    market_relative_runtime_feature_values,
+)
+from btc_short_horizon.models.market_relative_artifacts import MarketRelativeArtifactStore
 from btc_short_horizon.research.binance_history import fetch_binance_spot_kline_history
 from btc_short_horizon.research.opening_proxy import (
     CausalFeatureUnavailableError,
@@ -148,10 +154,50 @@ class PublicPaperRulesClient:
         }
 
 
+class MarketRelativePaperAdapter:
+    """Attach a separate Paper-only residual interval to a Legacy prediction."""
+
+    def __init__(self, *, directory: Path, expected_rule_epoch: str) -> None:
+        schema = market_relative_runtime_feature_schema()
+        self.model, self.metadata = MarketRelativeArtifactStore.load(
+            directory=directory,
+            expected_schema_hash=schema.hash,
+            expected_rule_epoch=expected_rule_epoch,
+        )
+
+    def attach(self, prediction: OpeningMispricingPrediction) -> OpeningMispricingPrediction:
+        values = market_relative_runtime_feature_values(
+            direction_p_up=prediction.p_up,
+            boundary_p_up=prediction.p_boundary_up,
+            market_p_up=prediction.p_market_mid_up,
+            elapsed_seconds=prediction.elapsed_seconds,
+            btc_data_age_seconds=prediction.data_age_seconds,
+        )
+        vector = np.asarray([self.model.schema.vector_from(values)], dtype=float)
+        interval = self.model.predict_probability_intervals(
+            vector,
+            np.asarray([prediction.p_market_mid_up], dtype=float),
+        )[0]
+        return replace(
+            prediction,
+            market_relative_model_version=self.metadata.model_id,
+            market_relative_feature_schema_hash=self.metadata.feature_schema_hash,
+            market_relative_p_up=interval.up_point,
+            market_relative_p_up_lower=interval.up_lower,
+            market_relative_p_up_upper=interval.up_upper,
+        )
+
+
 class ModelPaperPredictor:
     """Pinned model adapter implementing the Paper predictor boundary."""
 
-    def __init__(self, *, project: BtcProjectConfig, model_directory: Path) -> None:
+    def __init__(
+        self,
+        *,
+        project: BtcProjectConfig,
+        model_directory: Path,
+        market_relative_model_directory: Path | None = None,
+    ) -> None:
         schema = opening_proxy_feature_schema(1)
         self.model, self.metadata = ModelArtifactStore.load(
             directory=model_directory,
@@ -170,6 +216,14 @@ class ModelPaperPredictor:
             )
             self._stage_models[rule.stage.value] = (stage_model, stage_metadata)
         self._stage_policy = project.stage_policy
+        self._market_relative = (
+            None
+            if market_relative_model_directory is None
+            else MarketRelativePaperAdapter(
+                directory=market_relative_model_directory,
+                expected_rule_epoch=project.model_rule_epoch,
+            )
+        )
         self.is_rule_epoch_transition_proxy = project.model_rule_epoch != project.rule_epoch
         protocol = opening_proxy_protocol(
             entry_start_seconds=project.research_timing.entry_start_seconds,
@@ -190,6 +244,10 @@ class ModelPaperPredictor:
             stage: metadata.model_id for stage, (_model, metadata) in self._stage_models.items()
         }
 
+    @property
+    def market_relative_model_id(self) -> str | None:
+        return None if self._market_relative is None else self._market_relative.metadata.model_id
+
     def __call__(self, market, history, observation):  # type: ignore[no-untyped-def]
         if history is None:
             raise ValueError("Research Paper Binance bootstrap is unavailable")
@@ -203,12 +261,17 @@ class ModelPaperPredictor:
             rule = None
         if rule is not None and rule.stage.value in self._stage_models:
             model, metadata = self._stage_models[rule.stage.value]
-        return build_opening_proxy_prediction(
+        prediction = build_opening_proxy_prediction(
             model=model,
             metadata=metadata,
             market=market,
             klines=history,
             market_observation=observation,
+        )
+        return (
+            prediction
+            if self._market_relative is None
+            else self._market_relative.attach(prediction)
         )
 
 
@@ -269,6 +332,7 @@ class ResearchPaperRuntime:
         *,
         project: BtcProjectConfig,
         model_directory: Path,
+        market_relative_model_directory: Path | None = None,
         runtime_root: Path,
         rule_epoch: str,
         event_buffer: AdmittedEventBuffer,
@@ -281,7 +345,11 @@ class ResearchPaperRuntime:
             raise ValueError(
                 f"Research Paper rule epoch mismatch: expected {project.rule_epoch!r}, got {rule_epoch!r}"
             )
-        predictor = ModelPaperPredictor(project=project, model_directory=model_directory)
+        predictor = ModelPaperPredictor(
+            project=project,
+            model_directory=model_directory,
+            market_relative_model_directory=market_relative_model_directory,
+        )
         self.predictor = predictor
         self.engine = build_research_paper_portfolio(
             project=project,
@@ -611,6 +679,7 @@ class ResearchPaperRuntime:
             "model_id": self.model_id,
             "default_model_id": self.predictor.metadata.model_id,
             "stage_model_ids": self.predictor.stage_model_ids,
+            "market_relative_model_id": self.predictor.market_relative_model_id,
             "paper_execution_epoch": self.project.paper_execution_epoch,
             "market_rule_epoch": self.project.rule_epoch,
             "model_rule_epoch": self.project.model_rule_epoch,
@@ -721,6 +790,7 @@ def _decimal_text(value: object, name: str) -> str:
 
 
 __all__ = [
+    "MarketRelativePaperAdapter",
     "ModelPaperPredictor",
     "PublicPaperRulesClient",
     "ResearchPaperRuntime",

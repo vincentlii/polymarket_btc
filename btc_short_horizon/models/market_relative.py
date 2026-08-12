@@ -3,17 +3,80 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import isfinite
+from math import isfinite, log
 
 import numpy as np
 from scipy.optimize import minimize
 
 from btc_short_horizon.features.schema import FeatureSchema
-from btc_short_horizon.models.direction import CalibrationComparison, _fit_calibrator
+from btc_short_horizon.models.direction import (
+    CalibrationComparison,
+    CalibrationMethod,
+    _fit_calibrator,
+)
 from btc_short_horizon.strategy.types import TokenSide
 
 
 _EPSILON = 1e-6
+
+
+def market_relative_runtime_feature_schema() -> FeatureSchema:
+    """Frozen seven-factor contract shared by Paper fitting and inference."""
+
+    return FeatureSchema(
+        version="btc-market-relative-shadow-v1",
+        names=(
+            "direction_market_logit_gap",
+            "boundary_market_logit_gap",
+            "direction_gap_x_remaining_fraction",
+            "boundary_gap_x_remaining_fraction",
+            "btc_data_age_seconds",
+            "stage_discovery",
+            "stage_mid_early",
+        ),
+    )
+
+
+def market_relative_runtime_feature_values(
+    *,
+    direction_p_up: float,
+    boundary_p_up: float,
+    market_p_up: float,
+    elapsed_seconds: float,
+    btc_data_age_seconds: float,
+) -> dict[str, float]:
+    """Build the exact market-anchored factors available at a Paper decision."""
+
+    probabilities = {
+        "direction_p_up": direction_p_up,
+        "boundary_p_up": boundary_p_up,
+        "market_p_up": market_p_up,
+    }
+    for name, value in probabilities.items():
+        if not isfinite(value) or not 0.0 < value < 1.0:
+            raise ValueError(f"{name} must be finite and in (0, 1)")
+    if not isfinite(elapsed_seconds) or not 0.0 < elapsed_seconds <= 180.0:
+        raise ValueError("elapsed_seconds must be finite and in (0, 180]")
+    if not isfinite(btc_data_age_seconds) or btc_data_age_seconds < 0.0:
+        raise ValueError("btc_data_age_seconds must be finite and >= 0")
+    market_logit = _scalar_logit(market_p_up)
+    direction_gap = _scalar_logit(direction_p_up) - market_logit
+    boundary_gap = _scalar_logit(boundary_p_up) - market_logit
+    remaining_fraction = 1.0 - elapsed_seconds / 180.0
+    return {
+        "direction_market_logit_gap": direction_gap,
+        "boundary_market_logit_gap": boundary_gap,
+        "direction_gap_x_remaining_fraction": direction_gap * remaining_fraction,
+        "boundary_gap_x_remaining_fraction": boundary_gap * remaining_fraction,
+        "btc_data_age_seconds": btc_data_age_seconds,
+        "stage_discovery": float(30.0 < elapsed_seconds <= 90.0),
+        "stage_mid_early": float(elapsed_seconds > 90.0),
+    }
+
+
+def _scalar_logit(value: float) -> float:
+    clipped = min(1.0 - _EPSILON, max(_EPSILON, value))
+    return log(clipped / (1.0 - clipped))
 
 
 def relative_probability(
@@ -59,7 +122,7 @@ class FittedMarketRelativeOffsetModel:
     coefficients: np.ndarray
     parameter_covariance: np.ndarray
     calibrator: object
-    calibration_selection: CalibrationComparison
+    calibration_selection: CalibrationComparison | None
     calibration_bias: float
 
     def predict_raw_up_probability(
@@ -121,6 +184,7 @@ def fit_market_relative_offset_model(
     train_weights: np.ndarray | None = None,
     calibration_weights: np.ndarray | None = None,
     random_seed: int = 17,
+    calibration_method: CalibrationMethod = "auto",
 ) -> FittedMarketRelativeOffsetModel:
     if isinstance(logistic_c, bool) or not isfinite(logistic_c) or logistic_c <= 0.0:
         raise ValueError("logistic_c must be finite and > 0")
@@ -177,16 +241,12 @@ def fit_market_relative_offset_model(
         raw_probabilities=raw_calibration,
         labels=calibration_target,
         sample_weights=calibration_weight,
-        method="auto",
+        method=calibration_method,
         random_seed=random_seed,
         min_isotonic_calibration_samples=2_000,
         temperature_grid=(1.0,),
         independent_sample_count=None,
     )
-    if comparison is None:
-        raise RuntimeError(
-            "guarded market-relative calibration did not produce comparison evidence"
-        )
     calibrated = np.asarray(calibrator.transform(raw_calibration), dtype=float)
     calibration_bias = abs(
         float(np.average(calibration_target - calibrated, weights=calibration_weight))
@@ -253,5 +313,7 @@ __all__ = [
     "FittedMarketRelativeOffsetModel",
     "ProbabilityInterval",
     "fit_market_relative_offset_model",
+    "market_relative_runtime_feature_schema",
+    "market_relative_runtime_feature_values",
     "relative_probability",
 ]

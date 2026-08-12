@@ -66,6 +66,23 @@ def test_signal_contract_rejects_invalid_probability_and_bad_signal_fields() -> 
         validate_opening_mispricing_signal(signal)
 
 
+def test_market_relative_interval_has_independent_point_and_lineage() -> None:
+    prediction = replace(
+        _prediction(),
+        market_relative_model_version="market-relative-v1",
+        market_relative_feature_schema_hash="a" * 64,
+        market_relative_p_up=0.49,
+        market_relative_p_up_lower=0.45,
+        market_relative_p_up_upper=0.53,
+    )
+
+    assert prediction.p_up == pytest.approx(0.64)
+    assert prediction.market_relative_p_up == pytest.approx(0.49)
+
+    with pytest.raises(ValueError, match="market-relative probability fields"):
+        replace(prediction, market_relative_p_up_lower=None)
+
+
 def test_signal_parquet_round_trip_is_validated_and_timestamp_ordered(tmp_path: Path) -> None:
     earlier = to_opening_mispricing_signal(replace(_prediction(), trigger_ts_ns=1_000))
     later = to_opening_mispricing_signal(replace(_prediction(), trigger_ts_ns=2_000))

@@ -692,12 +692,14 @@ revalued through `entry_end + max_work`; stale/gapped data, probability decay,
 rule changes and expiry request a simulated cancel, with fills still possible
 during the configured cancel latency.
 
-Execution epoch `paper-v6-1x5s-v2` enables exactly two immediate-FAK variants:
+Execution epoch `paper-v7-market-relative-lightgbm` enables exactly two
+immediate-FAK variants:
 the one-signal `independent_fak_1x5s` legacy control and the one-signal
 `independent_fak_1x5s_2_0` challenger. They write isolated variant ledgers.
-Legacy 1x5s remains primary until 2.0 publishes a compatible artifact and passes
-its development gate; an abstaining challenger must not replace the current
-direction funnel or equity curve. Maker, 2x5, and 3x5 variants remain
+The 2.0 route is the Paper primary only and loads an artifact explicitly marked
+ineligible for Canary/live promotion; Legacy 1x5s runs simultaneously as its
+control. The artifact's 3-cent probability radius is the route's sole model-
+uncertainty deduction. Maker, 2x5, and 3x5 variants remain
 declared rollback/history code but are not instantiated by the current runtime,
 so they cannot receive events, freeze rules, or create current Paper evidence.
 

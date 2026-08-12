@@ -37,6 +37,11 @@ class OpeningMispricingPrediction:
     raw_p_up: float | None = None
     p_up_lower: float | None = None
     p_up_upper: float | None = None
+    market_relative_model_version: str | None = None
+    market_relative_feature_schema_hash: str | None = None
+    market_relative_p_up: float | None = None
+    market_relative_p_up_lower: float | None = None
+    market_relative_p_up_upper: float | None = None
     has_data_gap: bool = False
     structure_valid: bool = True
     tick_unchanged: bool = True
@@ -66,6 +71,35 @@ class OpeningMispricingPrediction:
             _probability("p_up_upper", self.p_up_upper)
             if not self.p_up_lower <= self.p_up <= self.p_up_upper:
                 raise ValueError("probability interval must contain p_up")
+        relative_values = (
+            self.market_relative_model_version,
+            self.market_relative_feature_schema_hash,
+            self.market_relative_p_up,
+            self.market_relative_p_up_lower,
+            self.market_relative_p_up_upper,
+        )
+        if any(value is not None for value in relative_values) and any(
+            value is None for value in relative_values
+        ):
+            raise ValueError("market-relative probability fields must be provided together")
+        if self.market_relative_model_version is not None:
+            if (
+                not self.market_relative_model_version
+                or not self.market_relative_feature_schema_hash
+            ):
+                raise ValueError("market-relative model lineage must not be empty")
+            assert self.market_relative_p_up is not None
+            assert self.market_relative_p_up_lower is not None
+            assert self.market_relative_p_up_upper is not None
+            _probability("market_relative_p_up", self.market_relative_p_up)
+            _probability("market_relative_p_up_lower", self.market_relative_p_up_lower)
+            _probability("market_relative_p_up_upper", self.market_relative_p_up_upper)
+            if not (
+                self.market_relative_p_up_lower
+                <= self.market_relative_p_up
+                <= self.market_relative_p_up_upper
+            ):
+                raise ValueError("market-relative probability interval must contain its point")
         if not isfinite(self.data_age_seconds) or self.data_age_seconds < 0.0:
             raise ValueError("data_age_seconds must be finite and >= 0")
 
