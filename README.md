@@ -157,6 +157,8 @@ Detailed guides have been filed away in the [docs index](https://evan-kolberg.gi
   - [Research Paper Execution Epoch V2](https://evan-kolberg.github.io/prediction-market-backtesting/btc-short-horizon-architecture/#research-paper-execution-epoch-v2)
   - [Research Paper Execution Epoch V3](https://evan-kolberg.github.io/prediction-market-backtesting/btc-short-horizon-architecture/#research-paper-execution-epoch-v3)
 - [BTC Chainlink 60-second TWAP Evidence](https://evan-kolberg.github.io/prediction-market-backtesting/btc-chainlink-twap-research/)
+  - [Current Boundary](https://evan-kolberg.github.io/prediction-market-backtesting/btc-chainlink-twap-research/#current-boundary)
+  - [Fail-closed Limits](https://evan-kolberg.github.io/prediction-market-backtesting/btc-chainlink-twap-research/#fail-closed-limits)
 - [BTC 前瞻数据持久性与灾难恢复](https://evan-kolberg.github.io/prediction-market-backtesting/btc-data-durability-research/)
   - [结论](https://evan-kolberg.github.io/prediction-market-backtesting/btc-data-durability-research/#结论)
   - [v9 会话事务](https://evan-kolberg.github.io/prediction-market-backtesting/btc-data-durability-research/#v9-会话事务)
