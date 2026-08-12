@@ -33,6 +33,7 @@ nav:
       - Research And Optimizers: research.md
       - Polymarket Account Ledger Replay: account-ledger-replay.md
       - BTC Short-Horizon Architecture: btc-short-horizon-architecture.md
+      - BTC Chainlink 60-second TWAP Evidence: btc-chainlink-twap-research.md
       - BTC Model Validation Research: btc-model-validation-research.md
       - BTC Data Durability And Recovery: btc-data-durability-research.md
       - BTC Market-Data Protocol Boundaries: btc-market-data-protocol-research.md

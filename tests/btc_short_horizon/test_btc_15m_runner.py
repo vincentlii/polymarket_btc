@@ -131,7 +131,7 @@ def _args(
         "--signals",
         str(signal_path),
         "--rule-epoch",
-        "chainlink-btc-usd-v1",
+        "chainlink-btc-usd-point-v1",
         "--start-time",
         T0.isoformat(),
         "--end-time",
@@ -172,6 +172,7 @@ def test_runner_builds_one_stressed_dual_token_replay_from_explicit_artifacts(
                 "conditionId": "condition",
                 "outcomes": ["Up", "Down"],
                 "clobTokenIds": ["up-token", "down-token"],
+                "resolutionSource": "https://data.chain.link/streams/btc-usd",
                 "closed": False,
                 "question": "Bitcoin Up or Down?",
             }
@@ -198,7 +199,9 @@ def test_runner_artifacts_record_opening_probability_and_replay_inputs(tmp_path:
                 "conditionId": "condition",
                 "outcomes": ["Up", "Down"],
                 "clobTokenIds": ["up-token", "down-token"],
+                "resolutionSource": "https://data.chain.link/streams/btc-usd",
                 "closed": False,
+                "question": "Bitcoin Up or Down?",
             }
         ),
         encoding="utf-8",
@@ -313,7 +316,7 @@ def test_runner_loads_verified_market_from_catalog_and_binds_its_hash(tmp_path: 
         down_token_id="down-token",
         t0=T0,
         t1=T0 + timedelta(minutes=15),
-        rule_epoch="chainlink-btc-usd-v1",
+        rule_epoch="chainlink-btc-usd-point-v1",
         rule_hash="a" * 64,
     )
     catalog_path = tmp_path / "catalog.json"
@@ -347,7 +350,9 @@ def test_runner_rejects_unbound_signal_or_ineligible_pmxt_evidence(tmp_path: Pat
                 "conditionId": "condition",
                 "outcomes": ["Up", "Down"],
                 "clobTokenIds": ["up-token", "down-token"],
+                "resolutionSource": "https://data.chain.link/streams/btc-usd",
                 "closed": False,
+                "question": "Bitcoin Up or Down?",
             }
         ),
         encoding="utf-8",
@@ -384,7 +389,9 @@ def test_runner_rejects_truthy_shadow_order_flag_and_symbolic_revision(tmp_path:
                 "conditionId": "condition",
                 "outcomes": ["Up", "Down"],
                 "clobTokenIds": ["up-token", "down-token"],
+                "resolutionSource": "https://data.chain.link/streams/btc-usd",
                 "closed": False,
+                "question": "Bitcoin Up or Down?",
             }
         ),
         encoding="utf-8",

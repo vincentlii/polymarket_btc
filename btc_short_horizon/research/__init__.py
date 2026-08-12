@@ -6,6 +6,7 @@ from btc_short_horizon.research.walk_forward import (
     WalkForwardFold,
     WalkForwardPlan,
     build_walk_forward_plan,
+    direction_horizon_protocols,
     select_complete_group_indices,
 )
 from btc_short_horizon.research.pipeline import (
@@ -127,6 +128,7 @@ __all__ = [
     "WalkForwardFold",
     "WalkForwardPlan",
     "build_walk_forward_plan",
+    "direction_horizon_protocols",
     "build_opening_market_observations",
     "build_opening_market_relative_datasets",
     "build_market_relative_artifact_contract",

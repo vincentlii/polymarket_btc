@@ -102,6 +102,7 @@ async def run_async(args: argparse.Namespace) -> None:
         _model, metadata = ModelArtifactStore.load(
             directory=args.model_directory,
             expected_schema_hash=schema.hash,
+            expected_rule_epoch=project.rule_epoch,
         )
         protocol = opening_proxy_protocol(
             entry_start_seconds=project.research_timing.entry_start_seconds,

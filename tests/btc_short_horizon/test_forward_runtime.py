@@ -11,6 +11,7 @@ from btc_short_horizon.live.forward_runtime import (
     ForwardCollectorRuntimeConfig,
     run_forward_collector_runtime,
 )
+from btc_short_horizon.live.paper_runtime import ResearchPaperRuntime
 from btc_short_horizon.live.runtime import RuntimeControl, RuntimeStatusStore
 from scripts.btc_forward_runtime import (
     _initialize_research_paper,
@@ -145,6 +146,19 @@ def test_paper_startup_failure_is_persisted_without_blocking_collector(
     assert status.state == "failed"
     assert status.details["real_orders_enabled"] is False
     assert "bad model artifact" in str(status.details["last_error"])
+
+
+def test_research_paper_rejects_runtime_rule_epoch_before_loading_model(tmp_path) -> None:
+    project = load_btc_project_config(Path("configs/btc_short_horizon/baseline.toml"))
+
+    with pytest.raises(ValueError, match="Research Paper rule epoch mismatch"):
+        ResearchPaperRuntime(
+            project=project,
+            model_directory=tmp_path / "missing-model",
+            runtime_root=tmp_path,
+            rule_epoch="chainlink-btc-usd-point-v1",
+            event_buffer=object(),  # type: ignore[arg-type]
+        )
 
 
 def test_paper_supervisor_restarts_after_an_isolated_runtime_failure() -> None:

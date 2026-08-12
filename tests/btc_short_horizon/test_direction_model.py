@@ -15,6 +15,12 @@ from btc_short_horizon.models import (
     ModelArtifactStore,
     fit_direction_model,
 )
+from btc_short_horizon.models.direction import (
+    _BetaCalibrator,
+    _IdentityCalibrator,
+    _choose_guarded_calibrator,
+    _fit_beta_calibrator,
+)
 from btc_short_horizon.models import artifacts as artifact_module
 
 
@@ -86,6 +92,36 @@ def test_artifact_store_checks_schema_and_hash(tmp_path: Path, schema: FeatureSc
 
     assert stored.model_sha256 == loaded_metadata.model_sha256
     assert loaded.predict_up_probability(np.array([[1.0, 2.0]])).shape == (1,)
+
+
+def test_artifact_store_rejects_rule_epoch_mismatch(tmp_path: Path, schema: FeatureSchema) -> None:
+    train_x, train_y, calibration_x, calibration_y = _datasets()
+    model = fit_direction_model(
+        train_vectors=train_x,
+        train_labels=train_y,
+        calibration_vectors=calibration_x,
+        calibration_labels=calibration_y,
+        schema=schema,
+    )
+    metadata = ModelArtifactMetadata(
+        model_id="direction-rule-epoch-test",
+        feature_schema_hash=schema.hash,
+        training_start_ns=1,
+        training_end_ns=2,
+        calibration_start_ns=3,
+        calibration_end_ns=4,
+        data_hash="d" * 64,
+        code_revision="code-revision",
+        config={**model.config_dict, "rule_epoch": "chainlink-btc-usd-point-v1"},
+    )
+    ModelArtifactStore.save(directory=tmp_path / "artifact", model=model, metadata=metadata)
+
+    with pytest.raises(ValueError, match="rule epoch mismatch"):
+        ModelArtifactStore.load(
+            directory=tmp_path / "artifact",
+            expected_schema_hash=schema.hash,
+            expected_rule_epoch="chainlink-btc-usd-twap-60s-v1",
+        )
 
 
 def test_isotonic_calibration_requires_independent_minimum_sample_size(
@@ -210,6 +246,70 @@ def test_model_config_copies_temperature_grid_to_preserve_immutability() -> None
     assert config.temperature_grid == (0.5, 1.0, 2.0)
     with pytest.raises(ValueError, match="finite values"):
         DirectionModelConfig(temperature_grid=(True, 1.0))
+
+
+def test_beta_calibrator_is_finite_monotonic_and_fitted_only_from_calibration() -> None:
+    raw = np.asarray([0.05, 0.15, 0.35, 0.65, 0.85, 0.95])
+    labels = np.asarray([0, 0, 0, 1, 1, 1])
+
+    calibrator = _fit_beta_calibrator(
+        raw_probabilities=raw,
+        labels=labels,
+        sample_weights=np.ones(len(raw)),
+    )
+    transformed = calibrator.transform(np.linspace(0.001, 0.999, 999))
+
+    assert isinstance(calibrator, _BetaCalibrator)
+    assert np.isfinite(transformed).all()
+    assert np.all(np.diff(transformed) >= 0.0)
+    assert np.all((transformed > 0.0) & (transformed < 1.0))
+
+
+def test_guarded_calibrator_requires_both_scores_to_improve_identity() -> None:
+    class Fixed:
+        def __init__(self, values: np.ndarray) -> None:
+            self.values = values
+
+        def transform(self, probabilities: np.ndarray) -> np.ndarray:
+            return self.values
+
+    raw = np.asarray([0.2, 0.8, 0.2, 0.8])
+    labels = np.asarray([0, 1, 1, 0])
+    # Better Brier but worse log loss because the two mistakes become extreme.
+    one_metric = Fixed(np.asarray([0.01, 0.01, 0.50, 0.01]))
+
+    selected, comparison = _choose_guarded_calibrator(
+        raw_probabilities=raw,
+        labels=labels,
+        sample_weights=None,
+        candidates=(("identity", _IdentityCalibrator()), ("one_metric", one_metric)),
+    )
+
+    assert isinstance(selected, _IdentityCalibrator)
+    assert comparison.selected_method == "identity"
+    assert {item.method for item in comparison.candidates} == {"identity", "one_metric"}
+
+
+def test_auto_calibration_persists_candidate_scores_and_selected_method(
+    schema: FeatureSchema,
+) -> None:
+    train_x, train_y, calibration_x, calibration_y = _datasets()
+    model = fit_direction_model(
+        train_vectors=train_x,
+        train_labels=train_y,
+        calibration_vectors=calibration_x,
+        calibration_labels=calibration_y,
+        schema=schema,
+        config=DirectionModelConfig(calibration_method="auto"),
+    )
+
+    assert model.calibration_selection is not None
+    assert model.calibration_selection.selected_method in {"identity", "sigmoid", "beta"}
+    assert {item.method for item in model.calibration_selection.candidates} == {
+        "identity",
+        "sigmoid",
+        "beta",
+    }
 
 
 def test_artifact_save_is_transactional_and_checks_model_metadata(

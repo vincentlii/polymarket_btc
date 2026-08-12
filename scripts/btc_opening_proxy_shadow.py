@@ -138,6 +138,8 @@ async def run_async(args: argparse.Namespace) -> dict[str, object]:
     market = read_market_catalog(args.market_catalog).require(args.market_slug)
     if market.family != config.primary_family:
         raise ValueError("market must belong to the configured BTC 15m primary family")
+    if market.rule_epoch != config.rule_epoch:
+        raise ValueError("market rule epoch must match the configured current rule epoch")
     if args.output_directory.exists():
         raise FileExistsError(f"output directory already exists: {args.output_directory}")
     if args.book_lookback_seconds < 0:
@@ -164,6 +166,7 @@ async def run_async(args: argparse.Namespace) -> dict[str, object]:
     model, metadata = ModelArtifactStore.load(
         directory=args.model_directory,
         expected_schema_hash=schema.hash,
+        expected_rule_epoch=market.rule_epoch,
     )
     protocol = opening_proxy_protocol(
         entry_start_seconds=timing.entry_start_seconds,

@@ -6,6 +6,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from btc_short_horizon.data import (
     BTC_15M_MARKET_FAMILY,
     MarketCatalog,
@@ -28,7 +30,7 @@ def _market(start: datetime) -> MarketWindow:
         down_token_id="down",
         t0=start,
         t1=start + timedelta(minutes=15),
-        rule_epoch="chainlink-btc-usd-v1",
+        rule_epoch="chainlink-btc-usd-twap-60s-v1",
         rule_hash="a" * 64,
     )
 
@@ -154,6 +156,36 @@ def test_shadow_scheduler_marks_invalid_model_failed(tmp_path) -> None:
     assert status is not None
     assert status.state == "failed"
     assert not status.healthy
+
+
+def test_shadow_scheduler_loads_artifact_against_current_market_epoch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    observed: list[object] = []
+
+    def load(**kwargs: object):
+        observed.append(kwargs.get("expected_rule_epoch"))
+        raise ValueError("model artifact rule epoch mismatch")
+
+    monkeypatch.setattr(shadow_scheduler_script.ModelArtifactStore, "load", staticmethod(load))
+    args = argparse.Namespace(
+        config=Path("configs/btc_short_horizon/baseline.toml"),
+        model_directory=tmp_path / "model",
+        runtime_root=tmp_path / "runtime",
+        catalog_directory=None,
+        output_root=None,
+        raw_data_root=None,
+        poll_seconds=60.0,
+        lookback_hours=2.0,
+        book_lookback_seconds=300,
+        availability_delay_seconds=1.0,
+    )
+
+    with pytest.raises(ValueError, match="rule epoch mismatch"):
+        asyncio.run(run_async(args))
+
+    assert observed == ["chainlink-btc-usd-twap-60s-v1"]
 
 
 def test_shadow_scheduler_publishes_current_running_status_before_first_scan(

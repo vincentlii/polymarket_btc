@@ -69,3 +69,48 @@ def test_evaluation_store_rejects_unknown_schema(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="unsupported Research Paper evaluation schema"):
         PaperEvaluationStore(tmp_path, "paper-v5-stage-integrity")
+
+
+def test_evaluation_store_migrates_v1_and_preserves_cost_attribution(tmp_path) -> None:
+    path = tmp_path / "paper" / "epochs" / "paper-v5-stage-integrity" / "evaluations.sqlite3"
+    path.parent.mkdir(parents=True)
+    connection = sqlite3.connect(path)
+    connection.execute(
+        """
+        CREATE TABLE evaluations (
+            variant_id TEXT NOT NULL, evaluation_id TEXT NOT NULL, market_slug TEXT NOT NULL,
+            decision_ts_ns INTEGER NOT NULL, entry_regime TEXT NOT NULL,
+            price_bucket TEXT NOT NULL, reason TEXT NOT NULL, selected_side TEXT,
+            fair_probability REAL, executable_vwap REAL, net_edge REAL,
+            model_version TEXT NOT NULL, PRIMARY KEY (variant_id, evaluation_id)
+        ) WITHOUT ROWID
+        """
+    )
+    connection.execute("PRAGMA user_version=1")
+    connection.commit()
+    connection.close()
+
+    store = PaperEvaluationStore(tmp_path, "paper-v5-stage-integrity")
+    attributed = PaperEvaluationObservation(
+        **(
+            _evaluation(selected=True, edge=0.04).to_json()
+            | {
+                "point_fair_probability": 0.61,
+                "probability_lower": 0.58,
+                "probability_upper": 0.64,
+                "market_anchor": 0.53,
+                "gross_edge": 0.09,
+                "fee_per_share": 0.01,
+                "slippage_stress": 0.02,
+                "latency_stress": 0.02,
+            }
+        )
+    )
+    store.append((attributed,))
+
+    counts = store.counts_by_variant()[attributed.variant_id]
+    assert counts.mean_gross_edge == pytest.approx(0.09)
+    assert counts.mean_fee_per_share == pytest.approx(0.01)
+    assert counts.mean_net_edge == pytest.approx(0.04)
+    with sqlite3.connect(path) as check:
+        assert check.execute("PRAGMA user_version").fetchone()[0] == 2

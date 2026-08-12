@@ -52,6 +52,27 @@ def polymarket_rtds_chainlink_btc_subscription() -> WebSocketSubscription:
     )
 
 
+def polymarket_rtds_chainlink_btc_twap_60s_subscription() -> WebSocketSubscription:
+    """Subscribe independently to the official RTDS 60-second BTC/USD TWAP."""
+
+    return WebSocketSubscription(
+        endpoint=POLYMARKET_RTDS_WS,
+        subscribe_payload={
+            "action": "subscribe",
+            "subscriptions": [
+                {
+                    "topic": "crypto_prices_twap_sixty",
+                    "type": "update",
+                    "filters": json.dumps({"symbol": "btc/usd"}, separators=(",", ":")),
+                }
+            ],
+        },
+        heartbeat_payload="PING",
+        heartbeat_interval_seconds=5.0,
+        business_payload_timeout_seconds=_CHAINLINK_BTC_PAYLOAD_TIMEOUT_SECONDS,
+    )
+
+
 def binance_combined_stream_subscription(streams: tuple[str, ...]) -> WebSocketSubscription:
     return _binance_combined_stream_subscription(
         endpoint=BINANCE_SPOT_STREAM_WS,
