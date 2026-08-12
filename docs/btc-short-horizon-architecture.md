@@ -43,6 +43,11 @@ raw market/BTC feeds
 - Labels have an explicit `label_available_ts`.
 - `timestamp` and `timestamp_received` remain distinct in PMXT replay.
 - All final strategy decisions are reproducible from a run manifest.
+- BTC 15m rule epochs are classified from Gamma rule-bearing metadata and
+  verified against config, model artifact, and runtime expectations. The active
+  `chainlink-btc-usd-twap-60s-v1` boundary collects official 60-second TWAP
+  evidence separately from the legacy point-price stream; it does not imply a
+  TWAP model promotion.
 
 ## Implemented Module Boundaries
 
@@ -293,7 +298,7 @@ uv run python scripts/btc_gamma_catalog.py `
   --family 15m `
   --closed open `
   --market-slug <current-15m-slug> `
-  --rule-epoch chainlink-btc-usd-v1 `
+  --rule-epoch chainlink-btc-usd-twap-60s-v1 `
   --output data/metadata/btc-15m-open.json
 ```
 
@@ -321,7 +326,7 @@ current pair and retries at the normal boundary without adding a handoff delay.
 uv run python scripts/btc_forward_collector.py `
   --follow-current `
   --family 15m `
-  --rule-epoch chainlink-btc-usd-v1 `
+  --rule-epoch chainlink-btc-usd-twap-60s-v1 `
   --catalog-directory data/metadata/forward_catalogs
 ```
 
@@ -412,13 +417,21 @@ fair-probability model. This prevents a Binance-only historical proxy from
 quietly learning a feature unavailable in that proxy. A later residual model
 may use synchronized CLOB history only after its own held-out validation.
 
-The market-relative MVP remains research-only. Its development run freezes the
-paired dataset, schema and split/model protocol hashes, and sealed holdout
-rejects any lineage substitution. Its metadata contract is not a runtime model
-artifact: the current observation schema lacks a pair-level CLOB session
-identity, while per-token numeric epoch IDs are local stream values and cannot
-prove synchronization by numeric equality. P2b must add that causal identity,
-spread, executable-depth and microstructure fields before runtime promotion.
+The market-relative challenger remains research-only. `CausalPairSession`
+binds market/condition/rule/token/window identity, and each `PairBookEvidence`
+binds source/receive time, collector session, local epoch, gap state, sequence
+validity and full-depth availability. The pair fails closed on stale/future or
+skewed legs and invalid binary complements. Numeric token epochs remain local
+and are not required to match.
+
+The residual model anchors `logit(p_up)` to the normalized independent-book
+midpoint and learns only the residual factors. `OneSignalTakerPolicy` evaluates
+both complete ask ladders every five seconds from `t0+5s` through `t0+180s`,
+walks the full requested size, applies actual taker commission and each named
+stress exactly once, and selects only on the conservative probability bound.
+It permits a side below 50% when its robust fair value still exceeds executable
+cost, but rejects prices outside 0.35--0.80, insufficient depth, stale evidence
+and a second opportunity in the same market.
 
 The walk-forward protocol keeps every snapshot of one market in the same
 group. A train/calibration/test/holdout boundary may never split a market,
@@ -577,7 +590,7 @@ uv run python backtests/polymarket_btc_15m_opening_mispricing_maker.py \
   --market-catalog /path/to/btc-15m-open-catalog.json \
   --market-slug <validated-current-slug> \
   --signals /path/to/opening-mispricing-signals.parquet \
-  --rule-epoch chainlink-btc-usd-v1 \
+  --rule-epoch chainlink-btc-usd-twap-60s-v1 \
   --start-time 2026-04-13T00:00:00Z \
   --end-time 2026-04-13T00:01:00Z \
   --scenario p95 \
@@ -679,23 +692,25 @@ revalued through `entry_end + max_work`; stale/gapped data, probability decay,
 rule changes and expiry request a simulated cancel, with fills still possible
 during the configured cancel latency.
 
-The enabled market-end maker control uses the exact independent 1x5 taker
-candidate filter and one-signal confirmation, then converts the selected side
-to a passive post-only plan. Its expiry is the market's immutable `t1`, not a
-fixed number of seconds after placement. Safety cancellation remains active;
-`market_end` changes time-in-force only. The 2x5 FAK variant remains primary,
-so this control has an isolated ledger and cannot change the main equity curve.
+Execution epoch `paper-v6-1x5s-v2` enables exactly two immediate-FAK variants:
+the one-signal `independent_fak_1x5s` legacy control and the one-signal
+`independent_fak_1x5s_2_0` challenger. They write isolated variant ledgers.
+Legacy 1x5s remains primary until 2.0 publishes a compatible artifact and passes
+its development gate; an abstaining challenger must not replace the current
+direction funnel or equity curve. Maker, 2x5, and 3x5 variants remain
+declared rollback/history code but are not instantiated by the current runtime,
+so they cannot receive events, freeze rules, or create current Paper evidence.
 
-This control does not expand durable CLOB capture through all 15 minutes. Live
-trade evidence updates its queue only through `t0+215s`. Once Gamma reports the
-market resolved, Paper fetches public seller-initiated trades for the remaining
-interval from the Polymarket Data API, stores the immutable response projection,
-and applies the same 50% volume stress against the remaining queue. The query
-starts one whole second after the live cutoff because public timestamps are only
-second-granular; this deliberately loses ambiguous boundary trades. Missing,
-malformed, over-limit, or mismatched evidence leaves settlement pending and
-Paper unhealthy. It never converts missing evidence into an assumed fill. The
-source contract is Polymarket's public
+The disabled market-end maker rollback path does not expand durable CLOB capture
+through all 15 minutes. Live trade evidence updates its queue only through
+`t0+215s`. Once Gamma reports the market resolved, Paper fetches public
+seller-initiated trades for the remaining interval from the Polymarket Data API,
+stores the immutable response projection, and applies the same 50% volume stress
+against the remaining queue. The query starts one whole second after the live
+cutoff because public timestamps are only second-granular; this deliberately
+loses ambiguous boundary trades. Missing, malformed, over-limit, or mismatched
+evidence leaves settlement pending and Paper unhealthy. It never converts
+missing evidence into an assumed fill. The source contract is Polymarket's public
 [`GET /trades`](https://docs.polymarket.com/api-reference/core/get-trades-for-a-user-or-markets)
 Data API filtered by condition, `SELL` side, and the bounded time interval.
 
@@ -1002,16 +1017,12 @@ retroactively canceled because the local feed becomes stale. If its match-time
 book evidence is not trustworthy, the placement becomes `evidence_invalid` and
 is excluded from settlement PnL and Go/No-Go statistics.
 
-The v2 routes remain historical controls. Three active routes use an independent
-taker planner which evaluates both outcome-token ask ladders, per-level fees and
-frozen safety buffers without requiring a maker plan. `independent_fak_1x5s`
-submits on its first qualified observation. The primary
-`independent_fak_2x5s` requires two five-second observations.
-`independent_fak_stable_3x5s` requires three five-second observations and limits
-peak-to-current net-edge decay to one cent. Confirmation count is owned only by
-the variant; stage policy controls time, edge and price gates and resets
-confirmation at stage boundaries. The cadence remains five seconds because the
-current model artifact is trained and validated for that cadence.
+The v2 routes remain historical controls. In v6, only the legacy 1x5 and 1x5s
+2.0 immediate-FAK variants are active; both submit on their first qualified
+five-second observation. Confirmation count remains variant-owned, while stage
+policy controls time, edge and price gates and resets confirmation at stage
+boundaries. The cadence remains five seconds because the current model artifact
+is trained and validated for that cadence.
 
 Rule snapshots are immutable per `(execution_epoch, market identity)`, but a
 process restart during the same market must not create a second observation-time

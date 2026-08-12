@@ -34,6 +34,9 @@ class OpeningMispricingPrediction:
     p_boundary_up: float
     p_market_mid_up: float
     data_age_seconds: float
+    raw_p_up: float | None = None
+    p_up_lower: float | None = None
+    p_up_upper: float | None = None
     has_data_gap: bool = False
     structure_valid: bool = True
     tick_unchanged: bool = True
@@ -54,6 +57,15 @@ class OpeningMispricingPrediction:
             ("p_market_mid_up", self.p_market_mid_up),
         ):
             _probability(name, value)
+        if self.raw_p_up is not None:
+            _probability("raw_p_up", self.raw_p_up)
+        if (self.p_up_lower is None) != (self.p_up_upper is None):
+            raise ValueError("probability interval bounds must be provided together")
+        if self.p_up_lower is not None and self.p_up_upper is not None:
+            _probability("p_up_lower", self.p_up_lower)
+            _probability("p_up_upper", self.p_up_upper)
+            if not self.p_up_lower <= self.p_up <= self.p_up_upper:
+                raise ValueError("probability interval must contain p_up")
         if not isfinite(self.data_age_seconds) or self.data_age_seconds < 0.0:
             raise ValueError("data_age_seconds must be finite and >= 0")
 
@@ -90,6 +102,7 @@ class FittedOpeningMispricingModel:
         latency_healthy: bool = True,
     ) -> OpeningMispricingPrediction:
         vector = np.asarray([self.schema.vector_from(feature_values)], dtype=float)
+        raw_probability = float(self.model.predict_raw_up_probability(vector)[0])
         probability = float(self.model.predict_up_probability(vector)[0])
         return OpeningMispricingPrediction(
             market_slug=market_slug,
@@ -101,6 +114,7 @@ class FittedOpeningMispricingModel:
             p_boundary_up=p_boundary_up,
             p_market_mid_up=p_market_mid_up,
             data_age_seconds=data_age_seconds,
+            raw_p_up=raw_probability,
             has_data_gap=has_data_gap,
             structure_valid=structure_valid,
             tick_unchanged=tick_unchanged,

@@ -294,3 +294,13 @@ The collector should retain the following protocol fixtures:
 
 These are protocol-correctness tests. They are separate from strategy
 performance, queue heuristics, and PnL tests.
+
+## Chainlink 60-second TWAP boundary
+
+The RTDS 60-second TWAP stream is a separate raw source. Its inner timestamp is
+the observation time, its outer timestamp is publication time, and local receipt
+is the availability boundary. The exact signed E18 field is retained and divided
+by `10^18` with `Decimal`; the display value is only a tolerance-checked
+diagnostic. RTDS has no reconnect history or snapshot, so a missing report is a
+gap and never a locally synthesized settlement value. Point and TWAP streams
+must each emit their own reconnect gap and recovery event.

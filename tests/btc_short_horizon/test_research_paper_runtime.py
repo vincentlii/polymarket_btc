@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
+import sqlite3
 from types import SimpleNamespace
 
 import httpx
@@ -27,6 +28,7 @@ from btc_short_horizon.live.paper_replay import (
     replay_research_paper,
 )
 import btc_short_horizon.live.paper_runtime as paper_runtime_module
+import scripts.btc_research_paper_replay as paper_replay_script
 from btc_short_horizon.live.research_paper import (
     PaperLedgerStore,
     PaperRuleSnapshotStore,
@@ -884,28 +886,95 @@ def test_independent_maker_reuses_1x5_filter_and_works_until_market_end(tmp_path
     assert not maker.requires_settlement_trade_evidence(market.slug)
 
 
-def test_baseline_portfolio_builds_market_end_maker_without_zero_work_age(tmp_path) -> None:
+def test_baseline_portfolio_contains_only_the_two_enabled_1x_variants(tmp_path) -> None:
     project = load_btc_project_config(Path("configs/btc_short_horizon/baseline.toml"))
+    enabled_variant_ids = {
+        "independent_fak_1x5s",
+        "independent_fak_1x5s_2_0",
+    }
+    disabled_variant_ids = {
+        "independent_maker_1x5s_market_end",
+        "independent_fak_2x5s",
+        "independent_fak_stable_3x5s",
+    }
 
     class Predictor:
         model_id = "proxy-model"
+        include_interval = False
 
         def __call__(self, market, history, observation):  # type: ignore[no-untyped-def]
-            return _prediction(observation)
+            prediction = _prediction(observation)
+            return (
+                replace(
+                    prediction,
+                    p_up_lower=prediction.p_up - 0.03,
+                    p_up_upper=prediction.p_up + 0.03,
+                )
+                if self.include_interval
+                else prediction
+            )
 
+    predictor = Predictor()
     portfolio = build_research_paper_portfolio(
         project=project,
-        predictor=Predictor(),  # type: ignore[arg-type]
+        predictor=predictor,  # type: ignore[arg-type]
         runtime_root=tmp_path,
         starting_balance=1_000.0,
     )
-    maker = next(
-        engine
-        for engine in portfolio.engines
-        if engine.variant.variant_id == "independent_maker_1x5s_market_end"
+    assert [engine.variant.variant_id for engine in portfolio.engines] == [
+        "independent_fak_1x5s",
+        "independent_fak_1x5s_2_0",
+    ]
+    assert portfolio.primary.variant.variant_id == "independent_fak_1x5s"
+    portfolio.activate_market(_market(), rules={UP: _rules(UP), DOWN: _rules(DOWN)})
+    portfolio.on_event(_book(UP, bid="0.40", ask="0.42", second=5))
+    portfolio.on_event(_book(DOWN, bid="0.56", ask="0.58", second=5))
+    assert portfolio.decide(now_ts_ns=T0_NS + 5_500_000_000) == "submitted"
+    assert (
+        portfolio.last_decisions["independent_fak_1x5s_2_0"] == "probability_interval_unavailable"
     )
+    predictor.include_interval = True
+    portfolio.on_event(_book(UP, bid="0.40", ask="0.42", second=10))
+    portfolio.on_event(_book(DOWN, bid="0.56", ask="0.58", second=10))
+    assert portfolio.decide(now_ts_ns=T0_NS + 10_500_000_000) == "placement_cycle_used"
+    assert portfolio.last_decisions["independent_fak_1x5s_2_0"] == "submitted"
+    portfolio.checkpoint_evaluations()
 
-    assert maker.maker_config.max_work_seconds == project.maker.max_work_seconds
+    snapshot = portfolio.dashboard_snapshot(now=T0 + timedelta(seconds=6))
+
+    assert {record.variant_id for record in portfolio.records} == enabled_variant_ids
+    assert snapshot.performance is not None
+    assert {
+        item.variant_id for item in snapshot.performance.variant_summaries
+    } == enabled_variant_ids
+    robust_summary = next(
+        item
+        for item in snapshot.performance.variant_summaries
+        if item.variant_id == "independent_fak_1x5s_2_0"
+    )
+    assert dict(robust_summary.rejection_counts) == {"probability_interval_unavailable": 1}
+    assert robust_summary.mean_gross_edge is not None
+    assert robust_summary.mean_fee_per_share is not None
+    assert robust_summary.mean_net_edge is not None
+    assert portfolio.requires_settlement_trade_evidence(_market().slug) is False
+
+    epoch_root = tmp_path / "paper" / "epochs" / project.paper_execution_epoch
+    assert {path.name for path in (epoch_root / "variants").iterdir()} == enabled_variant_ids
+    with sqlite3.connect(epoch_root / "evaluations.sqlite3") as connection:
+        persisted_evaluation_variants = {
+            row[0] for row in connection.execute("SELECT DISTINCT variant_id FROM evaluations")
+        }
+    assert persisted_evaluation_variants == enabled_variant_ids
+    frozen_rules = (epoch_root / "rules" / f"{_market().slug}.json").read_text(encoding="utf-8")
+    assert all(variant_id not in frozen_rules for variant_id in disabled_variant_ids)
+
+
+def test_replay_final_decision_horizon_ignores_disabled_maker_variants() -> None:
+    project = load_btc_project_config(Path("configs/btc_short_horizon/baseline.toml"))
+
+    final_decision_ns = paper_replay_script._final_decision_ts_ns(project, T0_NS)
+
+    assert final_decision_ns == T0_NS + 180_000_000_000
 
 
 def test_public_settlement_trade_client_validates_deduplicates_and_persists(tmp_path) -> None:
@@ -1323,7 +1392,7 @@ def test_paper_runtime_surfaces_prediction_failure_until_a_successful_decision()
             max_work_seconds=15.0,
             signal_cadence_seconds=5.0,
         ),
-        paper_execution_variants=(SimpleNamespace(maker_work_seconds=15.0),),
+        paper_execution_variants=(SimpleNamespace(maker_work_seconds=15.0, enabled=True),),
     )
     runtime._next_decision_ns = T0_NS + 5_000_000_000
     runtime._prediction_errors = 0
@@ -1392,7 +1461,7 @@ def test_paper_runtime_fails_closed_for_a_non_data_prediction_value_error() -> N
             max_work_seconds=15.0,
             signal_cadence_seconds=5.0,
         ),
-        paper_execution_variants=(SimpleNamespace(maker_work_seconds=15.0),),
+        paper_execution_variants=(SimpleNamespace(maker_work_seconds=15.0, enabled=True),),
     )
     runtime._next_decision_ns = T0_NS + 5_000_000_000
 

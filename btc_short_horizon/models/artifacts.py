@@ -109,7 +109,7 @@ class ModelArtifactStore:
 
     @staticmethod
     def load(
-        *, directory: Path, expected_schema_hash: str
+        *, directory: Path, expected_schema_hash: str, expected_rule_epoch: str | None = None
     ) -> tuple[FittedDirectionModel, ModelArtifactMetadata]:
         metadata = ModelArtifactMetadata(
             **json.loads((directory / "metadata.json").read_text("utf-8"))
@@ -118,6 +118,14 @@ class ModelArtifactStore:
             raise ValueError(
                 "model artifact schema mismatch: "
                 f"expected {expected_schema_hash}, got {metadata.feature_schema_hash}"
+            )
+        if (
+            expected_rule_epoch is not None
+            and metadata.config.get("rule_epoch") != expected_rule_epoch
+        ):
+            raise ValueError(
+                "model artifact rule epoch mismatch: "
+                f"expected {expected_rule_epoch!r}, got {metadata.config.get('rule_epoch')!r}"
             )
         model_path = directory / "model.joblib"
         if not metadata.model_sha256:

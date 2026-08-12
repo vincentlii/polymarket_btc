@@ -38,6 +38,8 @@ deploy/runtime/
 
 # Temp
 .tmp/
+.codex-test-tmp/
+.pytest-final-v6/
 
 # Rust
 target/

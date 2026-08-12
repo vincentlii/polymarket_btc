@@ -71,44 +71,47 @@ artifact，并使用与训练/回放相同的五秒 cadence 和两次连续信�
 PnL 可以产生新的 forward OOS 诊断证据，但不能补足少于 2,500 个 sealed holdout
 市场、缺失的因果 Polymarket baseline，也不能替代正式 queue/latency BookReplay。
 
+## Chainlink TWAP epoch compatibility
+
+An artifact's `metadata.config.rule_epoch` is mandatory evidence, not a field
+to infer from its file name or training date. Missing or different epochs reject
+the load by default. The configured point-to-TWAP exception is limited to
+Research Paper as an explicitly labelled transition proxy; it is not a TWAP
+model, is not validation evidence, and cannot be used by Shadow, Canary, or
+live. A TWAP-specific model still requires separate fitting and validation.
+
 ## Market-relative challenger protocol
 
-The deployed Binance/Gamma Logistic model remains the unchanged control. The
-market-relative path is a research-only challenger built on the exact subset of
-markets with complete causal dual-token CLOB observations at every frozen
-decision timestamp. Missing, future, stale, gapped or structurally invalid
-observations remove the whole market from both control and challenger; values
-are never filled with 0.5 or forward-filled trades.
+The deployed Binance/Gamma Logistic model remains the current control. The
+market-relative path is a research-only challenger built on exact dual-token
+CLOB pairs. Both legs must match market identity and collector session, contain
+full depth, pass sequence/gap checks, arrive before the decision, and satisfy
+age, receive-skew and binary-complement checks. Per-token numeric epoch IDs are
+kept as local evidence and are deliberately not compared for equality.
 
-Four Logistic candidates are pre-registered: paired control, market-logit
-anchor, anchor plus boundary-market logit residual, and all available
-time/quality interactions. Market logit is a feature rather than a claimed
-fixed offset because the current sklearn/artifact boundary has no offset
-contract. All candidates share identical grouped walk-forward partitions and
-weights. Selection uses development OOF log loss, Brier, calibration error,
-calibration slope and paired UTC-day block-bootstrap confidence intervals.
-Sealed holdout is callable only after one challenger passes the development
-gate and still requires at least 2,500 markets by default.
+The first residual model uses the normalized independent-book midpoint as an
+offset anchor and learns only `g(x)` in `logit(p_up)=logit(q_pm)+g(x)`. It
+publishes point and conservative probability bounds from parameter uncertainty
+plus calibration error. Calibration compares identity, sigmoid, temperature,
+beta and eligible isotonic mappings; a mapping replaces identity only when both
+weighted log loss and Brier improve on the disjoint calibration partition.
 
-No runtime model is switched by this implementation. A research contract can
-be produced only from the accepted typed sealed-holdout result associated with
-the accepted development run. Development freezes deterministic hashes for the
-complete paired dataset, control/challenger schemas and split/model protocol;
-sealed evaluation rejects any replacement dataset or protocol. The contract
-also binds the CLOB source hash, rule epoch, ingest version, factor families,
-cadence and opening protocol.
+The bounded development family contains five residual Logistic candidates and
+64 low-capacity residual LightGBM candidates. Ranking uses median per-window
+score, leaf audits count unique markets rather than snapshot rows, and one
+Bonferroni family correction is applied before candidate ranking. Shared-stage
+and independent-stage comparisons require identical market slugs. Promotion
+also requires positive paired log-loss/Brier and robust executable-edge lower
+bounds, calibration safety, at least 300 opportunities, bounded direction/price
+concentration, and valid operational evidence.
 
-This MVP cannot publish a runtime-loadable model. `OpeningMarketObservation`
-does not yet carry a pair-level collector-session identity, and numeric epoch
-IDs from independently reconstructed token streams are not comparable. The
-contract is therefore marked `runtime_promotion_eligible=false` with
-`pair_session_identity_not_proven`. P2b must add a causal pair-session contract
-before runtime promotion; it must not require unrelated epoch integers to be
-equal and call that synchronization evidence.
-
-PM spread, imbalance and full-depth factors remain a later P2b extension
-because the current `OpeningMarketObservation` does not causally persist those
-fields.
+The sealed holdout is closed by default. The proxy runner produces a
+development-only result unless `--consume-sealed-holdout` is explicitly set;
+that option additionally requires the full exact profile, complete catalog,
+clean code provenance and an atomic one-shot protocol receipt. A development
+run cannot publish a runtime model. The 2.0 Paper challenger therefore abstains
+without a compatible interval-producing artifact, while Legacy 1x5s remains
+primary.
 
 ## 验收标准
 

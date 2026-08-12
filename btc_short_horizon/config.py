@@ -105,11 +105,21 @@ class PaperExecutionVariantConfig:
             raise ValueError("paper execution variant label must not be empty")
         if self.mode not in {"maker", "immediate_fak", "maker_then_fak"}:
             raise ValueError("paper execution mode must be maker, immediate_fak, or maker_then_fak")
-        if self.opportunity_policy not in {"shared_maker", "independent_taker"}:
-            raise ValueError("paper opportunity policy must be shared_maker or independent_taker")
+        if self.opportunity_policy not in {
+            "shared_maker",
+            "independent_taker",
+            "robust_independent_taker",
+        }:
+            raise ValueError(
+                "paper opportunity policy must be shared_maker, independent_taker, "
+                "or robust_independent_taker"
+            )
         if self.confirmation_policy not in {"side_only", "edge_stable"}:
             raise ValueError("paper confirmation policy must be side_only or edge_stable")
-        if self.opportunity_policy == "independent_taker" and self.mode not in {
+        if self.opportunity_policy in {
+            "independent_taker",
+            "robust_independent_taker",
+        } and self.mode not in {
             "maker",
             "immediate_fak",
         }:
@@ -197,6 +207,9 @@ class BtcProjectConfig:
     research_timing: ResearchTimingConfig
     collection: ForwardCollectionConfig
     maker: MakerStrategyConfig
+    rule_epoch: str
+    model_rule_epoch: str
+    allow_rule_epoch_transition_proxy: bool
     paper_execution_epoch: str
     paper_execution_variants: tuple[PaperExecutionVariantConfig, ...]
     data_sources: tuple[str, ...]
@@ -289,14 +302,28 @@ def load_btc_project_config(path: Path) -> BtcProjectConfig:
     variant_ids = {variant.variant_id for variant in paper_variants}
     if len(variant_ids) != len(paper_variants):
         raise ValueError("paper execution variant IDs must be unique")
-    if sum(variant.primary for variant in paper_variants) != 1:
-        raise ValueError("exactly one paper execution variant must be primary")
+    if any(variant.primary and not variant.enabled for variant in paper_variants):
+        raise ValueError("paper execution primary variant must be enabled")
+    if sum(variant.primary and variant.enabled for variant in paper_variants) != 1:
+        raise ValueError("exactly one enabled primary paper execution variant is required")
     if (
-        any(variant.maker_fill_evidence_policy == "settlement_trades" for variant in paper_variants)
+        any(
+            variant.enabled and variant.maker_fill_evidence_policy == "settlement_trades"
+            for variant in paper_variants
+        )
         and maker.structure is not LayerStructure.SINGLE
     ):
         raise ValueError("settlement trade evidence currently requires a single maker layer")
     stage_policy = _stage_policy(raw.get("stage_policy"))
+    rule_epoch = _simple_ascii_identifier(raw.get("rule_epoch"), "rule_epoch")
+    model_rule_epoch = _simple_ascii_identifier(raw.get("model_rule_epoch"), "model_rule_epoch")
+    allow_rule_epoch_transition_proxy = _bool_default(
+        raw,
+        "allow_rule_epoch_transition_proxy",
+        False,
+    )
+    if model_rule_epoch != rule_epoch and not allow_rule_epoch_transition_proxy:
+        raise ValueError("cross-epoch model requires explicit Research Paper transition proxy")
     paper_execution_epoch = _simple_ascii_identifier(
         raw.get("paper_execution_epoch"),
         "paper_execution_epoch",
@@ -334,6 +361,7 @@ def load_btc_project_config(path: Path) -> BtcProjectConfig:
             )
             for scenario in scenarios
             for variant in paper_variants
+            if variant.enabled
         ),
         default=maker.entry_end_seconds,
     )
@@ -348,6 +376,9 @@ def load_btc_project_config(path: Path) -> BtcProjectConfig:
         research_timing=timing,
         collection=collection,
         maker=maker,
+        rule_epoch=rule_epoch,
+        model_rule_epoch=model_rule_epoch,
+        allow_rule_epoch_transition_proxy=allow_rule_epoch_transition_proxy,
         paper_execution_epoch=paper_execution_epoch,
         paper_execution_variants=paper_variants,
         data_sources=sources,

@@ -9,12 +9,14 @@ from threading import Thread
 from btc_short_horizon.live.dashboard import (
     DashboardConfig,
     build_dashboard_payload,
+    build_order_history_payload,
     create_dashboard_server,
 )
 from btc_short_horizon.live.dashboard_page import dashboard_html
 from btc_short_horizon.live.dashboard_state import (
     BotDashboardSnapshot,
     DashboardSnapshotStore,
+    ExecutionVariantPerformance,
     GateState,
     HealthIndicator,
     HealthState,
@@ -144,6 +146,21 @@ def _write_ledger(path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
+def _v6_variant_summary(variant_id: str, *, primary: bool) -> ExecutionVariantPerformance:
+    return ExecutionVariantPerformance(
+        variant_id=variant_id,
+        label=variant_id,
+        policy="independent_taker",
+        primary=primary,
+        starting_balance=1_000.0,
+        equity=1_000.0,
+        realized_pnl=0.0,
+        order_count=0,
+        fill_count=0,
+        taker_fees=0.0,
+    )
+
+
 def test_dashboard_payload_reports_service_health_and_stop_request(tmp_path) -> None:
     config = DashboardConfig(runtime_root=tmp_path, max_age_seconds=30)
     RuntimeStatusStore(tmp_path).write(
@@ -197,6 +214,9 @@ def test_dashboard_html_labels_research_paper_as_simulated_not_account_truth() -
     assert 'data-variant-filter="all" aria-pressed="false"' in html
     assert "variantView.filter==='all'" in html
     assert "filter(item=>item.enabled!==false)" in html
+    assert "平均 Gross edge" in html
+    assert "平均稳健 Net edge" in html
+    assert "rejection_counts" in html
 
 
 def test_dashboard_page_explains_recent_limit_and_loads_paginated_history() -> None:
@@ -607,6 +627,69 @@ def test_dashboard_order_history_paginates_filters_and_redacts_ledgers(tmp_path)
         server.shutdown()
         worker.join(timeout=2)
         server.server_close()
+
+
+def test_v6_current_snapshot_excludes_rollback_variants_while_history_is_read_only(
+    tmp_path,
+) -> None:
+    v6_epoch = "paper-v6-1x5s-v2"
+    legacy_epoch = "paper-v5-legacy"
+    current = _dashboard_snapshot()
+    DashboardSnapshotStore(tmp_path).write(
+        replace(
+            current,
+            performance=replace(
+                current.performance,
+                primary_variant_id="independent_fak_1x5s_2_0",
+                paper_execution_epoch=v6_epoch,
+                variant_summaries=(
+                    _v6_variant_summary("independent_fak_1x5s", primary=False),
+                    _v6_variant_summary("independent_fak_1x5s_2_0", primary=True),
+                ),
+            ),
+        )
+    )
+    ledger_path = (
+        tmp_path
+        / "paper"
+        / "epochs"
+        / legacy_epoch
+        / "variants"
+        / "independent_maker_1x5s_market_end"
+        / "ledger.json"
+    )
+    _write_ledger(
+        ledger_path,
+        {
+            "schema_version": 5,
+            "execution_epoch": legacy_epoch,
+            "variant_id": "independent_maker_1x5s_market_end",
+            "starting_balance": 1_000.0,
+            "records": [
+                _paper_record(
+                    "legacy-maker",
+                    int(_now().timestamp() * 1_000_000_000),
+                    schema_version=4,
+                    variant_id="independent_maker_1x5s_market_end",
+                )
+            ],
+        },
+    )
+    original_ledger = ledger_path.read_bytes()
+    config = DashboardConfig(runtime_root=tmp_path)
+
+    current_payload = build_dashboard_payload(config, now=_now())
+    history = build_order_history_payload(config, epoch=legacy_epoch)
+
+    assert current_payload["snapshot"]["performance"]["paper_execution_epoch"] == v6_epoch
+    assert {
+        item["variant_id"]
+        for item in current_payload["snapshot"]["performance"]["variant_summaries"]
+    } == {"independent_fak_1x5s", "independent_fak_1x5s_2_0"}
+    assert history["execution_epoch_count"] == 1
+    assert [item["order_id"] for item in history["items"]] == ["legacy-maker"]
+    assert {item["execution_epoch"] for item in history["items"]} == {legacy_epoch}
+    assert ledger_path.read_bytes() == original_ledger
 
 
 def test_dashboard_order_history_fails_closed_without_exposing_paths(tmp_path) -> None:

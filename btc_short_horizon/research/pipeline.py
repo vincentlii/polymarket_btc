@@ -70,6 +70,7 @@ class OofPrediction:
     sample_index: int
     sample_id: str
     feature_ts_ns: int
+    raw_p_up: float
     p_up: float
     label: int
 
@@ -81,8 +82,10 @@ class OofPrediction:
             raise ValueError("OOF indexes and timestamp must be non-negative")
         if not self.sample_id or self.sample_id.strip() != self.sample_id:
             raise ValueError("sample_id must be non-empty and trimmed")
-        if not isfinite(self.p_up) or not 0.0 < self.p_up < 1.0:
-            raise ValueError("p_up must be finite and in (0, 1)")
+        for name in ("raw_p_up", "p_up"):
+            value = getattr(self, name)
+            if not isfinite(value) or not 0.0 < value < 1.0:
+                raise ValueError(f"{name} must be finite and in (0, 1)")
         if (
             isinstance(self.label, bool)
             or not isinstance(self.label, Integral)
@@ -136,6 +139,7 @@ class HoldoutPrediction:
     sample_index: int
     sample_id: str
     feature_ts_ns: int
+    raw_p_up: float
     p_up: float
     label: int
 
@@ -147,8 +151,10 @@ class HoldoutPrediction:
             raise ValueError("holdout index and timestamp must be non-negative integers")
         if not self.sample_id or self.sample_id.strip() != self.sample_id:
             raise ValueError("sample_id must be non-empty and trimmed")
-        if not isfinite(self.p_up) or not 0.0 < self.p_up < 1.0:
-            raise ValueError("p_up must be finite and in (0, 1)")
+        for name in ("raw_p_up", "p_up"):
+            value = getattr(self, name)
+            if not isfinite(value) or not 0.0 < value < 1.0:
+                raise ValueError(f"{name} must be finite and in (0, 1)")
         if (
             isinstance(self.label, bool)
             or not isinstance(self.label, Integral)
@@ -280,9 +286,14 @@ def run_walk_forward_model(
             ),
         )
         test_indices = np.asarray(fold.test_indices, dtype=int)
-        probabilities = model.predict_up_probability(dataset.vectors[test_indices])
-        for sample_index, probability in zip(
-            test_indices.tolist(), probabilities.tolist(), strict=True
+        test_vectors = dataset.vectors[test_indices]
+        raw_probabilities = model.predict_raw_up_probability(test_vectors)
+        probabilities = model.predict_up_probability(test_vectors)
+        for sample_index, raw_probability, probability in zip(
+            test_indices.tolist(),
+            raw_probabilities.tolist(),
+            probabilities.tolist(),
+            strict=True,
         ):
             sample = dataset.samples[sample_index]
             predictions.append(
@@ -291,6 +302,7 @@ def run_walk_forward_model(
                     sample_index=sample_index,
                     sample_id=sample.sample_id,
                     feature_ts_ns=_datetime_ns(sample.feature_ts),
+                    raw_p_up=float(raw_probability),
                     p_up=float(probability),
                     label=sample.label,
                 )
@@ -322,7 +334,6 @@ def run_sealed_holdout_model(
     calibration_end = holdout_start - effective_split.embargo_duration
     calibration_start = calibration_end - effective_split.calibration_duration
     train_end = calibration_start - effective_split.embargo_duration
-    train_start = train_end - effective_split.train_duration
     sealed_holdout_index_set = set(plan.sealed_holdout_indices)
     development_indices = tuple(
         sorted(
@@ -336,6 +347,11 @@ def run_sealed_holdout_model(
                 dataset.samples[index].sample_id,
             ),
         )
+    )
+    train_start = (
+        min(dataset.samples[index].feature_ts for index in development_indices)
+        if effective_split.training_window == "expanding"
+        else train_end - effective_split.train_duration
     )
     train_indices = select_complete_group_indices(
         dataset.samples,
@@ -394,18 +410,24 @@ def run_sealed_holdout_model(
         ),
     )
     holdout_indices = plan.sealed_holdout_indices
-    probabilities = model.predict_up_probability(
-        dataset.vectors[np.asarray(holdout_indices, dtype=int)]
-    )
+    holdout_vectors = dataset.vectors[np.asarray(holdout_indices, dtype=int)]
+    raw_probabilities = model.predict_raw_up_probability(holdout_vectors)
+    probabilities = model.predict_up_probability(holdout_vectors)
     predictions = tuple(
         HoldoutPrediction(
             sample_index=index,
             sample_id=dataset.samples[index].sample_id,
             feature_ts_ns=_datetime_ns(dataset.samples[index].feature_ts),
+            raw_p_up=float(raw_probability),
             p_up=float(probability),
             label=dataset.samples[index].label,
         )
-        for index, probability in zip(holdout_indices, probabilities.tolist(), strict=True)
+        for index, raw_probability, probability in zip(
+            holdout_indices,
+            raw_probabilities.tolist(),
+            probabilities.tolist(),
+            strict=True,
+        )
     )
     return SealedHoldoutModelRun(
         train_indices=train_indices,

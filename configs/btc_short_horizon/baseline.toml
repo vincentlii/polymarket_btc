@@ -1,4 +1,7 @@
-paper_execution_epoch = "paper-v5-stage-integrity"
+rule_epoch = "chainlink-btc-usd-twap-60s-v1"
+model_rule_epoch = "chainlink-btc-usd-point-v1"
+allow_rule_epoch_transition_proxy = true
+paper_execution_epoch = "paper-v6-1x5s-v2"
 
 data_sources = [
   "local:../../data/pmxt_raw",
@@ -141,7 +144,22 @@ maximum_edge_decay = 0.0
 
 [[paper_execution_variants]]
 id = "independent_fak_1x5s"
-label = "Independent FAK 1x5s Control"
+label = "Independent FAK 1x5s Legacy"
+mode = "immediate_fak"
+maker_work_seconds = 0.0
+primary = true
+enabled = true
+minimum_taker_net_edge = 0.03
+slippage_buffer = 0.005
+model_uncertainty_buffer = 0.03
+opportunity_policy = "independent_taker"
+confirmation_policy = "side_only"
+confirmation_signals = 1
+maximum_edge_decay = 0.0
+
+[[paper_execution_variants]]
+id = "independent_fak_1x5s_2_0"
+label = "Independent FAK 1x5s 2.0"
 mode = "immediate_fak"
 maker_work_seconds = 0.0
 primary = false
@@ -149,7 +167,7 @@ enabled = true
 minimum_taker_net_edge = 0.03
 slippage_buffer = 0.005
 model_uncertainty_buffer = 0.03
-opportunity_policy = "independent_taker"
+opportunity_policy = "robust_independent_taker"
 confirmation_policy = "side_only"
 confirmation_signals = 1
 maximum_edge_decay = 0.0
@@ -162,7 +180,7 @@ maker_work_seconds = 0.0
 maker_expiry_policy = "market_end"
 maker_fill_evidence_policy = "settlement_trades"
 primary = false
-enabled = true
+enabled = false
 minimum_taker_net_edge = 0.03
 slippage_buffer = 0.005
 model_uncertainty_buffer = 0.03
@@ -176,8 +194,8 @@ id = "independent_fak_2x5s"
 label = "Independent FAK 2x5s Main"
 mode = "immediate_fak"
 maker_work_seconds = 0.0
-primary = true
-enabled = true
+primary = false
+enabled = false
 minimum_taker_net_edge = 0.03
 slippage_buffer = 0.005
 model_uncertainty_buffer = 0.03
@@ -192,7 +210,7 @@ label = "Independent FAK Stable 3x5s Control"
 mode = "immediate_fak"
 maker_work_seconds = 0.0
 primary = false
-enabled = true
+enabled = false
 minimum_taker_net_edge = 0.03
 slippage_buffer = 0.005
 model_uncertainty_buffer = 0.03

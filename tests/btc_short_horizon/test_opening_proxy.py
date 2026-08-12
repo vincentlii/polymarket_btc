@@ -27,6 +27,26 @@ from scripts import btc_opening_mispricing_proxy as proxy_script
 _SECOND = 1_000_000_000
 
 
+def test_proxy_cli_keeps_sealed_holdout_closed_by_default(tmp_path: Path) -> None:
+    args = proxy_script.parse_args(
+        (
+            "--start-date",
+            "2026-01-01",
+            "--end-date",
+            "2026-02-01",
+            "--rule-epoch",
+            "rule-v1",
+            "--binance-parquet-directory",
+            str(tmp_path / "parquet"),
+            "--output-directory",
+            str(tmp_path / "output"),
+        )
+    )
+
+    assert args.consume_sealed_holdout is False
+    assert args.binance_parquet_directory == tmp_path / "parquet"
+
+
 def test_opening_decisions_align_to_market_cadence_not_entry_window_start() -> None:
     assert opening_proxy_decision_offsets_ms(
         cadence_ms=5_000,
@@ -136,6 +156,9 @@ def test_opening_proxy_generates_evenly_weighted_causal_snapshots_per_market() -
         f"@{int((start + timedelta(seconds=5)).timestamp() * _SECOND)}"
     )
     assert np.sum(build.dataset.sample_weights) == pytest.approx(1.0)
+    assert np.sum(build.dataset.sample_weights[:6]) == pytest.approx(1.0 / 3.0)
+    assert np.sum(build.dataset.sample_weights[6:18]) == pytest.approx(1.0 / 3.0)
+    assert np.sum(build.dataset.sample_weights[18:]) == pytest.approx(1.0 / 3.0)
     assert values["elapsed_seconds"] == pytest.approx(5.0)
     assert values["remaining_seconds"] == pytest.approx(895.0)
     assert values["p_boundary_up"] > 0.5
@@ -147,14 +170,10 @@ def test_opening_proxy_never_reads_a_kline_unavailable_at_decision_time() -> Non
     baseline = build_opening_proxy_dataset(
         markets=(_market(start),),
         klines=_history(start),
-        entry_start_seconds=5,
-        entry_end_seconds=5,
     )
     mutated = build_opening_proxy_dataset(
         markets=(_market(start),),
         klines=_history(start, mutate_unavailable_tail=True),
-        entry_start_seconds=5,
-        entry_end_seconds=5,
     )
 
     assert mutated.dataset.vectors[0] == pytest.approx(baseline.dataset.vectors[0])
@@ -166,8 +185,6 @@ def test_single_runtime_feature_vector_matches_the_training_dataset() -> None:
     build = build_opening_proxy_dataset(
         markets=(_market(start),),
         klines=history,
-        entry_start_seconds=5,
-        entry_end_seconds=5,
     )
 
     values = opening_proxy_feature_values_at(
@@ -344,7 +361,7 @@ def test_materialized_proxy_loader_filters_entry_window_and_reweights_markets(
     assert [sample.group_id for sample in dataset.samples] == [
         "market-0",
     ] * 6 + ["market-1"] * 6
-    assert dataset.sample_weights == pytest.approx([1.0 / 6.0] * 12)
+    assert dataset.sample_weights == pytest.approx([1.0 / 18.0] * 12)
 
 
 def test_materialized_proxy_loader_rejects_unordered_parts(tmp_path: Path) -> None:
@@ -417,7 +434,7 @@ def test_materialized_proxy_loader_does_not_bulk_materialize_with_pandas(
     )
 
     assert len(dataset.samples) == 2
-    assert dataset.sample_weights == pytest.approx([0.5, 0.5])
+    assert dataset.sample_weights == pytest.approx([1.0 / 6.0, 1.0 / 6.0])
 
 
 def test_materialized_proxy_loader_applies_a_deterministic_market_stride(
@@ -461,7 +478,7 @@ def test_materialized_proxy_loader_applies_a_deterministic_market_stride(
         "market-2",
         "market-2",
     ]
-    assert dataset.sample_weights == pytest.approx([0.5] * 4)
+    assert dataset.sample_weights == pytest.approx([1.0 / 6.0] * 4)
 
     with pytest.raises(ValueError, match="study catalog"):
         proxy_script.load_materialized_opening_proxy_dataset(

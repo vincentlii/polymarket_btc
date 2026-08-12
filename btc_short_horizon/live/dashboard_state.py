@@ -517,6 +517,12 @@ class ExecutionVariantPerformance:
     opportunity_count: int = 0
     evaluation_count: int = 0
     qualified_signal_count: int = 0
+    rejection_counts: tuple[tuple[str, int], ...] = ()
+    mean_gross_edge: float | None = None
+    mean_fee_per_share: float | None = None
+    mean_slippage_stress: float | None = None
+    mean_latency_stress: float | None = None
+    mean_net_edge: float | None = None
     resolved_opportunity_count: int = 0
     core_resolved_opportunity_count: int = 0
     tail_resolved_opportunity_count: int = 0
@@ -541,6 +547,14 @@ class ExecutionVariantPerformance:
                 raise ValueError(f"variant {name} must be non-negative")
         if self.qualified_signal_count > self.evaluation_count:
             raise ValueError("qualified signals cannot exceed evaluations")
+        rejection_counts = tuple(self.rejection_counts)
+        if len({reason for reason, _ in rejection_counts}) != len(rejection_counts):
+            raise ValueError("rejection reasons must be unique")
+        for reason, count in rejection_counts:
+            _require_identifier(reason, "rejection reason")
+            if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+                raise ValueError("rejection counts must be non-negative integers")
+        object.__setattr__(self, "rejection_counts", rejection_counts)
         _nonnegative(self.starting_balance, "starting_balance")
         _nonnegative(self.equity, "equity")
         _finite(self.realized_pnl, "realized_pnl")
@@ -569,6 +583,14 @@ class ExecutionVariantPerformance:
             self.conditional_ev_per_filled_share,
             "conditional_ev_per_filled_share",
         )
+        for name in (
+            "mean_gross_edge",
+            "mean_fee_per_share",
+            "mean_slippage_stress",
+            "mean_latency_stress",
+            "mean_net_edge",
+        ):
+            _optional_finite(getattr(self, name), name)
         object.__setattr__(self, "segment_summaries", tuple(self.segment_summaries))
         direction_summaries = tuple(self.direction_summaries)
         if len({item.side for item in direction_summaries}) != len(direction_summaries):
@@ -589,6 +611,12 @@ class ExecutionVariantPerformance:
             "opportunity_count": self.opportunity_count,
             "evaluation_count": self.evaluation_count,
             "qualified_signal_count": self.qualified_signal_count,
+            "rejection_counts": dict(self.rejection_counts),
+            "mean_gross_edge": self.mean_gross_edge,
+            "mean_fee_per_share": self.mean_fee_per_share,
+            "mean_slippage_stress": self.mean_slippage_stress,
+            "mean_latency_stress": self.mean_latency_stress,
+            "mean_net_edge": self.mean_net_edge,
             "starting_balance": self.starting_balance,
             "equity": self.equity,
             "realized_pnl": self.realized_pnl,
@@ -610,6 +638,7 @@ class ExecutionVariantPerformance:
     @classmethod
     def from_json(cls, raw: object) -> ExecutionVariantPerformance:
         value = _mapping(raw, "execution variant performance")
+        raw_rejections = _mapping(value.get("rejection_counts", {}), "rejection_counts")
         return cls(
             variant_id=_text(value.get("variant_id"), "variant_id"),
             label=_text(value.get("label"), "variant label"),
@@ -631,6 +660,26 @@ class ExecutionVariantPerformance:
             qualified_signal_count=_integer(
                 value.get("qualified_signal_count", 0), "qualified_signal_count"
             ),
+            rejection_counts=tuple(
+                sorted(
+                    (
+                        _text(reason, "rejection reason"),
+                        _integer(count, "rejection count"),
+                    )
+                    for reason, count in raw_rejections.items()
+                )
+            ),
+            mean_gross_edge=_optional_float(value.get("mean_gross_edge"), "mean_gross_edge"),
+            mean_fee_per_share=_optional_float(
+                value.get("mean_fee_per_share"), "mean_fee_per_share"
+            ),
+            mean_slippage_stress=_optional_float(
+                value.get("mean_slippage_stress"), "mean_slippage_stress"
+            ),
+            mean_latency_stress=_optional_float(
+                value.get("mean_latency_stress"), "mean_latency_stress"
+            ),
+            mean_net_edge=_optional_float(value.get("mean_net_edge"), "mean_net_edge"),
             resolved_opportunity_count=_integer(
                 value.get("resolved_opportunity_count", 0), "resolved_opportunity_count"
             ),

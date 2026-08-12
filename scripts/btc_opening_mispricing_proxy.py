@@ -42,6 +42,7 @@ from btc_short_horizon.research import (  # noqa: E402
 from btc_short_horizon.research.binance_history import (  # noqa: E402
     binance_spot_kline_url,
     load_binance_kline_archives,
+    load_materialized_binance_kline_history,
 )
 from btc_short_horizon.research.opening_proxy import (  # noqa: E402
     OPENING_REGIMES,
@@ -61,7 +62,13 @@ from btc_short_horizon.research.opening_model_gate import (  # noqa: E402
     target_confidence_bands,
     weighted_calibration_error,
 )
+from btc_short_horizon.research.opening_dataset import (  # noqa: E402
+    market_stage_sample_weights,
+)
 from btc_short_horizon.research.provenance import git_provenance  # noqa: E402
+from btc_short_horizon.research.sealed_holdout import (  # noqa: E402
+    acquire_sealed_holdout_access,
+)
 from btc_short_horizon.research.walk_forward import ResearchSample  # noqa: E402
 
 
@@ -85,6 +92,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--binance-directory", type=Path)
     parser.add_argument(
+        "--binance-parquet-directory",
+        type=Path,
+        help="Reuse verified daily Parquet parts without restoring source ZIPs.",
+    )
+    parser.add_argument(
         "--materialized-dataset",
         type=Path,
         help="Reuse a prior proxy dataset instead of loading the raw Kline archives again.",
@@ -102,6 +114,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Use existing archives only unless --download-binance is explicitly supplied.",
     )
     parser.add_argument("--download-binance", action="store_true")
+    parser.add_argument(
+        "--consume-sealed-holdout",
+        action="store_true",
+        help="Explicitly consume the one-shot holdout after an eligible development run.",
+    )
     parser.add_argument("--snapshot-seconds", type=int, default=5)
     parser.add_argument("--entry-start-seconds", type=int, default=3)
     parser.add_argument("--entry-end-seconds", type=int, default=180)
@@ -177,8 +194,19 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         raise FileExistsError(f"output directory already exists: {args.output_directory}")
     if args.materialized_dataset is not None and args.download_binance:
         raise ValueError("--materialized-dataset cannot be combined with --download-binance")
-    if args.materialized_dataset is None and args.binance_directory is None:
-        raise ValueError("--binance-directory is required without --materialized-dataset")
+    kline_sources = sum(
+        value is not None
+        for value in (
+            args.materialized_dataset,
+            args.binance_directory,
+            args.binance_parquet_directory,
+        )
+    )
+    if kline_sources != 1:
+        raise ValueError(
+            "choose exactly one of --materialized-dataset, --binance-directory, "
+            "or --binance-parquet-directory"
+        )
     if args.materialized_market_stride < 1:
         raise ValueError("--materialized-market-stride must be >= 1")
     if args.materialized_dataset is None and args.materialized_market_stride != 1:
@@ -191,7 +219,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     )
     archives = (
         ()
-        if args.materialized_dataset is not None
+        if args.materialized_dataset is not None or args.binance_parquet_directory is not None
         else (
             download_binance_archives(
                 directory=args.binance_directory,
@@ -215,9 +243,19 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         rule_epoch=args.rule_epoch,
     )
     if args.materialized_dataset is None:
+        history = (
+            load_materialized_binance_kline_history(
+                args.binance_parquet_directory,
+                start_time=start - timedelta(hours=2),
+                end_time=end + timedelta(minutes=4),
+                interval=args.interval,
+            )
+            if args.binance_parquet_directory is not None
+            else load_binance_kline_archives(archives, interval=args.interval)
+        )
         build = build_opening_proxy_dataset(
             markets=catalog.windows(),
-            klines=load_binance_kline_archives(archives, interval=args.interval),
+            klines=history,
             snapshot_seconds=args.snapshot_seconds,
             entry_start_seconds=args.entry_start_seconds,
             entry_end_seconds=args.entry_end_seconds,
@@ -311,6 +349,107 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     selected_name, selected_config, selected_development, selected_metrics = next(
         item for item in development if item[0] == selection.selected_name
     )
+    materialized_kline_manifests = (
+        tuple(sorted(args.binance_parquet_directory.glob("date=*/manifest-*.json")))
+        if args.binance_parquet_directory is not None
+        else ()
+    )
+    source_paths = archives or materialized_kline_manifests or (args.materialized_dataset,)
+    if not args.consume_sealed_holdout:
+        output = args.output_directory
+        output.mkdir(parents=True)
+        write_market_catalog(path=output / "market_catalog.json", catalog=catalog)
+        data_hash = _data_hash(
+            archives=tuple(path for path in source_paths if path is not None),
+            catalog_path=output / "market_catalog.json",
+        )
+        _write_dataset(path=output / "dataset.parquet", dataset=build.dataset)
+        _write_predictions(
+            path=output / "predictions.parquet",
+            development=selected_development.predictions,
+            holdout=(),
+            weights=build.dataset.sample_weights,
+        )
+        result = {
+            "study_type": "opening_mispricing_fair_probability_proxy",
+            "profile": args.profile,
+            "date_range": {
+                "start_inclusive": args.start_date.isoformat(),
+                "end_exclusive": args.end_date.isoformat(),
+            },
+            "dataset": {
+                "sample_count": len(build.dataset.samples),
+                "market_count": len({item.group_id for item in build.dataset.samples}),
+                "feature_count": len(build.dataset.schema.names),
+                "requested_markets": build.requested_markets,
+                "excluded_insufficient_history": build.excluded_insufficient_history,
+                "excluded_kline_gaps": build.excluded_kline_gaps,
+                "feature_schema_hash": build.dataset.schema.hash,
+            },
+            "development_candidates": [
+                {
+                    "name": name,
+                    "config": asdict(config),
+                    "metrics": metrics,
+                    "selection_evidence": candidate_evaluation_dict(candidate),
+                }
+                for (name, config, _, metrics), candidate in zip(
+                    development, candidate_evaluations, strict=True
+                )
+            ],
+            "selected_on_development": {
+                "name": selected_name,
+                "metrics": selected_metrics,
+                "best_logistic_name": selection.best_logistic_name,
+                "reason": selection.reason,
+                "eligible_lightgbm_candidates": list(selection.eligible_lightgbm_candidates),
+            },
+            "sealed_holdout": {
+                "state": "sealed",
+                "reason": "explicit --consume-sealed-holdout was not supplied",
+            },
+            "sources": {
+                "data_hash": data_hash,
+                "archive_count": len(archives),
+                "materialized_kline_partition_count": len(materialized_kline_manifests),
+            },
+            "code_provenance": code_provenance,
+        }
+        (output / "metrics.json").write_text(
+            json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n",
+            encoding="utf-8",
+        )
+        return result
+    development_failures: list[str] = []
+    if args.profile != "full":
+        development_failures.append("non_full_walk_forward_profile")
+    if args.materialized_market_stride != 1:
+        development_failures.append("approximate_materialized_market_stride")
+    if expected_market_count != build.requested_markets:
+        development_failures.append("incomplete_gamma_market_coverage")
+    if code_provenance["dirty"] is not False:
+        development_failures.append("dirty_or_unknown_code_provenance")
+    if development_failures:
+        raise ValueError(
+            "sealed holdout development gate failed: " + ", ".join(development_failures)
+        )
+    holdout_protocol_hash = sha256(
+        json.dumps(
+            {
+                "data_sources": [str(path) for path in source_paths if path is not None],
+                "entry_protocol": protocol,
+                "selected_name": selected_name,
+                "split": asdict(split),
+            },
+            sort_keys=True,
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+    acquire_sealed_holdout_access(
+        receipt_path=args.output_directory.with_suffix(".sealed-holdout-receipt.json"),
+        development_gate_accepted=True,
+        protocol_hash=holdout_protocol_hash,
+    )
     holdout = run_sealed_holdout_model(
         dataset=build.dataset,
         split_config=split,
@@ -319,7 +458,6 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     output = args.output_directory
     output.mkdir(parents=True)
     write_market_catalog(path=output / "market_catalog.json", catalog=catalog)
-    source_paths = archives or (args.materialized_dataset,)
     data_hash = _data_hash(
         archives=tuple(path for path in source_paths if path is not None),
         catalog_path=output / "market_catalog.json",
@@ -404,6 +542,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             sample_index=item.sample_index,
             sample_id=item.sample_id,
             feature_ts_ns=item.feature_ts_ns,
+            raw_p_up=prior_probability,
             p_up=prior_probability,
             label=item.label,
         )
@@ -480,6 +619,12 @@ def run(args: argparse.Namespace) -> dict[str, object]:
                 f"https://data.binance.vision/data/spot/daily/klines/BTCUSDT/{args.interval}/"
             ),
             "archive_count": len(archives),
+            "materialized_kline_partition_count": len(materialized_kline_manifests),
+            "materialized_kline_directory": (
+                str(args.binance_parquet_directory)
+                if args.binance_parquet_directory is not None
+                else None
+            ),
             "materialized_dataset": (
                 str(args.materialized_dataset) if args.materialized_dataset is not None else None
             ),
@@ -681,6 +826,14 @@ def _load_materialized_proxy_batches(
             raise ValueError(
                 f"materialized proxy market {active_group_id!r} has incomplete snapshots"
             )
+        weights.extend(
+            market_stage_sample_weights(
+                tuple(
+                    opening_regime_for_elapsed_seconds(offset).value for offset in active_offsets
+                ),
+                require_all_stages=False,
+            )
+        )
 
     for batch in parquet.iter_batches(batch_size=_MATERIALIZED_BATCH_SIZE, columns=columns):
         values = {name: batch.column(index) for index, name in enumerate(columns)}
@@ -739,7 +892,6 @@ def _load_materialized_proxy_batches(
                     group_id=group_id,
                 )
             )
-            weights.append(1.0 / len(expected_offsets))
         end_index = write_index + len(active_indexes)
         for feature_index, name in enumerate(schema.names):
             feature_values = np.asarray(values[name].to_numpy(zero_copy_only=False), dtype=float)
@@ -965,6 +1117,7 @@ def _write_predictions(
             "split": "development_oof",
             "sample_id": item.sample_id,
             "feature_ts_ns": item.feature_ts_ns,
+            "raw_p_up": item.raw_p_up,
             "p_up": item.p_up,
             "label": item.label,
             "sample_weight": float(weights[item.sample_index]),
@@ -975,6 +1128,7 @@ def _write_predictions(
             "split": "sealed_holdout",
             "sample_id": item.sample_id,
             "feature_ts_ns": item.feature_ts_ns,
+            "raw_p_up": item.raw_p_up,
             "p_up": item.p_up,
             "label": item.label,
             "sample_weight": float(weights[item.sample_index]),

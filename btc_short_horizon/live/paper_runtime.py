@@ -156,6 +156,7 @@ class ModelPaperPredictor:
         self.model, self.metadata = ModelArtifactStore.load(
             directory=model_directory,
             expected_schema_hash=schema.hash,
+            expected_rule_epoch=project.model_rule_epoch,
         )
         self._stage_models: dict[str, tuple[object, object]] = {}
         for rule in project.stage_policy.rules:
@@ -165,9 +166,11 @@ class ModelPaperPredictor:
             stage_model, stage_metadata = ModelArtifactStore.load(
                 directory=stage_directory,
                 expected_schema_hash=schema.hash,
+                expected_rule_epoch=project.model_rule_epoch,
             )
             self._stage_models[rule.stage.value] = (stage_model, stage_metadata)
         self._stage_policy = project.stage_policy
+        self.is_rule_epoch_transition_proxy = project.model_rule_epoch != project.rule_epoch
         protocol = opening_proxy_protocol(
             entry_start_seconds=project.research_timing.entry_start_seconds,
             entry_end_seconds=project.research_timing.entry_end_seconds,
@@ -253,6 +256,7 @@ def build_research_paper_portfolio(
                 clob_capture_end_seconds=project.collection.opening_handoff_delay_seconds,
             )
             for variant in project.paper_execution_variants
+            if variant.enabled
         )
     )
 
@@ -273,6 +277,10 @@ class ResearchPaperRuntime:
         gamma_client: GammaMarketClient | None = None,
         settlement_trades_client: PublicSettlementTradesClient | None = None,
     ) -> None:
+        if rule_epoch != project.rule_epoch:
+            raise ValueError(
+                f"Research Paper rule epoch mismatch: expected {project.rule_epoch!r}, got {rule_epoch!r}"
+            )
         predictor = ModelPaperPredictor(project=project, model_directory=model_directory)
         self.predictor = predictor
         self.engine = build_research_paper_portfolio(
@@ -516,7 +524,9 @@ class ResearchPaperRuntime:
             (
                 self.project.maker.entry_end_seconds
                 + max(
-                    variant.maker_work_seconds for variant in self.project.paper_execution_variants
+                    variant.maker_work_seconds
+                    for variant in self.project.paper_execution_variants
+                    if variant.enabled
                 )
             )
             * 1_000_000_000
@@ -602,6 +612,9 @@ class ResearchPaperRuntime:
             "default_model_id": self.predictor.metadata.model_id,
             "stage_model_ids": self.predictor.stage_model_ids,
             "paper_execution_epoch": self.project.paper_execution_epoch,
+            "market_rule_epoch": self.project.rule_epoch,
+            "model_rule_epoch": self.project.model_rule_epoch,
+            "rule_epoch_transition_proxy": self.predictor.is_rule_epoch_transition_proxy,
             "active_market": self._active_slug,
             "ready": self._ready,
             "last_decision_result": self._last_decision_result,

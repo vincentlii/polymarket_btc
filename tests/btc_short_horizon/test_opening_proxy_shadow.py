@@ -51,7 +51,7 @@ def _market(start: datetime) -> MarketWindow:
         down_token_id="down",
         t0=start,
         t1=start + timedelta(minutes=15),
-        rule_epoch="chainlink-btc-usd-v1",
+        rule_epoch="chainlink-btc-usd-twap-60s-v1",
         rule_hash="a" * 64,
     )
 
@@ -212,3 +212,39 @@ def test_shadow_rejects_mismatched_up_down_timestamp_tolerances(
         asyncio.run(shadow.run_async(args))
 
     assert expected_tolerances == [1.0, 1.0]
+
+
+def test_shadow_loads_artifact_against_current_market_epoch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    start = datetime(2026, 1, 1, 2, tzinfo=UTC)
+    market = _market(start)
+    observed: list[object] = []
+    monkeypatch.setattr(
+        shadow,
+        "read_market_catalog",
+        lambda _path: SimpleNamespace(require=lambda _slug: market),
+    )
+
+    def load(**kwargs: object) -> tuple[FittedDirectionModel, ModelArtifactMetadata]:
+        observed.append(kwargs.get("expected_rule_epoch"))
+        raise ValueError("model artifact rule epoch mismatch")
+
+    monkeypatch.setattr(shadow.ModelArtifactStore, "load", load)
+    args = argparse.Namespace(
+        config=Path("configs/btc_short_horizon/baseline.toml"),
+        market_catalog=tmp_path / "catalog.parquet",
+        market_slug=market.slug,
+        model_directory=tmp_path / "model",
+        output_directory=tmp_path / "output",
+        raw_data_root=tmp_path / "raw",
+        book_lookback_seconds=300,
+        availability_delay_seconds=1.0,
+        as_of=start + timedelta(minutes=5),
+    )
+
+    with pytest.raises(ValueError, match="rule epoch mismatch"):
+        asyncio.run(shadow.run_async(args))
+
+    assert observed == ["chainlink-btc-usd-twap-60s-v1"]

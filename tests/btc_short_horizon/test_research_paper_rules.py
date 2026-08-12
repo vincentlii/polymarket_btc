@@ -144,7 +144,7 @@ def test_paper_runtime_keeps_deciding_through_order_work_horizon() -> None:
             max_work_seconds=15.0,
             signal_cadence_seconds=5.0,
         ),
-        paper_execution_variants=(SimpleNamespace(maker_work_seconds=15.0),),
+        paper_execution_variants=(SimpleNamespace(maker_work_seconds=15.0, enabled=True),),
     )
     runtime._next_decision_ns = int(T0.timestamp() * 1_000_000_000) + 185_000_000_000
     runtime._last_decision_result = "not_started"
