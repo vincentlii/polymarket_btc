@@ -1,7 +1,7 @@
 # Codebase UML Inventory
 
 This file is generated from Python AST metadata and excludes `tests/` plus git-ignored private strategy/research directories.
-Generated: 2026-08-13T15:22:00+00:00
+Generated: 2026-08-13T15:52:01+00:00
 Modules: 258 | Classes: 532 | Functions/methods: 3496
 
 ## Backtesting Data Flow
@@ -707,25 +707,25 @@ flowchart TD
 
 ### `btc_short_horizon/data/session_inventory.py`
 - Imports: `__future__, btc_short_horizon, dataclasses, datetime, io, json, os, pathlib, re, threading, typing`
-- Function L687: `_inventory_payload(record: CollectorSessionRecord) -> dict[str, object]`
-- Function L712: `_read_inventory(path: Path) -> CollectorSessionRecord`
-- Function L785: `_read_part(value: object, *, session_id: str, session_started_at: datetime) -> SessionPartRecord`
-- Function L838: `_read_archive_marker(path: Path, *, expected_session_id: str) -> dict[str, object]`
-- Function L889: `_part_overlaps(part: SessionPartRecord, *, source: str, instrument: str, start_available_ts_ns: int, end_available_ts_ns: int, ingest_version: str | None) -> bool`
-- Function L912: `_manifest_immutable_payload(manifest: DataPartitionManifest) -> dict[str, object]`
-- Function L918: `_manifest_sha256(manifest: DataPartitionManifest) -> str`
-- Function L924: `_normalize_session_id(value: object) -> str`
-- Function L933: `_safe_relative_text(value: object, *, name: str) -> str`
-- Function L937: `_safe_relative_path(value: object, *, name: str = 'path') -> Path`
-- Function L955: `normalize_session_id(value: object) -> str`
-- Function L961: `_required_text(value: object, name: str) -> str`
-- Function L967: `_string_mapping(value: object, name: str) -> dict[str, str]`
-- Function L976: `_require_sha256(value: object, name: str) -> str`
-- Function L982: `_utc_now_text() -> str`
-- Function L986: `_utc_text(value: datetime, name: str) -> str`
-- Function L992: `_parse_utc_text(value: object, name: str) -> datetime`
-- Function L1004: `_lock_file(handle: BufferedRandom) -> None`
-- Function L1021: `_unlock_file(handle: BufferedRandom) -> None`
+- Function L685: `_inventory_payload(record: CollectorSessionRecord) -> dict[str, object]`
+- Function L710: `_read_inventory(path: Path) -> CollectorSessionRecord`
+- Function L783: `_read_part(value: object, *, session_id: str, session_started_at: datetime) -> SessionPartRecord`
+- Function L836: `_read_archive_marker(path: Path, *, expected_session_id: str) -> dict[str, object]`
+- Function L887: `_part_overlaps(part: SessionPartRecord, *, source: str, instrument: str, start_available_ts_ns: int, end_available_ts_ns: int, ingest_version: str | None) -> bool`
+- Function L910: `_manifest_immutable_payload(manifest: DataPartitionManifest) -> dict[str, object]`
+- Function L916: `_manifest_sha256(manifest: DataPartitionManifest) -> str`
+- Function L922: `_normalize_session_id(value: object) -> str`
+- Function L931: `_safe_relative_text(value: object, *, name: str) -> str`
+- Function L935: `_safe_relative_path(value: object, *, name: str = 'path') -> Path`
+- Function L953: `normalize_session_id(value: object) -> str`
+- Function L959: `_required_text(value: object, name: str) -> str`
+- Function L965: `_string_mapping(value: object, name: str) -> dict[str, str]`
+- Function L974: `_require_sha256(value: object, name: str) -> str`
+- Function L980: `_utc_now_text() -> str`
+- Function L984: `_utc_text(value: datetime, name: str) -> str`
+- Function L990: `_parse_utc_text(value: object, name: str) -> datetime`
+- Function L1002: `_lock_file(handle: BufferedRandom) -> None`
+- Function L1019: `_unlock_file(handle: BufferedRandom) -> None`
 - Class L65: `SessionInventoryError(ValueError)`
 - Class L69: `SessionArchivedError(SessionInventoryError)`
 - Class L74: `SessionPartRecord`
@@ -759,10 +759,10 @@ flowchart TD
   - Method L525: `snapshot(self) -> CollectorSessionRecord`
   - Method L529: `update_attributes(self, attributes: Mapping[str, str]) -> None`
   - Method L548: `prepare_part(self, *, manifest_path: str, manifest: DataPartitionManifest) -> DataPartitionManifest`
-  - Method L601: `commit_part(self, *, manifest_path: str, manifest_sha256: str) -> None`
-  - Method L641: `complete(self) -> None`
-  - Method L662: `fail(self, reason: str) -> None`
-  - Method L683: `_write(self, record: CollectorSessionRecord) -> None`
+  - Method L599: `commit_part(self, *, manifest_path: str, manifest_sha256: str) -> None`
+  - Method L639: `complete(self) -> None`
+  - Method L660: `fail(self, reason: str) -> None`
+  - Method L681: `_write(self, record: CollectorSessionRecord) -> None`
 
 ### `btc_short_horizon/data/storage.py`
 - Imports: `__future__, dataclasses, datetime, hashlib, json, os, pathlib, pyarrow, re, typing, urllib, uuid`

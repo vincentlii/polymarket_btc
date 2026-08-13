@@ -8,6 +8,9 @@
 - A candidate with a collector-recorded coverage gap now produces an immutable
   `ready=false` receipt once. It no longer enters an endless expensive audit
   loop or makes the readiness worker itself appear crashed.
+- Collector sessions reject late prepare/commit callbacks after either terminal
+  state, preventing shutdown races from producing contradictory terminal
+  timestamps.
 
 ## 2026-08-13 v9 full-lifecycle Research Paper upgrade
 

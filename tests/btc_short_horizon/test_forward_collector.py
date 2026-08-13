@@ -2013,11 +2013,11 @@ async def test_forward_collector_shutdown_flush_has_a_bounded_deadline(
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
 
-    for _ in range(100):
-        if list(tmp_path.rglob("manifest-*.json")):
-            break
-        await asyncio.sleep(0.01)
-    assert list(tmp_path.rglob("manifest-*.json"))
+    await asyncio.sleep(0.1)
+    assert not list(tmp_path.rglob("manifest-*.json"))
+    session = SessionInventoryRepository(tmp_path).read_all()[0]
+    assert session.status == "failed"
+    assert session.completed_at == session.updated_at
 
 
 @pytest.mark.asyncio

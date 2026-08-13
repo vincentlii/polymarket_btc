@@ -565,10 +565,8 @@ class CollectorSessionInventory:
             raise SessionInventoryError("manifest does not declare its session inventory contract")
         with self._lock:
             session = self.repository.read_session(self.session_id)
-            if session.status == SESSION_STATUS_COMPLETE:
-                raise SessionInventoryError(
-                    "cannot prepare a part for a complete collector session"
-                )
+            if session.status != SESSION_STATUS_OPEN:
+                raise SessionInventoryError("only an open collector session can prepare a part")
             existing = next(
                 (part for part in session.parts if part.manifest_path == manifest_path),
                 None,
@@ -603,8 +601,8 @@ class CollectorSessionInventory:
         _require_sha256(manifest_sha256, "manifest_sha256")
         with self._lock:
             session = self.repository.read_session(self.session_id)
-            if session.status == SESSION_STATUS_COMPLETE:
-                raise SessionInventoryError("cannot commit a part for a complete collector session")
+            if session.status != SESSION_STATUS_OPEN:
+                raise SessionInventoryError("only an open collector session can commit a part")
             index = next(
                 (
                     index

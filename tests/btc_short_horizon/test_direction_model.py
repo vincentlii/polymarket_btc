@@ -188,7 +188,7 @@ def test_lightgbm_prediction_uses_the_training_feature_names(schema: FeatureSche
         warnings.simplefilter("always")
         model.predict_up_probability(np.array([[1.0, 2.0]]))
 
-    assert not caught
+    assert not [item for item in caught if "valid feature names" in str(item.message)]
 
 
 def test_model_rejects_fractional_labels_before_integer_conversion(

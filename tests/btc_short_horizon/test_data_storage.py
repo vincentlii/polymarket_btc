@@ -388,6 +388,42 @@ def test_session_inventory_reconciles_durable_pair_before_failing_interrupted_se
     assert repository.audit(allow_failed_sessions=True).committed_part_count == 1
 
 
+def test_failed_session_rejects_late_prepare_and_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = SessionInventoryRepository(tmp_path)
+    inventory = repository.start_session(session_id="session-a", ingest_version="ingest-v9")
+    original_commit = inventory.commit_part
+    monkeypatch.setattr(
+        inventory,
+        "commit_part",
+        lambda **_kwargs: (_ for _ in ()).throw(OSError("pause after prepare")),
+    )
+    with pytest.raises(OSError, match="pause after prepare"):
+        ImmutableParquetStore(tmp_path).write(
+            table=_table(),
+            source="binance_spot",
+            instrument="btcusdt",
+            partition_date="2026-07-11",
+            partition_hour="12",
+            schema_version="v1",
+            ingest_version="ingest-v9",
+            attributes=_session_manifest_attributes("session-a"),
+            inventory=inventory,
+        )
+    monkeypatch.setattr(inventory, "commit_part", original_commit)
+    part = inventory.snapshot().parts[0]
+    inventory.fail("shutdown")
+
+    with pytest.raises(SessionInventoryError, match="open collector session"):
+        inventory.prepare_part(manifest_path=part.manifest_path, manifest=part.manifest)
+    with pytest.raises(SessionInventoryError, match="open collector session"):
+        inventory.commit_part(
+            manifest_path=part.manifest_path,
+            manifest_sha256=part.manifest_sha256,
+        )
+
+
 def test_collector_storage_lease_prevents_two_writers_and_releases_cleanly(
     tmp_path: Path,
 ) -> None:
