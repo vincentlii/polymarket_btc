@@ -2719,6 +2719,48 @@ def test_forward_collector_malformed_clob_payload_invalidates_all_connection_boo
     assert collector.quality_stats[("polymarket_clob", "down-token", "market")].gap_events == 1
 
 
+def test_forward_collector_accepts_documented_empty_book_bbo_sentinels(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    collector = BtcForwardCollector(
+        raw_data_root=tmp_path,
+        polymarket_token_ids=("up-token",),
+    )
+    collector.handle_polymarket(
+        {
+            "event_type": "book",
+            "asset_id": "up-token",
+            "timestamp": int(SOURCE_TIME.timestamp() * 1_000),
+            "bids": [{"price": "0.48", "size": "11"}],
+            "asks": [{"price": "0.52", "size": "9"}],
+            "hash": "book-before-terminal-empty",
+        },
+        collector_receive_ts=SOURCE_TIME,
+    )
+
+    result = collector.handle_polymarket(
+        {
+            "event_type": "price_change",
+            "timestamp": int((SOURCE_TIME + timedelta(milliseconds=100)).timestamp() * 1_000),
+            "price_changes": [
+                {
+                    "asset_id": "up-token",
+                    "price": "0.48",
+                    "size": "0",
+                    "side": "BUY",
+                    "best_bid": "0",
+                    "best_ask": "1",
+                }
+            ],
+        },
+        collector_receive_ts=SOURCE_TIME + timedelta(milliseconds=110),
+    )
+
+    assert result.accepted_events == 1
+    assert result.rejected_events == 0
+    assert not result.resubscribe_required
+    assert collector._polymarket_normalizers["up-token"].book_levels() == ((), ())
+    assert collector.quality_stats[("polymarket_clob", "up-token", "market")].gap_events == 0
+
+
 def test_forward_collector_persists_terminal_malformed_clob_gap_for_replay(
     tmp_path,
 ) -> None:  # type: ignore[no-untyped-def]

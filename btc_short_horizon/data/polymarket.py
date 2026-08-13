@@ -220,12 +220,12 @@ class PolymarketL2Normalizer:
         reported_bid = (
             None
             if reported.get("best_bid") is None
-            else _probability(reported.get("best_bid"), "best_bid")
+            else _book_boundary_probability(reported.get("best_bid"), "best_bid")
         )
         reported_ask = (
             None
             if reported.get("best_ask") is None
-            else _probability(reported.get("best_ask"), "best_ask")
+            else _book_boundary_probability(reported.get("best_ask"), "best_ask")
         )
         if reported_bid is not None:
             bids = {price: size for price, size in bids.items() if price <= reported_bid}
@@ -468,6 +468,13 @@ def _probability(value: object, name: str) -> float:
     numeric = _number(value, name)
     if not 0.0 < numeric < 1.0:
         raise ValueError(f"{name} must be in (0, 1)")
+    return numeric
+
+
+def _book_boundary_probability(value: object, name: str) -> float:
+    numeric = _number(value, name)
+    if not 0.0 <= numeric <= 1.0:
+        raise ValueError(f"{name} must be in [0, 1]")
     return numeric
 
 

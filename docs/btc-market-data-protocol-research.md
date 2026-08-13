@@ -243,6 +243,11 @@ whose default is `true` in the
   reported BBO before the following full `book` arrives; rejecting that
   transient local cross would create a false connection gap. The raw
   `price_change` and subsequent full `book` remain the replay evidence.
+- The venue-reported `best_bid`/`best_ask` fields may use the documented
+  boundary values `0` and `1` when a side is empty. Accept those only as BBO
+  sentinels and clear contradicted local levels; actual order prices remain
+  strictly inside `(0, 1)`. Treating the sentinels as malformed creates false
+  reconnect gaps near market expiry.
 - Store the venue `timestamp` as source metadata and store a separate local
   monotonic/wall-clock receive timestamp. Use local receipt as the causal
   availability boundary. Persist a collector-session admission sequence as the
