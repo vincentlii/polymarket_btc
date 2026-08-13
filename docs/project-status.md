@@ -1,5 +1,14 @@
 # Project Status
 
+## 2026-08-13 v10 multisource readiness activation
+
+- Execution epoch `paper-v10-multisource-readiness` isolates the new
+  rule/model/config identity from v9 while retaining all v9 ledgers as
+  read-only history.
+- A candidate with a collector-recorded coverage gap now produces an immutable
+  `ready=false` receipt once. It no longer enters an endless expensive audit
+  loop or makes the readiness worker itself appear crashed.
+
 ## 2026-08-13 v9 full-lifecycle Research Paper upgrade
 
 - Execution epoch `paper-v9-full-lifecycle-research` preserves v8 and all older

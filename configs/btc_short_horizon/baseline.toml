@@ -1,7 +1,7 @@
 rule_epoch = "chainlink-btc-usd-twap-60s-v1"
 model_rule_epoch = "chainlink-btc-usd-point-v1"
 allow_rule_epoch_transition_proxy = true
-paper_execution_epoch = "paper-v9-full-lifecycle-research"
+paper_execution_epoch = "paper-v10-multisource-readiness"
 
 data_sources = [
   "local:../../data/pmxt_raw",

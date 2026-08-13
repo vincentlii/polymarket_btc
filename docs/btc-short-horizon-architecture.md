@@ -705,11 +705,11 @@ revalued through `entry_end + max_work`; stale/gapped data, probability decay,
 rule changes and expiry request a simulated cancel, with fills still possible
 during the configured cancel latency.
 
-Execution epoch `paper-v9-full-lifecycle-research` enables exactly two
+Execution epoch `paper-v10-multisource-readiness` enables exactly two
 immediate-FAK variants:
 the one-signal `independent_fak_1x5s` legacy control and the one-signal
 `independent_fak_1x5s_2_0` challenger. They write isolated variant ledgers.
-It supersedes v8 without rewriting its ledgers and binds each active ledger to
+It supersedes v9 without rewriting its ledgers and binds each active ledger to
 the full model hashes, rule epochs, variant configuration and execution stress
 configuration. The 2.0 route is the Paper primary only and loads an artifact explicitly marked
 ineligible for Canary/live promotion; Legacy 1x5s runs simultaneously as its

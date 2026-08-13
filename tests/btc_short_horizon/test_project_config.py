@@ -43,7 +43,7 @@ def test_baseline_config_is_path_relative_and_has_explicit_queue_scenarios() -> 
     assert config.rule_epoch == "chainlink-btc-usd-twap-60s-v1"
     assert config.model_rule_epoch == "chainlink-btc-usd-point-v1"
     assert config.allow_rule_epoch_transition_proxy is True
-    assert config.paper_execution_epoch == "paper-v9-full-lifecycle-research"
+    assert config.paper_execution_epoch == "paper-v10-multisource-readiness"
     variants = {variant.variant_id: variant for variant in config.paper_execution_variants}
     assert set(variants) == {
         "independent_fak_1x5s",
@@ -153,7 +153,7 @@ def test_paper_execution_epoch_cannot_escape_the_ledger_root(tmp_path: Path) -> 
     path = tmp_path / "unsafe-epoch.toml"
     path.write_text(
         baseline.replace(
-            'paper_execution_epoch = "paper-v9-full-lifecycle-research"',
+            'paper_execution_epoch = "paper-v10-multisource-readiness"',
             'paper_execution_epoch = "../paper-v3-independent-fak"',
         ),
         encoding="utf-8",

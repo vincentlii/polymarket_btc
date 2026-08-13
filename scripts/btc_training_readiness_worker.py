@@ -42,6 +42,26 @@ from scripts.btc_forward_collector import _readiness_protocol  # noqa: E402
 _EXIT_TERMINAL_MAX_AGE_SECONDS = 15
 
 
+def _expected_coverage_evidence(
+    *,
+    index: SessionCoverageIndex,
+    evidence_payload: tuple[dict[str, object], ...],
+    coverage_error: object,
+    start_ns: int,
+    end_ns: int,
+    required_sources: tuple[str, ...],
+) -> tuple[dict[str, object], ...]:
+    if coverage_error:
+        if evidence_payload:
+            raise ValueError("failed coverage candidate must not include evidence sessions")
+        return ()
+    return index.coverage_evidence(
+        start_ns=start_ns,
+        end_ns=end_ns,
+        required_sources=required_sources,
+    )
+
+
 def audit_candidate(
     candidate_path: Path, *, raw_data_root: Path, config_path: Path
 ) -> dict[str, object]:
@@ -72,7 +92,11 @@ def audit_candidate(
     evidence_payload = tuple(candidate.get("evidence_sessions", ()))
     if coverage_evidence_sha256(evidence_payload) != candidate.get("coverage_evidence_sha256"):
         raise ValueError("readiness coverage evidence hash mismatch")
-    expected_evidence = SessionCoverageIndex(raw_data_root).coverage_evidence(
+    coverage_index = SessionCoverageIndex(raw_data_root)
+    expected_evidence = _expected_coverage_evidence(
+        index=coverage_index,
+        evidence_payload=evidence_payload,
+        coverage_error=candidate.get("coverage_error"),
         start_ns=int(market.t0.timestamp() * 1e9)
         - int(expected_protocol["readiness_max_feature_lookback_seconds"]) * 1_000_000_000,
         end_ns=int(market.t0.timestamp() * 1e9)
@@ -86,13 +110,48 @@ def audit_candidate(
         "exit_coverage_evidence_sha256"
     ):
         raise ValueError("exit coverage evidence hash mismatch")
-    expected_exit_evidence = SessionCoverageIndex(raw_data_root).coverage_evidence(
+    expected_exit_evidence = _expected_coverage_evidence(
+        index=coverage_index,
+        evidence_payload=exit_evidence_payload,
+        coverage_error=candidate.get("exit_coverage_error"),
         start_ns=int(market.t0.timestamp() * 1e9),
         end_ns=int(market.t1.timestamp() * 1e9),
         required_sources=("polymarket_clob",),
     )
     if expected_exit_evidence != exit_evidence_payload:
         raise ValueError("exit coverage evidence no longer matches persistent index")
+    if candidate.get("coverage_error"):
+        errors = [str(candidate["coverage_error"])]
+        exit_errors = (
+            [str(candidate["exit_coverage_error"])]
+            if candidate.get("exit_coverage_error")
+            else ["not_audited_after_model_coverage_failure"]
+        )
+        payload = {
+            "schema_version": "btc-training-readiness-receipt-v1",
+            "market_slug": market.slug,
+            "collector_session_id": candidate["collector_session_id"],
+            "evidence_session_ids": [str(item["session_id"]) for item in evidence_payload],
+            "coverage_evidence_sha256": candidate["coverage_evidence_sha256"],
+            "ingest_version": candidate["ingest_version"],
+            "rule_epoch": candidate["rule_epoch"],
+            "rule_contract_sha256": candidate["rule_contract_sha256"],
+            "protocol_sha256": candidate["protocol_sha256"],
+            "decision_coverage": 0,
+            "eligible_decisions": 0,
+            "source_summaries": [],
+            "quality_flags": {},
+            "errors": errors,
+            "model_feature_ready": False,
+            "raw_exit_evidence_ready": False,
+            "raw_exit_evidence_errors": exit_errors,
+            "ready": False,
+            "readiness_scope": "raw_features_only_labels_and_legacy_probability_not_validated",
+        }
+        payload["receipt_sha256"] = sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        return payload
     repository = SessionInventoryRepository(raw_data_root)
     combined_evidence = {
         str(entry["session_id"]): entry for entry in (*evidence_payload, *exit_evidence_payload)

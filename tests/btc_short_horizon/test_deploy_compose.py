@@ -75,3 +75,4 @@ def test_readiness_worker_uses_same_raw_root_as_forward_collector() -> None:
         "/app/data/btc_short_horizon/readiness/candidates"
     )
     assert command[command.index("--raw-data-root") + 1] == "/app/data/btc_short_horizon"
+    assert compose["services"]["readiness_worker"]["healthcheck"]["timeout"] == "20s"

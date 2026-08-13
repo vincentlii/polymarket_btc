@@ -1,6 +1,27 @@
 import json
 
-from scripts.btc_training_readiness_worker import aggregate_receipts
+from scripts.btc_training_readiness_worker import (
+    _expected_coverage_evidence,
+    aggregate_receipts,
+)
+
+
+def test_recorded_coverage_failure_is_a_terminal_no_go_without_reaudit() -> None:
+    class Index:
+        def coverage_evidence(self, **kwargs):  # type: ignore[no-untyped-def]
+            raise AssertionError("known coverage failure must not be retried")
+
+    assert (
+        _expected_coverage_evidence(
+            index=Index(),
+            evidence_payload=(),
+            coverage_error="session coverage gap",
+            start_ns=1,
+            end_ns=2,
+            required_sources=("polymarket_clob",),
+        )
+        == ()
+    )
 
 
 def test_recent_status_is_lightweight_and_fails_closed(tmp_path) -> None:
