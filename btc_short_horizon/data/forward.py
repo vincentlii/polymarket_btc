@@ -995,9 +995,12 @@ class BtcForwardCollector:
     ) -> CollectorIngressResult:
         """Persist Binance top-N depth as an independent receive-timed snapshot."""
 
+        snapshot = dict(message)
+        if source == "binance_perp" and "lastUpdateId" not in snapshot:
+            snapshot["lastUpdateId"] = snapshot.get("u")
         try:
             timing = normalize_binance_depth_snapshot(
-                message,
+                snapshot,
                 instrument=instrument,
                 collector_receive_ts=collector_receive_ts,
                 source=source,
