@@ -8,6 +8,12 @@ import pytest
 from scripts.btc_release import release
 
 
+def _previous_compose(tmp_path: Path) -> Path:
+    path = tmp_path / "compose.previous.yaml"
+    path.write_text("services: {}\n", encoding="utf-8")
+    return path
+
+
 def test_release_direct_entrypoint_help_works_from_repo_root() -> None:
     result = subprocess.run(
         [sys.executable, "scripts/btc_release.py", "--help"],
@@ -99,6 +105,7 @@ def test_release_writes_receipt_only_after_four_way_sha_verification(tmp_path) -
         runner=Runner(sha),
         release_sha=sha,
         env_file=env_file,
+        previous_compose_file=_previous_compose(tmp_path),
         receipt_root=tmp_path / "receipts",
         rule_epoch="chainlink-btc-usd-twap-60s-v1",
         data_root=tmp_path / "data",
@@ -122,6 +129,7 @@ def test_release_rolls_back_previous_image_on_api_mismatch(tmp_path) -> None:
             runner=runner,
             release_sha=sha,
             env_file=env_file,
+            previous_compose_file=_previous_compose(tmp_path),
             receipt_root=tmp_path / "receipts",
             rule_epoch="chainlink-btc-usd-twap-60s-v1",
             data_root=tmp_path / "data",
@@ -144,6 +152,7 @@ def test_preflight_failure_restores_env_without_restarting_old_container(tmp_pat
             runner=runner,
             release_sha=sha,
             env_file=env_file,
+            previous_compose_file=_previous_compose(tmp_path),
             receipt_root=tmp_path / "receipts",
             rule_epoch="epoch",
             data_root=tmp_path / "data",
@@ -165,6 +174,7 @@ def test_compose_health_failure_rolls_back_even_after_up_returns_nonzero(tmp_pat
             runner=runner,
             release_sha=sha,
             env_file=env_file,
+            previous_compose_file=_previous_compose(tmp_path),
             receipt_root=tmp_path / "receipts",
             rule_epoch="epoch",
             data_root=tmp_path / "data",
@@ -173,6 +183,15 @@ def test_compose_health_failure_rolls_back_even_after_up_returns_nonzero(tmp_pat
         )
     assert env_file.read_text() == original
     assert any(env and env.get("BTC_IMAGE") == "sha256:previous" for _, env in runner.calls)
+    rollback_commands = [
+        command
+        for command, env in runner.calls
+        if "up -d --wait --remove-orphans" in " ".join(command)
+        and env
+        and env.get("BTC_IMAGE") == "sha256:previous"
+    ]
+    assert len(rollback_commands) == 1
+    assert str(tmp_path / "compose.previous.yaml") in rollback_commands[0]
 
 
 @pytest.mark.parametrize("failure", ["label", "readiness"])
@@ -187,6 +206,7 @@ def test_release_restores_previous_state_for_label_or_readiness_failure(tmp_path
             runner=runner,
             release_sha=sha,
             env_file=env_file,
+            previous_compose_file=_previous_compose(tmp_path),
             receipt_root=tmp_path / "receipts",
             rule_epoch="epoch",
             data_root=tmp_path / "data",

@@ -220,6 +220,7 @@ def _parse_timestamp(value: object, name: str) -> datetime:
 
 __all__ = [
     "CATALOG_SCHEMA_VERSION",
+    "LEGACY_CATALOG_SCHEMA_VERSION",
     "market_catalog_payload",
     "read_market_catalog",
     "write_market_catalog",

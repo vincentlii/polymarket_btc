@@ -1,8 +1,8 @@
 # Codebase UML Inventory
 
 This file is generated from Python AST metadata and excludes `tests/` plus git-ignored private strategy/research directories.
-Generated: 2026-08-13T14:38:26+00:00
-Modules: 258 | Classes: 532 | Functions/methods: 3495
+Generated: 2026-08-13T15:04:14+00:00
+Modules: 258 | Classes: 532 | Functions/methods: 3497
 
 ## Backtesting Data Flow
 
@@ -4238,16 +4238,18 @@ flowchart TD
 - Function L547: `_readiness_protocol(config: BtcProjectConfig) -> dict[str, object]`
 - Function L580: `next_market_slug(family: BtcMarketFamily, now: datetime) -> str`
 - Function L587: `_write_single_market_catalog(*, directory: Path, family: BtcMarketFamily, market: MarketWindow) -> Path`
-- Function L605: `_single_market_catalog_path(*, directory: Path, market: MarketWindow) -> Path`
-- Function L610: `_validate_follow_current_args(args: argparse.Namespace) -> None`
-- Function L619: `_follow_family(config: BtcProjectConfig, name: str) -> BtcMarketFamily`
-- Function L627: `_collection_settings(args: argparse.Namespace, config: BtcProjectConfig) -> tuple[int, float, float]`
-- Function L645: `_build_window_collector(raw_data_root: Path, token_groups: tuple[tuple[str, ...], ...], settings: WindowCollectorSettings) -> BtcForwardCollector`
-- Function L678: `async _wait_or_stop(stop_event: asyncio.Event, seconds: float) -> None`
-- Function L685: `async _wait_for_market_rotation(*, stop_event: asyncio.Event, worker: asyncio.Task[None], market: MarketWindow, handoff_delay_seconds: float, now: Callable[[], datetime]) -> None`
-- Function L702: `async _wait_for_collector_deadline(*, stop_event: asyncio.Event, worker: asyncio.Task[None], deadline: datetime, now: Callable[[], datetime]) -> None`
-- Function L728: `_as_utc(value: datetime) -> datetime`
-- Function L734: `main(argv: Sequence[str] | None = None) -> int`
+- Function L613: `_read_catalog_json(path: Path) -> Mapping[str, object]`
+- Function L623: `_archive_legacy_catalog(path: Path) -> None`
+- Function L639: `_single_market_catalog_path(*, directory: Path, market: MarketWindow) -> Path`
+- Function L644: `_validate_follow_current_args(args: argparse.Namespace) -> None`
+- Function L653: `_follow_family(config: BtcProjectConfig, name: str) -> BtcMarketFamily`
+- Function L661: `_collection_settings(args: argparse.Namespace, config: BtcProjectConfig) -> tuple[int, float, float]`
+- Function L679: `_build_window_collector(raw_data_root: Path, token_groups: tuple[tuple[str, ...], ...], settings: WindowCollectorSettings) -> BtcForwardCollector`
+- Function L712: `async _wait_or_stop(stop_event: asyncio.Event, seconds: float) -> None`
+- Function L719: `async _wait_for_market_rotation(*, stop_event: asyncio.Event, worker: asyncio.Task[None], market: MarketWindow, handoff_delay_seconds: float, now: Callable[[], datetime]) -> None`
+- Function L736: `async _wait_for_collector_deadline(*, stop_event: asyncio.Event, worker: asyncio.Task[None], deadline: datetime, now: Callable[[], datetime]) -> None`
+- Function L762: `_as_utc(value: datetime) -> datetime`
+- Function L768: `main(argv: Sequence[str] | None = None) -> int`
 - Class L50: `WindowCollectorSettings`
 
 ### `scripts/btc_forward_runtime.py`
@@ -4404,11 +4406,11 @@ flowchart TD
 
 ### `scripts/btc_release.py`
 - Imports: `__future__, argparse, btc_short_horizon, dataclasses, hashlib, json, os, pathlib, subprocess, typing`
-- Function L48: `release(*, runner: Runner, release_sha: str, env_file: Path, receipt_root: Path, rule_epoch: str, data_root: Path, output_root: Path, runtime_root: Path) -> Path`
-- Function L234: `main() -> int`
-- Function L259: `_env_value(content: str, key: str) -> str`
-- Function L270: `_write_release_env(path: Path, content: str, revision: str, image: str) -> None`
-- Function L286: `_write_atomic_bytes(path: Path, content: bytes) -> None`
+- Function L49: `release(*, runner: Runner, release_sha: str, env_file: Path, previous_compose_file: Path, receipt_root: Path, rule_epoch: str, data_root: Path, output_root: Path, runtime_root: Path) -> Path`
+- Function L258: `main() -> int`
+- Function L285: `_env_value(content: str, key: str) -> str`
+- Function L296: `_write_release_env(path: Path, content: str, revision: str, image: str) -> None`
+- Function L312: `_write_atomic_bytes(path: Path, content: bytes) -> None`
 - Class L24: `Runner(Protocol)`
   - Method L25: `run(self, command: tuple[str, ...], *, env: dict[str, str] | None = None) -> str`
 - Class L28: `SubprocessRunner`

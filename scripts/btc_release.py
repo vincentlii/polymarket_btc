@@ -43,6 +43,7 @@ class ReleaseEvidence:
     container_revision: str
     api_revision: str
     preflight_receipt: str
+    previous_compose_sha256: str
 
 
 def release(
@@ -50,6 +51,7 @@ def release(
     runner: Runner,
     release_sha: str,
     env_file: Path,
+    previous_compose_file: Path,
     receipt_root: Path,
     rule_epoch: str,
     data_root: Path,
@@ -62,8 +64,19 @@ def release(
         raise ValueError("release worktree must be clean, including untracked files")
     if runner.run(("git", "rev-parse", "HEAD")) != release_sha:
         raise ValueError("release_sha does not match clean HEAD")
+    if not previous_compose_file.is_file():
+        raise ValueError("previous_compose_file must identify the deployed release topology")
+    previous_compose_sha256 = sha256(previous_compose_file.read_bytes()).hexdigest()
     compose = ("docker", "compose", "--env-file", str(env_file), "-f", "deploy/compose.yaml")
-    previous_image = runner.run((*compose, "images", "-q", "forward_collector"))
+    previous_compose = (
+        "docker",
+        "compose",
+        "--env-file",
+        str(env_file),
+        "-f",
+        str(previous_compose_file),
+    )
+    previous_image = runner.run((*previous_compose, "images", "-q", "forward_collector"))
     if not previous_image:
         raise ValueError("previous release image is required for safe rollback")
     original_env = env_file.read_bytes()
@@ -187,7 +200,10 @@ def release(
             "BTC_CODE_REVISION": previous_revision,
         }
         if deployed:
-            runner.run((*compose, "up", "-d", "--wait"), env=rollback_env)
+            runner.run(
+                (*previous_compose, "up", "-d", "--wait", "--remove-orphans"),
+                env=rollback_env,
+            )
             for service in ("forward_collector", "research_paper"):
                 runner.run(
                     (
@@ -205,7 +221,14 @@ def release(
                     env=rollback_env,
                 )
             rolled_back = runner.run(
-                (*compose, "exec", "-T", "forward_collector", "printenv", "BTC_CODE_REVISION"),
+                (
+                    *previous_compose,
+                    "exec",
+                    "-T",
+                    "forward_collector",
+                    "printenv",
+                    "BTC_CODE_REVISION",
+                ),
                 env=rollback_env,
             )
             if rolled_back != previous_revision:
@@ -222,6 +245,7 @@ def release(
         container_revision,
         str(api_sha),
         str(preflight_payload["report_path"]),
+        previous_compose_sha256,
     )
     payload = asdict(evidence)
     payload["receipt_sha256"] = sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
@@ -235,6 +259,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release-sha", required=True)
     parser.add_argument("--env-file", type=Path, required=True)
+    parser.add_argument("--previous-compose-file", type=Path, required=True)
     parser.add_argument("--receipt-root", type=Path, required=True)
     parser.add_argument("--rule-epoch", required=True)
     parser.add_argument("--data-root", type=Path, required=True)
@@ -246,6 +271,7 @@ def main() -> int:
             runner=SubprocessRunner(),
             release_sha=args.release_sha,
             env_file=args.env_file,
+            previous_compose_file=args.previous_compose_file,
             receipt_root=args.receipt_root,
             rule_epoch=args.rule_epoch,
             data_root=args.data_root,

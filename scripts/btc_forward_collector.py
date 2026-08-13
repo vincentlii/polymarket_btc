@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -22,7 +22,11 @@ else:
 ensure_repo_root(__file__)
 
 from btc_short_horizon.config import BtcProjectConfig, load_btc_project_config  # noqa: E402
-from btc_short_horizon.data.catalog_io import read_market_catalog, write_market_catalog  # noqa: E402
+from btc_short_horizon.data.catalog_io import (  # noqa: E402
+    LEGACY_CATALOG_SCHEMA_VERSION,
+    read_market_catalog,
+    write_market_catalog,
+)
 from btc_short_horizon.data.contracts import (  # noqa: E402
     BtcMarketFamily,
     MarketValidationError,
@@ -589,10 +593,18 @@ def _write_single_market_catalog(
 ) -> Path:
     path = _single_market_catalog_path(directory=directory, market=market)
     if path.exists():
-        existing = read_market_catalog(path)
+        payload = _read_catalog_json(path)
+        is_legacy = payload.get("schema_version") == LEGACY_CATALOG_SCHEMA_VERSION
+        existing = read_market_catalog(path, allow_unproven_legacy=is_legacy)
         if existing.families != (family,) or existing.windows() != (market,):
             raise MarketValidationError(
                 f"existing follow-current catalog conflicts with Gamma metadata: {path}"
+            )
+        if is_legacy:
+            _archive_legacy_catalog(path)
+            write_market_catalog(
+                path=path,
+                catalog=MarketCatalog(families=(family,), windows=(market,)),
             )
         return path
     write_market_catalog(
@@ -600,6 +612,32 @@ def _write_single_market_catalog(
         catalog=MarketCatalog(families=(family,), windows=(market,)),
     )
     return path
+
+
+def _read_catalog_json(path: Path) -> Mapping[str, object]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise MarketValidationError(f"market catalog JSON is invalid: {path}") from exc
+    if not isinstance(payload, Mapping):
+        raise MarketValidationError("market catalog must be a JSON object")
+    return payload
+
+
+def _archive_legacy_catalog(path: Path) -> None:
+    content = path.read_bytes()
+    digest = sha256(content).hexdigest()
+    archive = path.with_name(f"{path.name}.legacy-v1-{digest}.json")
+    if archive.exists():
+        if archive.read_bytes() != content:
+            raise MarketValidationError(f"legacy catalog archive hash collision: {archive}")
+        return
+    temporary = archive.with_name(f".{archive.name}.tmp")
+    try:
+        temporary.write_bytes(content)
+        temporary.replace(archive)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _single_market_catalog_path(*, directory: Path, market: MarketWindow) -> Path:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+import json
 from pathlib import Path
 
 import pytest
@@ -250,6 +251,57 @@ def test_follow_catalog_preserves_first_discovery_timestamp(tmp_path: Path) -> N
     assert returned == path
     assert path.read_text(encoding="utf-8") == first_contents
     assert read_market_catalog(path).require(market.slug) == market
+
+
+def test_follow_catalog_migrates_matching_legacy_catalog_and_preserves_original(
+    tmp_path: Path,
+) -> None:
+    market = _market(datetime(2026, 4, 13, tzinfo=UTC))
+    path = _single_market_catalog_path(directory=tmp_path, market=market)
+    write_market_catalog(
+        path=path,
+        catalog=MarketCatalog(families=(BTC_15M_MARKET_FAMILY,), windows=(market,)),
+    )
+    legacy = json.loads(path.read_text(encoding="utf-8"))
+    legacy["schema_version"] = "btc-market-catalog-v1"
+    legacy["markets"][0].pop("rule_contract_sha256")
+    legacy_bytes = (json.dumps(legacy, indent=2, sort_keys=True) + "\n").encode()
+    path.write_bytes(legacy_bytes)
+
+    returned = _write_single_market_catalog(
+        directory=tmp_path,
+        family=BTC_15M_MARKET_FAMILY,
+        market=market,
+    )
+
+    assert returned == path
+    assert read_market_catalog(path).require(market.slug) == market
+    archives = tuple(tmp_path.glob(f"{path.name}.legacy-v1-*.json"))
+    assert len(archives) == 1
+    assert archives[0].read_bytes() == legacy_bytes
+
+
+def test_follow_catalog_does_not_migrate_conflicting_legacy_catalog(tmp_path: Path) -> None:
+    market = _market(datetime(2026, 4, 13, tzinfo=UTC))
+    path = _single_market_catalog_path(directory=tmp_path, market=market)
+    write_market_catalog(
+        path=path,
+        catalog=MarketCatalog(families=(BTC_15M_MARKET_FAMILY,), windows=(market,)),
+    )
+    legacy = json.loads(path.read_text(encoding="utf-8"))
+    legacy["schema_version"] = "btc-market-catalog-v1"
+    legacy["markets"][0].pop("rule_contract_sha256")
+    legacy["markets"][0]["condition_id"] = "conflicting-condition"
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    with pytest.raises(MarketValidationError, match="conflicts with Gamma metadata"):
+        _write_single_market_catalog(
+            directory=tmp_path,
+            family=BTC_15M_MARKET_FAMILY,
+            market=market,
+        )
+
+    assert not tuple(tmp_path.glob(f"{path.name}.legacy-v1-*.json"))
 
 
 def test_follow_catalog_keeps_rule_epochs_in_separate_immutable_files(tmp_path: Path) -> None:

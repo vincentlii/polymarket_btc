@@ -136,6 +136,27 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml ps
 docker compose --env-file deploy/.env -f deploy/compose.yaml logs -f forward_collector
 ```
 
+For an upgrade, preserve the currently deployed Compose file as an untracked
+operational artifact before switching to the candidate revision. The release command takes
+that file explicitly; a failed deployment uses it with the prior image and
+`--remove-orphans`, restoring the old service topology as well as the old code:
+
+```bash
+cp deploy/compose.yaml deploy/compose.previous.yaml
+uv run python scripts/btc_release.py \
+  --release-sha "$(git rev-parse HEAD)" \
+  --env-file deploy/.env \
+  --previous-compose-file deploy/compose.previous.yaml \
+  --receipt-root deploy/runtime/output/btc_short_horizon/releases \
+  --rule-epoch "$BTC_RULE_EPOCH" \
+  --data-root deploy/runtime/data \
+  --output-root deploy/runtime/output \
+  --runtime-root deploy/runtime/output/btc_short_horizon/runtime
+```
+
+Do not derive the previous Compose file after checking out the candidate: it
+must be the exact topology that produced the currently running containers.
+
 容器镜像不包含 `data/` 或 `output/`。它们被挂载到宿主机：模型、原始数据和运行状态都在 `deploy/runtime/` 下。后续替换 VPS 时只能迁移通过当前 audit 与远端全量校验的 runtime snapshot；首次部署不迁移历史本地 raw。
 
 基础 Compose 会启动实时 Research Paper；它的模型目录因此是必填项。可选
