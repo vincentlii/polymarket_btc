@@ -125,7 +125,7 @@ def test_public_subscription_builders_follow_current_channel_heartbeats() -> Non
     )
     assert futures_market.endpoint.endswith("/market/stream?streams=btcusdt@aggTrade")
     assert futures_public.endpoint.endswith(
-        "/market/stream?streams=btcusdt@depth@100ms/btcusdt@bookTicker"
+        "/stream?streams=btcusdt@depth@100ms/btcusdt@bookTicker"
     )
     assert futures_market.subscribe_payload is None
     assert futures_public.subscribe_payload is None
