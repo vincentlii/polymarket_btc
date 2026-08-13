@@ -1293,6 +1293,14 @@ async def test_paper_bootstrap_anchors_to_first_admitted_closed_kline(
     ]
 
 
+def test_paper_status_binds_running_container_revision(tmp_path, monkeypatch) -> None:
+    del tmp_path
+    revision = "a" * 40
+    monkeypatch.setenv("BTC_CODE_REVISION", revision)
+
+    assert paper_runtime_module._runtime_identity() == {"code_revision": revision}
+
+
 def test_research_paper_reevaluates_working_order_and_cancels_probability_drop(tmp_path) -> None:
     probabilities = iter((0.70, 0.70, 0.60))
 

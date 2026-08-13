@@ -1,8 +1,8 @@
 # Codebase UML Inventory
 
 This file is generated from Python AST metadata and excludes `tests/` plus git-ignored private strategy/research directories.
-Generated: 2026-08-13T15:52:01+00:00
-Modules: 258 | Classes: 532 | Functions/methods: 3496
+Generated: 2026-08-13T16:12:34+00:00
+Modules: 258 | Classes: 532 | Functions/methods: 3497
 
 ## Backtesting Data Flow
 
@@ -1306,44 +1306,45 @@ flowchart TD
   - Method L44: `__post_init__(self) -> None`
 
 ### `btc_short_horizon/live/paper_runtime.py`
-- Imports: `__future__, asyncio, btc_short_horizon, collections, dataclasses, datetime, httpx, math, numpy, pathlib, queue`
-- Function L292: `build_research_paper_portfolio(*, project: BtcProjectConfig, predictor: ModelPaperPredictor, runtime_root: Path, starting_balance: float, stage_policy: StagePolicyConfig | None = None) -> ResearchPaperPortfolio`
-- Function L771: `_positive_number(value: object, name: str) -> float`
-- Function L781: `_closed_binance_kline_open_ms(event: RawCollectorEvent) -> int | None`
-- Function L801: `_nonnegative_number(value: object, name: str) -> float`
-- Function L811: `_nonnegative_integer(value: object, name: str) -> int`
-- Function L821: `_decimal_text(value: object, name: str) -> str`
-- Class L66: `PublicPaperRulesClient`
-  - Method L69: `__init__(self, *, base_url: str = _CLOB_HOST, timeout_seconds: float = 10.0, enabled_taker_delay_ms: float = CLOB_DELAYED_TAKER_SERVER_MS, taker_delay_policy_id: str = 'clob-itode-250ms-v1') -> None`
-  - Method L90: `async fetch(self, market: MarketWindow, *, client: httpx.AsyncClient | None = None) -> dict[str, PaperMarketRules]`
-- Class L158: `MarketRelativePaperAdapter`
-  - Method L161: `__init__(self, *, directory: Path, expected_rule_epoch: str) -> None`
-  - Method L169: `attach(self, prediction: OpeningMispricingPrediction) -> OpeningMispricingPrediction`
-- Class L192: `ModelPaperPredictor`
-  - Method L195: `__init__(self, *, project: BtcProjectConfig, model_directory: Path, market_relative_model_directory: Path | None = None) -> None`
-  - Method L239: `model_id(self) -> str`
-  - Method L243: `stage_model_ids(self) -> dict[str, str]`
-  - Method L249: `market_relative_model_id(self) -> str | None`
-  - Method L253: `ledger_model_identity(self) -> dict[str, object]`
-  - Method L265: `__call__(self, market, history, observation) -> Any`
-- Class L363: `ResearchPaperRuntime`
-  - Method L366: `__init__(self, *, project: BtcProjectConfig, model_directory: Path, market_relative_model_directory: Path | None = None, runtime_root: Path, rule_epoch: str, event_buffer: AdmittedEventBuffer, starting_balance: float = 1000.0, rules_client: PublicPaperRulesClient | None = None, gamma_client: GammaMarketClient | None = None, settlement_trades_client: PublicSettlementTradesClient | None = None) -> None`
-  - Method L429: `model_id(self) -> str`
-  - Method L432: `register_markets(self, market: MarketWindow, lookahead: MarketWindow | None) -> None`
-  - Method L454: `async run(self, *, stop_event: asyncio.Event) -> None`
-  - Method L487: `close(self) -> None`
-  - Method L493: `_checkpoint_evaluations(self) -> None`
-  - Method L498: `async _bootstrap_history(self, *, stop_event: asyncio.Event) -> bool`
-  - Method L535: `async _fetch_rules(self, market: MarketWindow) -> None`
-  - Method L545: `_schedule_rule_fetch(self, market: MarketWindow, *, now: datetime) -> None`
-  - Method L560: `_drain_events(self) -> None`
-  - Method L568: `_consume_event(self, event: RawCollectorEvent) -> None`
-  - Method L572: `_activate_current_market(self, now: datetime) -> None`
-  - Method L620: `_run_due_decision(self, now: datetime) -> None`
-  - Method L660: `async _settle_resolved_markets(self) -> None`
-  - Method L694: `async _refresh_resolutions(self) -> None`
-  - Method L703: `_publish_running_if_due(self, now: datetime) -> None`
-  - Method L713: `_publish(self, *, now: datetime, state: str, healthy: bool) -> None`
+- Imports: `__future__, asyncio, btc_short_horizon, collections, dataclasses, datetime, httpx, math, numpy, os, pathlib, queue`
+- Function L54: `_runtime_identity() -> dict[str, str | None]`
+- Function L297: `build_research_paper_portfolio(*, project: BtcProjectConfig, predictor: ModelPaperPredictor, runtime_root: Path, starting_balance: float, stage_policy: StagePolicyConfig | None = None) -> ResearchPaperPortfolio`
+- Function L777: `_positive_number(value: object, name: str) -> float`
+- Function L787: `_closed_binance_kline_open_ms(event: RawCollectorEvent) -> int | None`
+- Function L807: `_nonnegative_number(value: object, name: str) -> float`
+- Function L817: `_nonnegative_integer(value: object, name: str) -> int`
+- Function L827: `_decimal_text(value: object, name: str) -> str`
+- Class L71: `PublicPaperRulesClient`
+  - Method L74: `__init__(self, *, base_url: str = _CLOB_HOST, timeout_seconds: float = 10.0, enabled_taker_delay_ms: float = CLOB_DELAYED_TAKER_SERVER_MS, taker_delay_policy_id: str = 'clob-itode-250ms-v1') -> None`
+  - Method L95: `async fetch(self, market: MarketWindow, *, client: httpx.AsyncClient | None = None) -> dict[str, PaperMarketRules]`
+- Class L163: `MarketRelativePaperAdapter`
+  - Method L166: `__init__(self, *, directory: Path, expected_rule_epoch: str) -> None`
+  - Method L174: `attach(self, prediction: OpeningMispricingPrediction) -> OpeningMispricingPrediction`
+- Class L197: `ModelPaperPredictor`
+  - Method L200: `__init__(self, *, project: BtcProjectConfig, model_directory: Path, market_relative_model_directory: Path | None = None) -> None`
+  - Method L244: `model_id(self) -> str`
+  - Method L248: `stage_model_ids(self) -> dict[str, str]`
+  - Method L254: `market_relative_model_id(self) -> str | None`
+  - Method L258: `ledger_model_identity(self) -> dict[str, object]`
+  - Method L270: `__call__(self, market, history, observation) -> Any`
+- Class L368: `ResearchPaperRuntime`
+  - Method L371: `__init__(self, *, project: BtcProjectConfig, model_directory: Path, market_relative_model_directory: Path | None = None, runtime_root: Path, rule_epoch: str, event_buffer: AdmittedEventBuffer, starting_balance: float = 1000.0, rules_client: PublicPaperRulesClient | None = None, gamma_client: GammaMarketClient | None = None, settlement_trades_client: PublicSettlementTradesClient | None = None) -> None`
+  - Method L434: `model_id(self) -> str`
+  - Method L437: `register_markets(self, market: MarketWindow, lookahead: MarketWindow | None) -> None`
+  - Method L459: `async run(self, *, stop_event: asyncio.Event) -> None`
+  - Method L492: `close(self) -> None`
+  - Method L498: `_checkpoint_evaluations(self) -> None`
+  - Method L503: `async _bootstrap_history(self, *, stop_event: asyncio.Event) -> bool`
+  - Method L540: `async _fetch_rules(self, market: MarketWindow) -> None`
+  - Method L550: `_schedule_rule_fetch(self, market: MarketWindow, *, now: datetime) -> None`
+  - Method L565: `_drain_events(self) -> None`
+  - Method L573: `_consume_event(self, event: RawCollectorEvent) -> None`
+  - Method L577: `_activate_current_market(self, now: datetime) -> None`
+  - Method L625: `_run_due_decision(self, now: datetime) -> None`
+  - Method L665: `async _settle_resolved_markets(self) -> None`
+  - Method L699: `async _refresh_resolutions(self) -> None`
+  - Method L708: `_publish_running_if_due(self, now: datetime) -> None`
+  - Method L718: `_publish(self, *, now: datetime, state: str, healthy: bool) -> None`
 
 ### `btc_short_horizon/live/reconciliation.py`
 - Imports: `__future__, btc_short_horizon, collections, dataclasses, datetime, decimal, enum, hashlib, json, math, re, time, typing`

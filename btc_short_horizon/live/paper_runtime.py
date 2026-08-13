@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from math import isfinite
+import os
 from pathlib import Path
 from queue import Empty
 
@@ -48,6 +49,10 @@ from btc_short_horizon.research.opening_proxy import (
 )
 from btc_short_horizon.research.opening_runtime import build_opening_proxy_prediction
 from btc_short_horizon.strategy import StagePolicyConfig
+
+
+def _runtime_identity() -> dict[str, str | None]:
+    return {"code_revision": os.environ.get("BTC_CODE_REVISION")}
 
 
 _CLOB_HOST = "https://clob.polymarket.com"
@@ -753,6 +758,7 @@ class ResearchPaperRuntime:
             ),
             "credentials_loaded": False,
             "real_orders_enabled": False,
+            "identity": _runtime_identity(),
         }
         RuntimeStatusStore(self.runtime_root).write(
             RuntimeStatus(
