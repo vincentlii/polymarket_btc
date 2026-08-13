@@ -144,23 +144,15 @@ def release(
         health_outputs = []
         for service, age in (
             ("forward_collector", "30"),
-            ("research_paper", "30"),
+            ("research_paper", "90"),
             ("training_readiness", "150"),
         ):
             health_outputs.append(
-                runner.run(
-                    (
-                        "uv",
-                        "run",
-                        "python",
-                        "scripts/btc_runtime_healthcheck.py",
-                        "--runtime-root",
-                        str(runtime_root),
-                        "--service",
-                        service,
-                        "--max-age-seconds",
-                        age,
-                    ),
+                _wait_for_runtime_health(
+                    runner=runner,
+                    runtime_root=runtime_root,
+                    service=service,
+                    max_age_seconds=age,
                     env=env,
                 )
             )
@@ -205,19 +197,11 @@ def release(
                 env=rollback_env,
             )
             for service in ("forward_collector", "research_paper"):
-                runner.run(
-                    (
-                        "uv",
-                        "run",
-                        "python",
-                        "scripts/btc_runtime_healthcheck.py",
-                        "--runtime-root",
-                        str(runtime_root),
-                        "--service",
-                        service,
-                        "--max-age-seconds",
-                        "30",
-                    ),
+                _wait_for_runtime_health(
+                    runner=runner,
+                    runtime_root=runtime_root,
+                    service=service,
+                    max_age_seconds="90" if service == "research_paper" else "30",
                     env=rollback_env,
                 )
             rolled_back = runner.run(
@@ -253,6 +237,39 @@ def release(
     path = receipt_root / f"release-{payload['receipt_sha256']}.json"
     write_atomic_json(path, payload)
     return path
+
+
+def _wait_for_runtime_health(
+    *,
+    runner: Runner,
+    runtime_root: Path,
+    service: str,
+    max_age_seconds: str,
+    env: dict[str, str],
+    attempts: int = 12,
+) -> str:
+    command = (
+        "uv",
+        "run",
+        "python",
+        "scripts/btc_runtime_healthcheck.py",
+        "--runtime-root",
+        str(runtime_root),
+        "--service",
+        service,
+        "--max-age-seconds",
+        max_age_seconds,
+    )
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return runner.run(command, env=env)
+        except Exception as exc:
+            last_error = exc
+            if attempt + 1 < attempts:
+                runner.run(("sleep", "10"), env=env)
+    assert last_error is not None
+    raise last_error
 
 
 def main() -> int:

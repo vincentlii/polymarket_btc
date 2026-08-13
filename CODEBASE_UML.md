@@ -1,8 +1,8 @@
 # Codebase UML Inventory
 
 This file is generated from Python AST metadata and excludes `tests/` plus git-ignored private strategy/research directories.
-Generated: 2026-08-13T16:12:34+00:00
-Modules: 258 | Classes: 532 | Functions/methods: 3497
+Generated: 2026-08-13T16:26:31+00:00
+Modules: 258 | Classes: 532 | Functions/methods: 3498
 
 ## Backtesting Data Flow
 
@@ -4406,10 +4406,11 @@ flowchart TD
 ### `scripts/btc_release.py`
 - Imports: `__future__, argparse, btc_short_horizon, dataclasses, hashlib, json, os, pathlib, subprocess, typing`
 - Function L49: `release(*, runner: Runner, release_sha: str, env_file: Path, previous_compose_file: Path, receipt_root: Path, rule_epoch: str, data_root: Path, output_root: Path, runtime_root: Path) -> Path`
-- Function L258: `main() -> int`
-- Function L285: `_env_value(content: str, key: str) -> str`
-- Function L296: `_write_release_env(path: Path, content: str, revision: str, image: str) -> None`
-- Function L312: `_write_atomic_bytes(path: Path, content: bytes) -> None`
+- Function L242: `_wait_for_runtime_health(*, runner: Runner, runtime_root: Path, service: str, max_age_seconds: str, env: dict[str, str], attempts: int = 12) -> str`
+- Function L275: `main() -> int`
+- Function L302: `_env_value(content: str, key: str) -> str`
+- Function L313: `_write_release_env(path: Path, content: str, revision: str, image: str) -> None`
+- Function L329: `_write_atomic_bytes(path: Path, content: bytes) -> None`
 - Class L24: `Runner(Protocol)`
   - Method L25: `run(self, command: tuple[str, ...], *, env: dict[str, str] | None = None) -> str`
 - Class L28: `SubprocessRunner`

@@ -35,10 +35,12 @@ class Runner:
         fail_label: bool = False,
         missing_readiness: bool = False,
         fail_compose_up: bool = False,
+        paper_health_failures: int = 0,
     ) -> None:
         self.sha, self.fail_api, self.fail_preflight = sha, fail_api, fail_preflight
         self.fail_label, self.missing_readiness, self.calls = fail_label, missing_readiness, []
         self.fail_compose_up = fail_compose_up
+        self.paper_health_failures = paper_health_failures
 
     def run(self, command, *, env=None):  # type: ignore[no-untyped-def]
         self.calls.append((command, env))
@@ -61,6 +63,11 @@ class Runner:
             if self.fail_preflight:
                 raise RuntimeError("preflight")
             return json.dumps({"passed": True, "report_path": "preflight.json"})
+        if "btc_runtime_healthcheck.py" in joined and "--service research_paper" in joined:
+            if self.paper_health_failures:
+                self.paper_health_failures -= 1
+                raise RuntimeError("paper warming")
+            return "healthy"
         if (
             "up -d --wait" in joined
             and self.fail_compose_up
@@ -192,6 +199,27 @@ def test_compose_health_failure_rolls_back_even_after_up_returns_nonzero(tmp_pat
     ]
     assert len(rollback_commands) == 1
     assert str(tmp_path / "compose.previous.yaml") in rollback_commands[0]
+
+
+def test_release_waits_for_paper_bootstrap_before_declaring_failure(tmp_path) -> None:
+    sha = "a" * 40
+    runner = Runner(sha, paper_health_failures=2)
+    env_file = tmp_path / ".env"
+    env_file.write_text(f"BTC_CODE_REVISION={'b' * 40}\nBTC_IMAGE=old\n")
+
+    release(
+        runner=runner,
+        release_sha=sha,
+        env_file=env_file,
+        previous_compose_file=_previous_compose(tmp_path),
+        receipt_root=tmp_path / "receipts",
+        rule_epoch="epoch",
+        data_root=tmp_path / "data",
+        output_root=tmp_path / "output",
+        runtime_root=tmp_path / "runtime",
+    )
+
+    assert sum(command == ("sleep", "10") for command, _ in runner.calls) == 2
 
 
 @pytest.mark.parametrize("failure", ["label", "readiness"])
