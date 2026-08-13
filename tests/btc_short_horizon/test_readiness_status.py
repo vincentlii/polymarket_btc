@@ -1,7 +1,9 @@
 import json
+from datetime import UTC, datetime
 
 from scripts.btc_training_readiness_worker import (
     _expected_coverage_evidence,
+    _readiness_runtime_status,
     aggregate_receipts,
 )
 
@@ -40,3 +42,19 @@ def test_recent_status_is_lightweight_and_fails_closed(tmp_path) -> None:
     assert status["error_count"] == 1
     assert status["invalid_markets"] == ["b"]
     assert not status["healthy"]
+
+
+def test_readiness_runtime_status_declares_its_watch_interval() -> None:
+    now = datetime(2026, 8, 13, 16, 0, tzinfo=UTC)
+
+    status = _readiness_runtime_status(
+        started_at=now,
+        updated_at=now,
+        backlog=0,
+        last_candidate=None,
+        last_receipt=None,
+        last_error=None,
+        code_revision="a" * 40,
+    )
+
+    assert status.details["expected_status_interval_seconds"] == 60.0

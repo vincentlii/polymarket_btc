@@ -40,6 +40,36 @@ from btc_short_horizon.research.opening_evidence import load_forward_raw_events 
 from scripts.btc_forward_collector import _readiness_protocol  # noqa: E402
 
 _EXIT_TERMINAL_MAX_AGE_SECONDS = 15
+_WATCH_INTERVAL_SECONDS = 60.0
+
+
+def _readiness_runtime_status(
+    *,
+    started_at: datetime,
+    updated_at: datetime,
+    backlog: int,
+    last_candidate: str | None,
+    last_receipt: str | None,
+    last_error: str | None,
+    code_revision: str | None,
+) -> RuntimeStatus:
+    return RuntimeStatus(
+        service="training_readiness",
+        mode="offline_incremental",
+        state="running",
+        healthy=last_error is None,
+        started_at=started_at,
+        updated_at=updated_at,
+        details={
+            "backlog": backlog,
+            "last_candidate": last_candidate,
+            "last_receipt": last_receipt,
+            "last_error": last_error,
+            "warming": last_candidate is None,
+            "expected_status_interval_seconds": _WATCH_INTERVAL_SECONDS,
+            "identity": {"code_revision": code_revision},
+        },
+    )
 
 
 def _expected_coverage_evidence(
@@ -330,24 +360,17 @@ def main() -> int:
                     for item in args.candidate_root.glob("*.json")
                 )
                 RuntimeStatusStore(args.runtime_root).write(
-                    RuntimeStatus(
-                        service="training_readiness",
-                        mode="offline_incremental",
-                        state="running",
-                        healthy=last_error is None,
+                    _readiness_runtime_status(
                         started_at=started_at,
                         updated_at=datetime.now(UTC),
-                        details={
-                            "backlog": backlog,
-                            "last_candidate": last_candidate,
-                            "last_receipt": last_receipt,
-                            "last_error": last_error,
-                            "warming": last_candidate is None,
-                            "identity": {"code_revision": os.environ.get("BTC_CODE_REVISION")},
-                        },
+                        backlog=backlog,
+                        last_candidate=last_candidate,
+                        last_receipt=last_receipt,
+                        last_error=last_error,
+                        code_revision=os.environ.get("BTC_CODE_REVISION"),
                     )
                 )
-            time.sleep(60)
+            time.sleep(_WATCH_INTERVAL_SECONDS)
     if args.candidate is None:
         parser.error("--candidate is required unless --watch is set")
     receipt = audit_candidate(
