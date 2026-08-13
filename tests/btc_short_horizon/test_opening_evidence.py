@@ -18,6 +18,7 @@ from btc_short_horizon.data.catalog_io import write_market_catalog
 from btc_short_horizon.data.collector import PartitionedRawEventWriter, RawCollectorEvent
 from btc_short_horizon.data.contracts import TimedMarketEvent
 from btc_short_horizon.data.market_catalog import MarketCatalog
+from btc_short_horizon.data.rule_contract import CHAINLINK_BTC_USD_POINT_V1
 from btc_short_horizon.data.session_inventory import (
     SESSION_INVENTORY_MANIFEST_ATTRIBUTE,
     SESSION_INVENTORY_SCHEMA_VERSION,
@@ -48,7 +49,7 @@ def _market() -> MarketWindow:
         down_token_id=DOWN_TOKEN,
         t0=T0,
         t1=T0 + timedelta(minutes=15),
-        rule_epoch="chainlink-v1",
+        rule_epoch=CHAINLINK_BTC_USD_POINT_V1,
         rule_hash="a" * 64,
     )
 

@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import joblib
 
+from btc_short_horizon.data.rule_contract import rule_contract_sha256
 from btc_short_horizon.models.artifacts import ModelArtifactMetadata
 from btc_short_horizon.models.market_relative import FittedMarketRelativeOffsetModel
 from btc_short_horizon.models.market_relative_lightgbm import FittedMarketRelativeLightGBM
@@ -22,6 +23,7 @@ _MODEL_TYPES = {
     "market_relative_lightgbm_v1": FittedMarketRelativeLightGBM,
 }
 _MarketRelativeModel = FittedMarketRelativeOffsetModel | FittedMarketRelativeLightGBM
+_BLOCK_AGGREGATION = "snapshot_mean_within_market_then_market_weighted_block_resample"
 
 
 class MarketRelativeArtifactStore:
@@ -113,6 +115,110 @@ def _validate(
     rule_epoch = metadata.config.get("rule_epoch")
     if not isinstance(rule_epoch, str) or not rule_epoch.strip():
         raise ValueError("market-relative artifact requires a rule_epoch")
+    contract_hash = metadata.config.get("rule_contract_sha256")
+    if contract_hash is not None and contract_hash != rule_contract_sha256(rule_epoch):
+        raise ValueError("market-relative artifact rule_contract_sha256 mismatch")
+
+
+def validate_market_relative_promotion_contract(
+    metadata: ModelArtifactMetadata,
+) -> ModelArtifactMetadata:
+    """Fail closed unless every preregistered promotion gate is embedded in metadata."""
+
+    config = metadata.config
+    epoch = config.get("rule_epoch")
+    if not isinstance(epoch, str) or config.get("rule_contract_sha256") != rule_contract_sha256(
+        epoch
+    ):
+        raise ValueError("promotion requires a matching rule_contract_sha256")
+    if config.get("runtime_promotion_eligible") is not True:
+        raise ValueError("artifact is not runtime promotion eligible")
+    if config.get("sealed_holdout_evaluated") is not True:
+        raise ValueError("promotion requires sealed holdout evidence")
+    if config.get("multiple_comparison_gate_passed") is not True:
+        raise ValueError("promotion requires the multiple-comparison gate")
+    _require_sha256(config.get("selection_receipt_sha256"), "selection receipt")
+    calibrators = config.get("stage_calibrators")
+    required_stages = {
+        "early_3s_to_30s",
+        "price_discovery_35s_to_90s",
+        "mid_early_95s_to_180s",
+    }
+    if not isinstance(calibrators, dict) or set(calibrators) != required_stages:
+        raise ValueError("promotion requires exactly three stage calibrators")
+    if any(not isinstance(value, str) or not value for value in calibrators.values()):
+        raise ValueError("stage calibrator identifiers must be non-empty")
+    selected_configs = config.get("selected_stage_config_sha256")
+    if not isinstance(selected_configs, dict) or set(selected_configs) != required_stages:
+        raise ValueError("promotion requires exactly three selected stage configurations")
+    for value in selected_configs.values():
+        _require_sha256(value, "selected stage configuration")
+    minimum_markets = config.get("minimum_independent_markets_required")
+    if (
+        isinstance(minimum_markets, bool)
+        or not isinstance(minimum_markets, int)
+        or minimum_markets < 1
+    ):
+        raise ValueError("promotion requires minimum_independent_markets_required")
+    lower_bounds = config.get("p_lower")
+    objectives = {"log_loss", "brier", "net_ev"}
+    units = {"market", "day", "week"}
+    if not isinstance(lower_bounds, dict) or set(lower_bounds) != objectives:
+        raise ValueError("promotion requires log_loss/brier/net_ev p_lower evidence")
+    for objective in sorted(objectives):
+        objective_evidence = lower_bounds[objective]
+        if not isinstance(objective_evidence, dict) or set(objective_evidence) != units:
+            raise ValueError("promotion requires market/day/week p_lower evidence")
+        for unit in sorted(units):
+            evidence = objective_evidence[unit]
+            if not isinstance(evidence, dict):
+                raise ValueError(f"{objective}/{unit} p_lower evidence must be an object")
+            value = evidence.get("value")
+            markets = evidence.get("independent_market_count")
+            if not isinstance(value, int | float) or isinstance(value, bool) or value <= 0.0:
+                raise ValueError(f"{objective}/{unit} p_lower must be positive")
+            if (
+                isinstance(markets, bool)
+                or not isinstance(markets, int)
+                or markets < minimum_markets
+            ):
+                raise ValueError(
+                    f"{objective}/{unit} p_lower requires at least "
+                    f"{minimum_markets} independent markets"
+                )
+            if evidence.get("aggregation") != _BLOCK_AGGREGATION:
+                raise ValueError(f"{objective}/{unit} p_lower uses unsupported aggregation")
+    ablations = config.get("factor_family_ablations")
+    if (
+        not isinstance(ablations, list)
+        or not ablations
+        or any(not isinstance(value, str) or not value for value in ablations)
+        or len(set(ablations)) != len(ablations)
+    ):
+        raise ValueError("promotion requires unique factor-family ablation evidence")
+    observed = config.get("minimum_leaf_unique_market_count")
+    required = config.get("minimum_markets_per_leaf_required")
+    if (
+        isinstance(observed, bool)
+        or not isinstance(observed, int)
+        or isinstance(required, bool)
+        or not isinstance(required, int)
+        or required <= 0
+        or observed < required
+    ):
+        raise ValueError("promotion requires the independent-market leaf gate")
+    raise ValueError(
+        "promotion remains blocked until a raw-derived full-depth exit replay producer exists"
+    )
+
+
+def _require_sha256(value: object, label: str) -> None:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValueError(f"promotion requires a lowercase SHA-256 for {label}")
 
 
 def _sha256_file(path: Path) -> str:
@@ -128,4 +234,4 @@ def _fsync_file(path: Path) -> None:
         os.fsync(handle.fileno())
 
 
-__all__ = ["MarketRelativeArtifactStore"]
+__all__ = ["MarketRelativeArtifactStore", "validate_market_relative_promotion_contract"]

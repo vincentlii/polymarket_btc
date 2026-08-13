@@ -16,9 +16,11 @@ from btc_short_horizon.data.contracts import (
     MarketWindow,
 )
 from btc_short_horizon.data.market_catalog import MarketCatalog
+from btc_short_horizon.data.rule_contract import rule_contract_sha256
 
 
-CATALOG_SCHEMA_VERSION = "btc-market-catalog-v1"
+CATALOG_SCHEMA_VERSION = "btc-market-catalog-v2"
+LEGACY_CATALOG_SCHEMA_VERSION = "btc-market-catalog-v1"
 
 
 def write_market_catalog(
@@ -50,7 +52,7 @@ def market_catalog_payload(*, catalog: MarketCatalog, collected_at: datetime) ->
     }
 
 
-def read_market_catalog(path: Path) -> MarketCatalog:
+def read_market_catalog(path: Path, *, allow_unproven_legacy: bool = False) -> MarketCatalog:
     """Load and validate a catalog written by :func:`write_market_catalog`."""
 
     try:
@@ -59,7 +61,12 @@ def read_market_catalog(path: Path) -> MarketCatalog:
         raise MarketValidationError(f"market catalog JSON is invalid: {path}") from exc
     if not isinstance(payload, Mapping):
         raise MarketValidationError("market catalog must be a JSON object")
-    if payload.get("schema_version") != CATALOG_SCHEMA_VERSION:
+    schema_version = payload.get("schema_version")
+    if schema_version == LEGACY_CATALOG_SCHEMA_VERSION and not allow_unproven_legacy:
+        raise MarketValidationError(
+            "legacy market catalog has no rule contract fingerprint; regenerate a v2 catalog"
+        )
+    if schema_version not in {CATALOG_SCHEMA_VERSION, LEGACY_CATALOG_SCHEMA_VERSION}:
         raise MarketValidationError("unsupported market catalog schema_version")
     if payload.get("source") != "gamma":
         raise MarketValidationError("market catalog source must be gamma")
@@ -74,7 +81,13 @@ def read_market_catalog(path: Path) -> MarketCatalog:
     catalog = MarketCatalog(families=families)
     families_by_name = {family.name: family for family in families}
     for item in markets_value:
-        catalog.register(_market_from_record(item, families_by_name=families_by_name))
+        catalog.register(
+            _market_from_record(
+                item,
+                families_by_name=families_by_name,
+                require_rule_contract=schema_version == CATALOG_SCHEMA_VERSION,
+            )
+        )
     return catalog
 
 
@@ -98,6 +111,7 @@ def _market_record(window: MarketWindow) -> dict[str, object]:
         "t1": window.t1.isoformat(),
         "rule_epoch": window.rule_epoch,
         "rule_hash": window.rule_hash,
+        "rule_contract_sha256": rule_contract_sha256(window.rule_epoch),
         "resolution": None if window.resolution is None else window.resolution.value,
         "label_available_ts": (
             None if window.label_available_ts is None else window.label_available_ts.isoformat()
@@ -120,7 +134,10 @@ def _family_from_record(value: object) -> BtcMarketFamily:
 
 
 def _market_from_record(
-    value: object, *, families_by_name: Mapping[str, BtcMarketFamily]
+    value: object,
+    *,
+    families_by_name: Mapping[str, BtcMarketFamily],
+    require_rule_contract: bool,
 ) -> MarketWindow:
     if not isinstance(value, Mapping):
         raise MarketValidationError("market catalog market must be an object")
@@ -134,6 +151,11 @@ def _market_from_record(
     resolution_value = value.get("resolution")
     label_available_value = value.get("label_available_ts")
     try:
+        rule_epoch = _require_text(value, "rule_epoch")
+        if require_rule_contract and _require_text(
+            value, "rule_contract_sha256"
+        ) != rule_contract_sha256(rule_epoch):
+            raise MarketValidationError("market catalog rule contract fingerprint mismatch")
         resolution = (
             None if resolution_value is None else MarketOutcome(_require_text(value, "resolution"))
         )
@@ -150,7 +172,7 @@ def _market_from_record(
             down_token_id=_require_text(value, "down_token_id"),
             t0=_parse_timestamp(_require_value(value, "t0"), "t0"),
             t1=_parse_timestamp(_require_value(value, "t1"), "t1"),
-            rule_epoch=_require_text(value, "rule_epoch"),
+            rule_epoch=rule_epoch,
             rule_hash=_require_text(value, "rule_hash"),
             resolution=resolution,
             label_available_ts=label_available_ts,

@@ -969,12 +969,11 @@ def test_baseline_portfolio_contains_only_the_two_enabled_1x_variants(tmp_path) 
     ]
     assert portfolio.primary.variant.variant_id == "independent_fak_1x5s_2_0"
     initial_ledgers = tuple(
-        tmp_path.glob(f"paper/epochs/{project.paper_execution_epoch}/variants/*/ledger.json")
+        tmp_path.glob(f"paper/epochs/{project.paper_execution_epoch}/variants/*/ledger.sqlite3")
     )
     assert len(initial_ledgers) == 2
-    assert all(
-        json.loads(path.read_text(encoding="utf-8"))["schema_version"] == 6
-        for path in initial_ledgers
+    assert not tuple(
+        tmp_path.glob(f"paper/epochs/{project.paper_execution_epoch}/variants/*/ledger.json")
     )
     portfolio.activate_market(_market(), rules={UP: _rules(UP), DOWN: _rules(DOWN)})
     portfolio.on_event(_book(UP, bid="0.40", ask="0.42", second=5))

@@ -65,3 +65,13 @@ def test_local_deployment_secrets_and_runtime_are_never_tracked_or_built() -> No
     assert "deploy/secrets" in docker_patterns
     assert "deploy/runtime/" in git_patterns
     assert "deploy/runtime" in docker_patterns
+
+
+def test_readiness_worker_uses_same_raw_root_as_forward_collector() -> None:
+    compose = yaml.safe_load(Path("deploy/compose.yaml").read_text(encoding="utf-8"))
+    command = compose["services"]["readiness_worker"]["command"]
+
+    assert command[command.index("--candidate-root") + 1] == (
+        "/app/data/btc_short_horizon/readiness/candidates"
+    )
+    assert command[command.index("--raw-data-root") + 1] == "/app/data/btc_short_horizon"

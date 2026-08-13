@@ -11,7 +11,7 @@ services:
       dockerfile: deploy/Dockerfile
       args:
         BTC_CODE_REVISION: "${BTC_CODE_REVISION:?set BTC_CODE_REVISION to the tested release commit}"
-    image: polymarket-btc-forward:local
+    image: ${BTC_IMAGE:-polymarket-btc-forward:local}
     init: true
     user: "10001:10001"
     read_only: true
@@ -66,7 +66,7 @@ services:
       start_period: 30s
 
   dashboard:
-    image: polymarket-btc-forward:local
+    image: ${BTC_IMAGE:-polymarket-btc-forward:local}
     init: true
     user: "10001:10001"
     read_only: true
@@ -91,6 +91,8 @@ services:
       - forward_collector
       - --active-service
       - research_paper
+      - --active-service
+      - training_readiness
     environment:
       PYTHONUNBUFFERED: "1"
     logging: *runtime-logging
@@ -117,9 +119,36 @@ services:
       retries: 3
       start_period: 10s
 
+  readiness_worker:
+    image: ${BTC_IMAGE:-polymarket-btc-forward:local}
+    init: true
+    user: "10001:10001"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 48
+    mem_limit: 512m
+    cpus: 0.35
+    command: ["python", "scripts/btc_training_readiness_worker.py", "--watch", "--config", "configs/btc_short_horizon/baseline.toml", "--candidate-root", "/app/data/btc_short_horizon/readiness/candidates", "--raw-data-root", "/app/data/btc_short_horizon", "--receipt-root", "/app/output/btc_short_horizon/runtime/readiness/receipts", "--runtime-root", "/app/output/btc_short_horizon/runtime"]
+    volumes:
+      - type: bind
+        source: ${BTC_DATA_DIR:-./runtime/data}
+        target: /app/data
+        read_only: true
+      - type: bind
+        source: ${BTC_OUTPUT_DIR:-./runtime/output}
+        target: /app/output
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "scripts/btc_runtime_healthcheck.py", "--runtime-root", "/app/output/btc_short_horizon/runtime", "--service", "training_readiness", "--max-age-seconds", "150"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+
   opening_shadow:
     profiles: ["shadow"]
-    image: polymarket-btc-forward:local
+    image: ${BTC_IMAGE:-polymarket-btc-forward:local}
     init: true
     user: "10001:10001"
     read_only: true

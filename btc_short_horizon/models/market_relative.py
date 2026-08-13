@@ -185,6 +185,9 @@ def fit_market_relative_offset_model(
     calibration_weights: np.ndarray | None = None,
     random_seed: int = 17,
     calibration_method: CalibrationMethod = "auto",
+    calibration_independent_market_count: int | None = None,
+    min_isotonic_calibration_markets: int = 2_000,
+    temperature_grid: tuple[float, ...] = (0.5, 0.75, 1.0, 1.5, 2.0),
 ) -> FittedMarketRelativeOffsetModel:
     if isinstance(logistic_c, bool) or not isfinite(logistic_c) or logistic_c <= 0.0:
         raise ValueError("logistic_c must be finite and > 0")
@@ -243,9 +246,9 @@ def fit_market_relative_offset_model(
         sample_weights=calibration_weight,
         method=calibration_method,
         random_seed=random_seed,
-        min_isotonic_calibration_samples=2_000,
-        temperature_grid=(1.0,),
-        independent_sample_count=None,
+        min_isotonic_calibration_samples=min_isotonic_calibration_markets,
+        temperature_grid=temperature_grid,
+        independent_sample_count=calibration_independent_market_count,
     )
     calibrated = np.asarray(calibrator.transform(raw_calibration), dtype=float)
     calibration_bias = abs(

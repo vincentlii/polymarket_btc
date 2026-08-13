@@ -40,6 +40,11 @@ deploy/runtime/
 .tmp/
 .codex-test-tmp/
 .pytest-final-v6/
+.pytest-*/
+.audit_pytest/
+.audit_tmp/
+.t/
+.test-tmp/
 
 # Rust
 target/

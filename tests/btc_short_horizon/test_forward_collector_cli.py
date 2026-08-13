@@ -16,6 +16,7 @@ from btc_short_horizon.data import (
     write_market_catalog,
 )
 from btc_short_horizon.data.forward import PolymarketSubscriptionWindow
+from btc_short_horizon.data.rule_contract import rule_contract_sha256
 from scripts.btc_forward_collector import (
     WindowCollectorSettings,
     _single_market_catalog_path,
@@ -77,7 +78,7 @@ def test_forward_collector_cli_resolves_tokens_from_validated_catalog(tmp_path) 
         down_token_id="down-token",
         t0=t0,
         t1=t0 + BTC_15M_MARKET_FAMILY.window_seconds_as_timedelta,
-        rule_epoch="chainlink-btc-usd-v1",
+        rule_epoch="chainlink-btc-usd-point-v1",
         rule_hash="a" * 64,
     )
     catalog_path = tmp_path / "catalog.json"
@@ -110,7 +111,7 @@ def test_follow_current_rotates_from_exact_gamma_catalog_and_persists_metadata(t
         down_token_id="down-token",
         t0=t0,
         t1=t0 + BTC_15M_MARKET_FAMILY.window_seconds_as_timedelta,
-        rule_epoch="chainlink-btc-usd-v1",
+        rule_epoch="chainlink-btc-usd-point-v1",
         rule_hash="a" * 64,
     )
     next_market = MarketWindow(
@@ -121,7 +122,7 @@ def test_follow_current_rotates_from_exact_gamma_catalog_and_persists_metadata(t
         down_token_id="next-down-token",
         t0=market.t1,
         t1=market.t1 + timedelta(minutes=15),
-        rule_epoch="chainlink-btc-usd-v1",
+        rule_epoch="chainlink-btc-usd-point-v1",
         rule_hash="b" * 64,
     )
     catalog = MarketCatalog(families=(BTC_15M_MARKET_FAMILY,), windows=(market, next_market))
@@ -146,7 +147,7 @@ def test_follow_current_rotates_from_exact_gamma_catalog_and_persists_metadata(t
         stopper = asyncio.create_task(stop_after_start())
         await collect_current_market_windows(
             family=BTC_15M_MARKET_FAMILY,
-            rule_epoch="chainlink-btc-usd-v1",
+            rule_epoch="chainlink-btc-usd-point-v1",
             raw_data_root=tmp_path / "raw",
             catalog_directory=tmp_path / "metadata",
             flush_size=25,
@@ -168,6 +169,10 @@ def test_follow_current_rotates_from_exact_gamma_catalog_and_persists_metadata(t
             polymarket_capture_lead_seconds=90.0,
             opening_handoff_delay_seconds=60.0,
             stop_event=outer_stop,
+            readiness_decision_offsets_seconds=tuple(range(5, 181, 5)),
+            readiness_protocol_sha256="a" * 64,
+            readiness_max_feature_lookback_seconds=3600,
+            readiness_required_sources=("binance_spot",),
             gamma_client=gamma,
             collector_factory=collector_factory,
             now=lambda: t0,
@@ -180,7 +185,7 @@ def test_follow_current_rotates_from_exact_gamma_catalog_and_persists_metadata(t
     assert gamma.calls == [
         {
             "family": BTC_15M_MARKET_FAMILY,
-            "rule_epoch": "chainlink-btc-usd-v1",
+            "rule_epoch": "chainlink-btc-usd-point-v1",
             "closed": False,
             "slugs": (market.slug, next_market.slug),
         }
@@ -217,6 +222,7 @@ def test_follow_current_rotates_from_exact_gamma_catalog_and_persists_metadata(t
                 ),
                 ingest_version="test-v2",
                 epoch_id_offset=int(t0.timestamp()),
+                rule_contract_sha256=rule_contract_sha256("chainlink-btc-usd-point-v1"),
             ),
         )
     ]
@@ -311,9 +317,10 @@ async def test_follow_current_rotates_storage_without_restarting_shared_feeds(
             self.registered.append(window)
             return True
 
-        async def rotate_storage_session(self, *, epoch_id_offset: int) -> None:
+        async def rotate_storage_session(self, *, epoch_id_offset: int) -> str:
             assert self.running
             self.rotations.append(epoch_id_offset)
+            return f"session-{len(self.rotations)}"
 
         async def wait_polymarket_subscription_window(
             self,
@@ -366,10 +373,15 @@ async def test_follow_current_rotates_storage_without_restarting_shared_feeds(
         "_wait_for_collector_deadline",
         reach_handoff,
     )
+    monkeypatch.setattr(
+        forward_collector_module.SessionCoverageIndex,
+        "coverage_evidence",
+        lambda *_args, **_kwargs: ({"session_id": "session-1"},),
+    )
 
     await collect_current_market_windows(
         family=BTC_15M_MARKET_FAMILY,
-        rule_epoch="chainlink-btc-usd-v1",
+        rule_epoch="chainlink-btc-usd-point-v1",
         raw_data_root=tmp_path / "raw",
         catalog_directory=tmp_path / "metadata",
         flush_size=25,
@@ -390,6 +402,10 @@ async def test_follow_current_rotates_storage_without_restarting_shared_feeds(
         polymarket_capture_lead_seconds=90.0,
         opening_handoff_delay_seconds=60.0,
         stop_event=outer_stop,
+        readiness_decision_offsets_seconds=tuple(range(5, 181, 5)),
+        readiness_protocol_sha256="a" * 64,
+        readiness_max_feature_lookback_seconds=3600,
+        readiness_required_sources=("binance_spot",),
         gamma_client=Gamma(),
         collector_factory=factory,
         now=lambda: clock[0],
@@ -459,6 +475,7 @@ class _FakeWindowCollector:
         binance_futures_market_streams: tuple[str, ...],
         binance_futures_public_streams: tuple[str, ...],
         okx_subscriptions: tuple[dict[str, str], ...],
+        optional_feeds_enabled: asyncio.Event | None = None,
     ) -> None:
         assert binance_streams == ("btcusdt@trade",)
         assert binance_futures_market_streams == ()
@@ -477,7 +494,7 @@ def _market(t0: datetime) -> MarketWindow:
         down_token_id="down-token",
         t0=t0,
         t1=t0 + BTC_15M_MARKET_FAMILY.window_seconds_as_timedelta,
-        rule_epoch="chainlink-btc-usd-v1",
+        rule_epoch="chainlink-btc-usd-point-v1",
         rule_hash="c" * 64,
     )
 
@@ -492,6 +509,6 @@ def _unique_market(t0: datetime, index: int) -> MarketWindow:
         down_token_id=f"down-token-{token}",
         t0=t0,
         t1=t0 + BTC_15M_MARKET_FAMILY.window_seconds_as_timedelta,
-        rule_epoch="chainlink-btc-usd-v1",
+        rule_epoch="chainlink-btc-usd-point-v1",
         rule_hash=token * 64,
     )

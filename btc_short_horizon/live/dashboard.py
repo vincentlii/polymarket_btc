@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, urlparse
 
 from btc_short_horizon.live.dashboard_page import dashboard_html
 from btc_short_horizon.live.dashboard_state import BotDashboardSnapshot, DashboardSnapshotStore
+from btc_short_horizon.live.append_only_ledger import AppendOnlyLedgerRepository
 from btc_short_horizon.live.runtime import (
     RuntimeControl,
     RuntimeHealth,
@@ -139,6 +140,7 @@ def build_dashboard_payload(
         "snapshot": None if snapshot is None else snapshot.to_json(),
         "snapshot_health": snapshot_health,
         "shadow": shadow,
+        "training_readiness": _readiness_status(config.runtime_root),
         "stop_request": (
             None
             if stop_request is None
@@ -148,6 +150,32 @@ def build_dashboard_payload(
             }
         ),
         "errors": errors,
+    }
+
+
+def _readiness_status(runtime_root: Path) -> dict[str, object]:
+    root = runtime_root / "readiness" / "receipts"
+    paths = sorted(root.glob("*.json"), key=lambda item: item.name)[-96:] if root.is_dir() else []
+    try:
+        payloads = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
+    except (OSError, json.JSONDecodeError):
+        return {"healthy": False, "reason": "invalid_receipt", "receipt_count": len(paths)}
+    receipts = [
+        item
+        for item in payloads
+        if item.get("schema_version") == "btc-training-readiness-receipt-v1"
+    ]
+    errors = [
+        item for item in payloads if item.get("schema_version") == "btc-training-readiness-error-v1"
+    ]
+    invalid = [item.get("market_slug") for item in receipts if item.get("ready") is not True]
+    return {
+        "healthy": bool(receipts) and not invalid and not errors,
+        "reason": "ok" if receipts and not invalid and not errors else "missing_or_failed_receipt",
+        "receipt_count": len(receipts),
+        "error_count": len(errors),
+        "ready_count": sum(item.get("ready") is True for item in receipts),
+        "invalid_markets": invalid,
     }
 
 
@@ -220,10 +248,29 @@ def _read_order_history(
     try:
         ledger_paths = _paper_ledger_paths(runtime_root)
         for ledger_path in ledger_paths:
-            raw = json.loads(
-                ledger_path.read_text(encoding="utf-8"),
-                parse_constant=_reject_nonfinite_json,
-            )
+            relative_parts = ledger_path.relative_to(paper_root).parts
+            if ledger_path.name == "ledger.sqlite3":
+                if len(relative_parts) != 5 or relative_parts[0] != "epochs":
+                    raise _OrderHistoryDataError
+                execution_epoch = _data_variant_id(relative_parts[1])
+                if relative_parts[2] != "variants":
+                    raise _OrderHistoryDataError
+                ledger_variant = _data_variant_id(relative_parts[3])
+                repository = AppendOnlyLedgerRepository(
+                    ledger_path,
+                    execution_epoch=execution_epoch,
+                    variant_id=ledger_variant,
+                    read_only=True,
+                )
+                try:
+                    raw = repository.latest()
+                finally:
+                    repository.close()
+            else:
+                raw = json.loads(
+                    ledger_path.read_text(encoding="utf-8"),
+                    parse_constant=_reject_nonfinite_json,
+                )
             if not isinstance(raw, Mapping):
                 raise _OrderHistoryDataError
             schema_version = raw.get("schema_version")
@@ -237,7 +284,6 @@ def _read_order_history(
 
             ledger_variant = "legacy_paper"
             execution_epoch = "legacy_schema2"
-            relative_parts = ledger_path.relative_to(paper_root).parts
             if schema_version == 2:
                 if relative_parts != ("ledger.json",):
                     raise _OrderHistoryDataError
@@ -249,12 +295,15 @@ def _read_order_history(
             else:
                 ledger_variant = _data_variant_id(raw.get("variant_id"))
                 execution_epoch = _data_variant_id(raw.get("execution_epoch"))
+                ledger_filename = (
+                    "ledger.sqlite3" if ledger_path.name == "ledger.sqlite3" else "ledger.json"
+                )
                 if relative_parts != (
                     "epochs",
                     execution_epoch,
                     "variants",
                     ledger_variant,
-                    "ledger.json",
+                    ledger_filename,
                 ):
                     raise _OrderHistoryDataError
             variants.add(ledger_variant)
@@ -315,9 +364,10 @@ def _paper_ledger_paths(runtime_root: Path) -> list[Path]:
         for name in tuple(directory_names):
             if (current / name).is_symlink():
                 raise _OrderHistoryDataError
-        if "ledger.json" not in file_names:
+        ledger_name = "ledger.sqlite3" if "ledger.sqlite3" in file_names else "ledger.json"
+        if ledger_name not in file_names:
             continue
-        candidate = current / "ledger.json"
+        candidate = current / ledger_name
         if candidate.is_symlink() or not candidate.is_file():
             raise _OrderHistoryDataError
         resolved = candidate.resolve(strict=True)

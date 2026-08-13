@@ -1,5 +1,14 @@
 # BTC VPS 运行与迁移
 
+## Resource Boundary
+
+Never run `btc_data_archive audit` across the entire raw root while the 4 GB
+production collector is active. A 2026-08-13 full hash audit reached roughly
+800 MB RSS and caused the kernel OOM killer to restart the collector. Routine
+checks use the resource-limited incremental readiness service. Deep archive
+verification is an explicit low-traffic maintenance job after memory, swap and
+rollback state have been checked.
+
 ## Scope
 
 本文件定义当前 VPS 部署边界：运行 BTC 15m 前瞻采集器、实时

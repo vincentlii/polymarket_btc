@@ -605,6 +605,37 @@ the input/output contract and operational commands.
   Hold/Sell-FAK/Pair-lock offline exit seams are implemented without silently
   replacing the deployed v1 artifact.
 
+## v10 Upgrade Status
+
+- [x] The research path materializes causal dual-token, Binance Spot/Perpetual,
+  OKX Spot/Swap and cross-venue features and runs cumulative factor ablations.
+- [x] Three independent stage models learn a residual around `q_pm`; paired
+  market/day/week lower bounds cover log loss, Brier and cost-after-execution
+  opportunity EV.
+- [x] Development tuning is capped at five Logistic and 64 LightGBM candidates
+  per stage, ranked by median fold execution score with an actual Bonferroni
+  gate and a unique-market leaf audit.
+- [x] Hold, Sell-FAK and opposite-token lock replay support visible-depth
+  partial fills, VWAP, official fee math and immutable evidence receipts.
+- [ ] The current operator-supplied ladder exit replay is non-promotable; a
+  raw-derived full-depth producer with session/part lineage remains required.
+- [x] Paper ledgers use append-only SQLite/WAL while preserving legacy epochs as
+  read-only migration evidence.
+- [x] Rule-contract fingerprints are bound to catalog, raw session/part,
+  readiness, artifact and Paper epoch identity.
+- [ ] A market-relative artifact remains blocked until enough independent
+  eligible markets, a full-depth exit receipt and sealed OOS evidence satisfy
+  the promotion contract.
+- [ ] Production deployment and one clean post-release market rotation must be
+  recorded before v10 is called operationally complete.
+
+On 2026-08-13, a manual whole-archive hash audit on the 4 GB VPS triggered the
+Linux OOM killer and restarted the collector container. The collector recovered
+automatically, but this confirmed that archive-wide audits must never run in
+the collector process or release path. v10 therefore uses a resource-limited,
+incremental per-market readiness service; deep archive audits remain an
+explicit low-traffic maintenance operation.
+
 - The v2 implementation is isolated from the VPS `2d1be` release and uses the
   new `paper-v4-stage-aware-taker-v2` epoch.
 

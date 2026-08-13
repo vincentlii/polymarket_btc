@@ -16,6 +16,7 @@ import numpy as np
 
 from btc_short_horizon.config import BtcProjectConfig
 from btc_short_horizon.data import MarketWindow
+from btc_short_horizon.data.rule_contract import rule_contract_sha256
 from btc_short_horizon.data.collector import RawCollectorEvent
 from btc_short_horizon.data.forward import AdmittedEventBuffer
 from btc_short_horizon.execution_timing import CLOB_DELAYED_TAKER_SERVER_MS
@@ -329,6 +330,7 @@ def build_research_paper_portfolio(
                     research_identity={
                         **getattr(predictor, "ledger_model_identity", {}),
                         "market_rule_epoch": project.rule_epoch,
+                        "rule_contract_sha256": rule_contract_sha256(project.rule_epoch),
                         "model_rule_epoch": project.model_rule_epoch,
                         "variant": asdict(variant),
                         "execution": asdict(scenario),

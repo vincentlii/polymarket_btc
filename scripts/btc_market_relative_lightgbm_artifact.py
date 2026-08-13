@@ -20,6 +20,7 @@ else:
 ensure_repo_root(__file__)
 
 from btc_short_horizon.data.catalog_io import read_market_catalog  # noqa: E402
+from btc_short_horizon.data.rule_contract import rule_contract_sha256  # noqa: E402
 from btc_short_horizon.models.artifacts import ModelArtifactMetadata  # noqa: E402
 from btc_short_horizon.models.market_relative import (  # noqa: E402
     market_relative_runtime_feature_schema,
@@ -43,6 +44,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--end-before", required=True)
     parser.add_argument("--output-directory", type=Path, required=True)
     parser.add_argument("--model-id", required=True)
+    parser.add_argument("--rule-epoch", required=True)
     parser.add_argument("--maximum-pair-age-seconds", type=float, default=1.0)
     parser.add_argument("--probability-uncertainty-radius", type=float, default=0.03)
     parser.add_argument("--minimum-markets-per-leaf", type=int, default=100)
@@ -131,7 +133,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         code_revision=_code_revision(),
         config={
             "opening_model_family": "market_relative_lightgbm_v1",
-            "rule_epoch": "chainlink-btc-usd-point-v1",
+            "rule_epoch": args.rule_epoch,
+            "rule_contract_sha256": rule_contract_sha256(args.rule_epoch),
             "paper_experiment_only": True,
             "runtime_promotion_eligible": False,
             "sealed_holdout_evaluated": False,

@@ -12,14 +12,81 @@ from btc_short_horizon.research.opening_features import (
     ForwardFeatureStateEvent,
     _feature_event_sort_key,
     build_forward_opening_feature_observations,
+    _okx_state_events,
 )
-from btc_short_horizon.research.opening_evidence import RawPayloadError
+from btc_short_horizon.research.opening_evidence import ForwardRawEvent, RawPayloadError
 
 
 T0 = datetime(2026, 4, 13, tzinfo=UTC)
 UP_TOKEN = "up-token"
 DOWN_TOKEN = "down-token"
 INGEST_VERSION = "btc-short-horizon-v2"
+
+
+def test_okx_raw_trades_and_books_rebuild_causal_feature_state() -> None:
+    base = int(T0.timestamp() * 1_000_000_000)
+
+    def event(event_type: str, payload: dict[str, object], offset: int) -> ForwardRawEvent:
+        return ForwardRawEvent(
+            path=Path("okx.parquet"),
+            row_index=offset,
+            source_ts_ns=base + offset,
+            collector_receive_ts_ns=base + offset,
+            available_ts_ns=base + offset,
+            sequence_or_hash=str(offset),
+            source="okx_spot",
+            instrument="BTC-USDT",
+            schema_version="test",
+            ingest_version=INGEST_VERSION,
+            event_type=event_type,
+            collector_session_id="session",
+            epoch_id=0,
+            admission_sequence=offset,
+            payload=payload,
+        )
+
+    events, gaps = _okx_state_events(
+        (
+            event(
+                "books_snapshot",
+                {
+                    "data": [
+                        {
+                            "ts": str(int(T0.timestamp() * 1000)),
+                            "seqId": 1,
+                            "prevSeqId": -1,
+                            "bids": [["100", "2", "0", "1"]],
+                            "asks": [["101", "1", "0", "1"]],
+                        }
+                    ]
+                },
+                1,
+            ),
+            event(
+                "trade",
+                {
+                    "data": [
+                        {
+                            "instId": "BTC-USDT",
+                            "ts": str(int(T0.timestamp() * 1000)),
+                            "tradeId": "7",
+                            "side": "buy",
+                            "px": "100.5",
+                            "sz": "0.1",
+                        }
+                    ]
+                },
+                2,
+            ),
+        ),
+        source="okx_spot",
+        instrument="BTC-USDT",
+    )
+
+    assert gaps == 0
+    assert len(events) == 2
+    assert events[0].value.bid == 100.0  # type: ignore[union-attr]
+    assert events[1].value.price == 100.5  # type: ignore[union-attr]
 
 
 def _market() -> MarketWindow:

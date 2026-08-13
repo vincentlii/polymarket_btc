@@ -6,6 +6,7 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from hashlib import sha256
 import json
 from math import isfinite
 import os
@@ -34,6 +35,7 @@ from btc_short_horizon.live.dashboard_state import (
     StrategyCycle,
     StrategyStage,
 )
+from btc_short_horizon.live.append_only_ledger import AppendOnlyLedgerRepository
 from btc_short_horizon.live.direction_health import DirectionEvidenceStore
 from btc_short_horizon.live.gateway import PaperOrderGateway
 from btc_short_horizon.live.paper_execution import (
@@ -452,6 +454,7 @@ class PaperLedgerStore:
             / variant_id
             / "ledger.json"
         )
+        self.database_path = self.path.with_name("ledger.sqlite3")
 
     def write(self, snapshot: PaperLedgerSnapshot) -> Path:
         payload = {
@@ -467,25 +470,47 @@ class PaperLedgerStore:
             "records": [record.to_json() for record in snapshot.records],
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_name(f".{self.path.name}.{uuid4().hex}.tmp")
-        encoded = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        repository = AppendOnlyLedgerRepository(
+            self.database_path,
+            execution_epoch=self.execution_epoch,
+            variant_id=self.variant_id,
+        )
         try:
-            with temporary.open("xb") as handle:
-                handle.write(encoded)
-                handle.flush()
-                os.fsync(handle.fileno())
-            temporary.replace(self.path)
+            if repository.revision_count() == 0 and self.path.is_file():
+                legacy_bytes = self.path.read_bytes()
+                legacy = json.loads(legacy_bytes)
+                if not isinstance(legacy, Mapping):
+                    raise ValueError("invalid Research Paper ledger JSON")
+                repository.append_snapshot(
+                    legacy,
+                    reason="legacy-json-migration",
+                    migration_source_sha256=sha256(legacy_bytes).hexdigest(),
+                )
+            repository.append_snapshot(payload)
         finally:
-            temporary.unlink(missing_ok=True)
-        return self.path
+            repository.close()
+        return self.database_path
 
     def read(self) -> PaperLedgerSnapshot | None:
-        try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return None
-        except json.JSONDecodeError as exc:
-            raise ValueError("invalid Research Paper ledger JSON") from exc
+        if self.database_path.is_file():
+            repository = AppendOnlyLedgerRepository(
+                self.database_path,
+                execution_epoch=self.execution_epoch,
+                variant_id=self.variant_id,
+            )
+            try:
+                raw = repository.latest()
+            finally:
+                repository.close()
+            if raw is None:
+                return None
+        else:
+            try:
+                raw = json.loads(self.path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                return None
+            except json.JSONDecodeError as exc:
+                raise ValueError("invalid Research Paper ledger JSON") from exc
         if not isinstance(raw, Mapping) or raw.get("schema_version") not in {4, 5, 6}:
             raise ValueError("unsupported Research Paper ledger schema")
         if raw.get("execution_epoch") != self.execution_epoch:

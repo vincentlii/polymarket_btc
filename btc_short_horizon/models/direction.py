@@ -394,7 +394,7 @@ def _fit_calibrator(
             None,
         )
     if method == "auto":
-        candidates: tuple[tuple[str, _Calibrator], ...] = (
+        candidate_list: list[tuple[str, _Calibrator]] = [
             ("identity", _IdentityCalibrator()),
             (
                 "sigmoid",
@@ -413,12 +413,28 @@ def _fit_calibrator(
                     sample_weights=sample_weights,
                 ),
             ),
-        )
+            (
+                "temperature",
+                _fit_temperature_calibrator(
+                    raw_probabilities=raw_probabilities,
+                    labels=labels,
+                    sample_weights=sample_weights,
+                    grid=temperature_grid,
+                ),
+            ),
+        ]
+        if (
+            independent_sample_count is not None
+            and independent_sample_count >= min_isotonic_calibration_samples
+        ):
+            estimator = IsotonicRegression(out_of_bounds="clip")
+            estimator.fit(raw_probabilities, labels, sample_weight=sample_weights)
+            candidate_list.append(("isotonic", _IsotonicCalibrator(estimator=estimator)))
         return _choose_guarded_calibrator(
             raw_probabilities=raw_probabilities,
             labels=labels,
             sample_weights=sample_weights,
-            candidates=candidates,
+            candidates=tuple(candidate_list),
         )
     if method == "temperature":
         return (

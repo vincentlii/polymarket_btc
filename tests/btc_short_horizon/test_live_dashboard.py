@@ -24,6 +24,7 @@ from btc_short_horizon.live.dashboard_state import (
     StrategyCycle,
     StrategyStage,
 )
+from btc_short_horizon.live.append_only_ledger import AppendOnlyLedgerRepository
 from btc_short_horizon.live.runtime import RuntimeControl, RuntimeStatus, RuntimeStatusStore
 
 
@@ -687,6 +688,33 @@ def test_dashboard_order_history_paginates_filters_and_redacts_ledgers(tmp_path)
         server.shutdown()
         worker.join(timeout=2)
         server.server_close()
+
+
+def test_dashboard_reads_authoritative_sqlite_ledger_without_writing(tmp_path) -> None:
+    path = tmp_path / "paper" / "epochs" / "paper-v9" / "variants" / "primary" / "ledger.sqlite3"
+    store = AppendOnlyLedgerRepository(path, execution_epoch="paper-v9", variant_id="primary")
+    store.append_snapshot(
+        {
+            "schema_version": 6,
+            "execution_epoch": "paper-v9",
+            "variant_id": "primary",
+            "starting_balance": 100.0,
+            "research_identity": {},
+            "records": [
+                _paper_record(
+                    "sqlite-order",
+                    int(_now().timestamp() * 1_000_000_000),
+                    schema_version=4,
+                    variant_id="primary",
+                )
+            ],
+        }
+    )
+    before = {item.name: item.stat().st_size for item in path.parent.iterdir()}
+    payload = build_order_history_payload(DashboardConfig(runtime_root=tmp_path), limit=10)
+    assert payload["items"][0]["order_id"] == "sqlite-order"
+    assert {item.name: item.stat().st_size for item in path.parent.iterdir()} == before
+    store.close()
 
 
 def test_v6_current_snapshot_excludes_rollback_variants_while_history_is_read_only(

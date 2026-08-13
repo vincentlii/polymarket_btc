@@ -13,6 +13,7 @@ from btc_short_horizon.data.binance import (
     normalize_binance_trade,
 )
 from btc_short_horizon.data.rtds import normalize_chainlink_btc_usd
+from btc_short_horizon.data.okx import OkxBookSynchronizer, normalize_okx_trade
 from btc_short_horizon.features import (
     BtcBookTop,
     BtcReferencePrice,
@@ -29,7 +30,7 @@ from btc_short_horizon.research.opening_evidence import (
 
 
 _NANOS_PER_SECOND = 1_000_000_000
-_SUPPORTED_VENUE_SOURCES = ("binance_spot", "binance_perp")
+_SUPPORTED_VENUE_SOURCES = ("binance_spot", "binance_perp", "okx_spot", "okx_swap")
 _BTCUSDT = "BTCUSDT"
 _CHAINLINK_RAW_SOURCE = "polymarket_rtds_chainlink"
 _CHAINLINK_STATE_SOURCE = "chainlink"
@@ -146,7 +147,7 @@ def build_forward_opening_feature_observations(
         ingest_version=ingest_version,
     )
     venue_results = tuple(
-        _load_binance_feature_events(
+        (_load_okx_feature_events if source.startswith("okx_") else _load_binance_feature_events)(
             raw_data_root=raw_data_root,
             source=source,
             start_time=start_time,
@@ -330,6 +331,36 @@ def _load_binance_feature_events(
     )
 
 
+def _load_okx_feature_events(
+    *,
+    raw_data_root: Path,
+    source: str,
+    start_time: datetime,
+    end_time: datetime,
+    ingest_version: str,
+) -> tuple[tuple[ForwardFeatureStateEvent, ...], ForwardFeatureSourceSummary]:
+    instrument = "BTC-USDT" if source == "okx_spot" else "BTC-USDT-SWAP"
+    raw_load = load_forward_raw_events(
+        raw_data_root=raw_data_root,
+        source=source,
+        instrument=instrument,
+        start_time=start_time,
+        end_time=end_time,
+        ingest_version=ingest_version,
+    )
+    events, gap_count = _okx_state_events(raw_load.events, source=source, instrument=instrument)
+    return (
+        events,
+        ForwardFeatureSourceSummary(
+            raw_source=source,
+            raw_part_count=raw_load.raw_part_count,
+            raw_row_count=raw_load.raw_row_count,
+            state_event_count=len(events),
+            gap_event_count=gap_count,
+        ),
+    )
+
+
 def _chainlink_state_events(
     raw_events: Sequence[ForwardRawEvent],
 ) -> tuple[tuple[ForwardFeatureStateEvent, ...], int]:
@@ -483,6 +514,134 @@ def _binance_state_events(
                     value=book,
                 )
             )
+        elif raw.event_type == "partial_depth_snapshot":
+            try:
+                bids = message.get("bids", message.get("b"))
+                asks = message.get("asks", message.get("a"))
+                if not isinstance(bids, list) or not bids or not isinstance(asks, list) or not asks:
+                    raise ValueError("partial depth requires non-empty bids and asks")
+                bid = bids[0]
+                ask = asks[0]
+                if (
+                    not isinstance(bid, list)
+                    or len(bid) < 2
+                    or not isinstance(ask, list)
+                    or len(ask) < 2
+                ):
+                    raise ValueError("partial depth BBO levels are malformed")
+                book = BtcBookTop(
+                    source_ts_ns=raw.source_ts_ns,
+                    available_ts_ns=raw.available_ts_ns,
+                    bid=float(bid[0]),
+                    ask=float(ask[0]),
+                    bid_size=float(bid[1]),
+                    ask_size=float(ask[1]),
+                    source=source,
+                    instrument=_BTCUSDT,
+                )
+            except (TypeError, ValueError) as exc:
+                raise _raw_normalization_error(raw, exc) from exc
+            events.append(
+                _value_event(
+                    raw,
+                    state_source=source,
+                    state_instrument=_BTCUSDT,
+                    value=book,
+                )
+            )
+    return tuple(events), gap_count
+
+
+def _okx_state_events(
+    raw_events: Sequence[ForwardRawEvent], *, source: str, instrument: str
+) -> tuple[tuple[ForwardFeatureStateEvent, ...], int]:
+    events: list[ForwardFeatureStateEvent] = []
+    synchronizer = OkxBookSynchronizer(instrument=instrument, source=source)
+    current_epochs: dict[str, tuple[str, int]] = {}
+    completed_epochs: dict[str, set[tuple[str, int]]] = {}
+    gap_count = 0
+    for raw in raw_events:
+        if raw.event_type == "continuity_gap":
+            stream = _continuity_gap_stream_id(raw)
+            if stream not in {"trade", "book"}:
+                continue
+            synchronizer.reset()
+            gap_count += 1
+            events.append(_gap_event(raw, state_source=source, state_instrument=instrument))
+            continue
+        stream = (
+            "trade"
+            if raw.event_type == "trade"
+            else "book"
+            if raw.event_type.startswith("books_")
+            else None
+        )
+        if stream is None:
+            continue
+        gap_before, epoch = _advance_epoch(
+            raw=raw,
+            current_epoch=current_epochs.get(stream),
+            completed_epochs=completed_epochs.setdefault(stream, set()),
+        )
+        current_epochs[stream] = epoch
+        if gap_before:
+            synchronizer.reset()
+            gap_count += 1
+            events.append(_gap_event(raw, state_source=source, state_instrument=instrument))
+        data = raw.payload.get("data")
+        if not isinstance(data, list) or len(data) != 1 or not isinstance(data[0], dict):
+            raise RawPayloadError(f"invalid OKX envelope at {raw.path}:{raw.row_index}")
+        item = data[0]
+        if stream == "trade":
+            try:
+                trade = normalize_okx_trade(
+                    item,
+                    collector_receive_ts=_collector_receive_time(raw),
+                    source=source,
+                ).trade
+            except ValueError as exc:
+                raise _raw_normalization_error(raw, exc) from exc
+            events.append(
+                _value_event(
+                    raw,
+                    state_source=source,
+                    state_instrument=instrument,
+                    value=replace(
+                        trade,
+                        source_ts_ns=raw.source_ts_ns,
+                        available_ts_ns=raw.available_ts_ns,
+                    ),
+                )
+            )
+            continue
+        action = raw.event_type.removeprefix("books_")
+        normalized = dict(item)
+        if action == "snapshot" and "prevSeqId" not in normalized:
+            normalized["prevSeqId"] = -1
+        try:
+            applied = synchronizer.apply(
+                action=action,
+                payload=normalized,
+                collector_receive_ts=_collector_receive_time(raw),
+            )
+        except ValueError as exc:
+            raise _raw_normalization_error(raw, exc) from exc
+        if applied.status.value == "gap":
+            gap_count += 1
+            events.append(_gap_event(raw, state_source=source, state_instrument=instrument))
+        elif applied.book_top is not None:
+            events.append(
+                _value_event(
+                    raw,
+                    state_source=source,
+                    state_instrument=instrument,
+                    value=replace(
+                        applied.book_top,
+                        source_ts_ns=raw.source_ts_ns,
+                        available_ts_ns=raw.available_ts_ns,
+                    ),
+                )
+            )
     return tuple(events), gap_count
 
 
@@ -491,6 +650,8 @@ def _binance_feature_stream_id(event_type: str) -> str | None:
         return "trade"
     if event_type == "book_ticker":
         return "book_ticker"
+    if event_type == "partial_depth_snapshot":
+        return "partial_depth"
     return None
 
 

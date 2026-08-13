@@ -34,6 +34,8 @@ from btc_short_horizon.data.collector import (
     normalize_collector_session_id,
 )
 from btc_short_horizon.data.contracts import TimedMarketEvent
+from btc_short_horizon.data.coverage_index import SessionCoverageIndex
+from btc_short_horizon.data.disk_pressure import supervise_optional_feed
 from btc_short_horizon.data.okx import (
     OkxBookSynchronizer,
     normalize_okx_book_update,
@@ -237,6 +239,7 @@ class BtcForwardCollector:
         polymarket_source_timestamp_regression_tolerance_seconds: float = 1.0,
         okx_instruments_url: str = _OKX_PUBLIC_INSTRUMENTS_URL,
         okx_swap_contract_value: float | None = None,
+        rule_contract_sha256: str | None = None,
     ) -> None:
         token_ids = tuple(token_id.strip() for token_id in polymarket_token_ids if token_id.strip())
         if not token_ids:
@@ -361,6 +364,7 @@ class BtcForwardCollector:
         for item in subscription_windows:
             self._polymarket_window_queue.put_nowait(item)
         self._ingress_lock: asyncio.Lock | None = None
+        self.rule_contract_sha256 = rule_contract_sha256
         self._session_inventory, self._writer = self._start_storage_session()
         source_regression_tolerance = timedelta(
             seconds=polymarket_source_timestamp_regression_tolerance_seconds
@@ -396,6 +400,7 @@ class BtcForwardCollector:
             ("polymarket_rtds_chainlink_twap_60s", "btc/usd", _TWAP_60S_STREAM)
         )
         self._last_feed_event_at: dict[_QualityStreamKey, datetime] = {}
+        self._optional_feeds_enabled: asyncio.Event | None = None
         self._next_admission_sequence = 0
         self._lock = RLock()
         self._flush_lock = Lock()
@@ -420,6 +425,11 @@ class BtcForwardCollector:
                 ],
                 separators=(",", ":"),
             ),
+            **(
+                {}
+                if self.rule_contract_sha256 is None
+                else {"rule_contract_sha256": self.rule_contract_sha256}
+            ),
         }
 
     def _start_storage_session(
@@ -438,6 +448,11 @@ class BtcForwardCollector:
                     ".17g",
                 ),
                 SESSION_INVENTORY_MANIFEST_ATTRIBUTE: SESSION_INVENTORY_SCHEMA_VERSION,
+                **(
+                    {}
+                    if self.rule_contract_sha256 is None
+                    else {"rule_contract_sha256": self.rule_contract_sha256}
+                ),
             },
             inventory=inventory,
         )
@@ -526,7 +541,7 @@ class BtcForwardCollector:
                     task.cancel()
             await asyncio.gather(completion_task, stop_task, return_exceptions=True)
 
-    async def rotate_storage_session(self, *, epoch_id_offset: int) -> None:
+    async def rotate_storage_session(self, *, epoch_id_offset: int) -> str:
         """Rotate durable inventory at a market boundary without closing public sockets."""
 
         if (
@@ -540,11 +555,19 @@ class BtcForwardCollector:
             raise RuntimeError("collector must be running before its storage session can rotate")
         async with ingress_lock:
             await self._flush_async()
+            closed_session_id = self.collector_session_id
             self._session_inventory.complete()
+            repository = SessionInventoryRepository(self.raw_data_root)
+            coverage = SessionCoverageIndex(self.raw_data_root)
+            coverage.append(
+                repository.read_session(closed_session_id),
+                inventory_path=repository.inventory_path(closed_session_id),
+            )
             self.epoch_id_offset = epoch_id_offset
             self.collector_session_id = normalize_collector_session_id(uuid4().hex)
             self._next_admission_sequence = 0
             self._session_inventory, self._writer = self._start_storage_session()
+            return closed_session_id
 
     def _retire_polymarket_subscription_window(
         self,
@@ -668,6 +691,44 @@ class BtcForwardCollector:
                 ("polymarket_clob", token_id, _MARKET_STREAM) for token_id in required
             )
 
+    async def record_optional_feed_boundary(self, source: str, *, reason: str) -> None:
+        """Persist a continuity boundary and discard stale L2 state before reconnect."""
+        if source not in {"binance_perp", "okx_spot", "okx_swap"}:
+            raise ValueError("optional feed boundary source is unsupported")
+        ingress_lock = self._ingress_lock
+        if ingress_lock is None:
+            return
+        async with ingress_lock:
+            now = datetime.now(UTC)
+            with self._lock:
+                keys = tuple(key for key in self._required_feed_keys if key[0] == source)
+                for key in keys:
+                    _, instrument, stream_id = key
+                    validator = self._validators.get(key) or EventQualityValidator()
+                    event = self._new_gap_event(
+                        source=source,
+                        instrument=instrument,
+                        stream_id=stream_id,
+                        reason=reason,
+                        observed_at=now,
+                        previous_available_ts=self._last_feed_event_at.get(key),
+                    )
+                    self._ensure_capacity_locked((event,))
+                    self._commit_gap_event_locked(
+                        event=event,
+                        validator=validator,
+                        stream_id=stream_id,
+                        reason=reason,
+                    )
+                if source == "binance_perp":
+                    self._binance_depth = {
+                        key: value for key, value in self._binance_depth.items() if key[0] != source
+                    }
+                else:
+                    self._okx_books = {
+                        key: value for key, value in self._okx_books.items() if key[0] != source
+                    }
+
     def feed_health(self, *, now: datetime, stale_after_seconds: float) -> RequiredFeedHealth:
         if not isfinite(stale_after_seconds) or stale_after_seconds <= 0.0:
             raise ValueError("stale_after_seconds must be finite and > 0")
@@ -682,6 +743,22 @@ class BtcForwardCollector:
         reasons: list[str] = []
         for key in required:
             source, instrument, stream_id = key
+            if (
+                self._optional_feeds_enabled is not None
+                and not self._optional_feeds_enabled.is_set()
+                and source in {"binance_perp", "okx_spot", "okx_swap"}
+            ):
+                feeds.append(
+                    {
+                        "key": f"{source}:{instrument}:{stream_id}",
+                        "source": source,
+                        "instrument": instrument,
+                        "stream_id": stream_id,
+                        "state": "degraded",
+                        "reason": "disk_pressure_optional_feed_disabled",
+                    }
+                )
+                continue
             last_event = last_events.get(key)
             age_seconds = (
                 None if last_event is None else (current_time - last_event).total_seconds()
@@ -1919,6 +1996,7 @@ class BtcForwardCollector:
         binance_futures_market_streams: Sequence[str] = DEFAULT_BINANCE_FUTURES_MARKET_STREAMS,
         binance_futures_public_streams: Sequence[str] = DEFAULT_BINANCE_FUTURES_PUBLIC_STREAMS,
         okx_subscriptions: Sequence[Mapping[str, str]] = DEFAULT_OKX_SUBSCRIPTIONS,
+        optional_feeds_enabled: asyncio.Event | None = None,
     ) -> None:
         """Run BTC public subscriptions until stopped, flushing outside socket callbacks."""
 
@@ -1956,6 +2034,10 @@ class BtcForwardCollector:
         futures_market_stream_ids = _binance_stream_ids(futures_market_stream_names)
         futures_public_stream_ids = _binance_stream_ids(futures_public_stream_names)
         normalized_okx_subscriptions = tuple(dict(item) for item in okx_subscriptions)
+        optional_enabled = optional_feeds_enabled or asyncio.Event()
+        if optional_feeds_enabled is None:
+            optional_enabled.set()
+        self._optional_feeds_enabled = optional_enabled
         resync_tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
         resync_failures: asyncio.Queue[Exception] = asyncio.Queue()
         okx_metadata_task: asyncio.Task[None] | None = None
@@ -2423,11 +2505,12 @@ class BtcForwardCollector:
                         )
                     )
             if futures_market_stream_names:
-                collectors.append(
-                    JsonWebSocketCollector(
+
+                async def run_optional_futures(local_stop: asyncio.Event) -> None:
+                    await JsonWebSocketCollector(
                         binance_futures_market_stream_subscription(futures_market_stream_names)
                     ).collect_forever(
-                        stop_event=stop_event,
+                        stop_event=local_stop,
                         on_payload=on_binance("binance_perp"),
                         on_error=on_binance_error(
                             "binance_perp",
@@ -2436,21 +2519,29 @@ class BtcForwardCollector:
                             futures_market_stream_ids,
                         ),
                     )
+
+                collectors.append(
+                    supervise_optional_feed(
+                        stop_event=stop_event,
+                        enabled_event=optional_enabled,
+                        run_once=run_optional_futures,
+                    )
                 )
             if futures_public_stream_names:
-                futures_public_collector = JsonWebSocketCollector(
-                    binance_futures_public_stream_subscription(futures_public_stream_names)
-                )
                 futures_public_error = on_binance_error(
                     "binance_perp",
                     futures_public_instruments,
                     futures_depth_instruments,
                     futures_public_stream_ids,
                 )
-                if futures_depth_instruments:
-                    collectors.append(
-                        futures_public_collector.collect_forever(
-                            stop_event=stop_event,
+
+                async def run_optional_futures_public(local_stop: asyncio.Event) -> None:
+                    collector = JsonWebSocketCollector(
+                        binance_futures_public_stream_subscription(futures_public_stream_names)
+                    )
+                    if futures_depth_instruments:
+                        await collector.collect_forever(
+                            stop_event=local_stop,
                             on_payload=on_binance("binance_perp"),
                             on_error=futures_public_error,
                             on_connected=on_binance_connected(
@@ -2458,23 +2549,46 @@ class BtcForwardCollector:
                                 futures_depth_instruments,
                             ),
                         )
-                    )
-                else:
-                    collectors.append(
-                        futures_public_collector.collect_forever(
-                            stop_event=stop_event,
+                    else:
+                        await collector.collect_forever(
+                            stop_event=local_stop,
                             on_payload=on_binance("binance_perp"),
                             on_error=futures_public_error,
                         )
-                    )
-            if normalized_okx_subscriptions:
+
                 collectors.append(
-                    JsonWebSocketCollector(
+                    supervise_optional_feed(
+                        stop_event=stop_event,
+                        enabled_event=optional_enabled,
+                        run_once=run_optional_futures_public,
+                        on_disabled=lambda: self.record_optional_feed_boundary(
+                            "binance_perp", reason="disk_pressure_optional_feed_disabled"
+                        ),
+                        on_recovered=lambda: self.record_optional_feed_boundary(
+                            "binance_perp", reason="disk_pressure_optional_feed_recovered"
+                        ),
+                    )
+                )
+            if normalized_okx_subscriptions:
+
+                async def run_optional_okx(local_stop: asyncio.Event) -> None:
+                    await JsonWebSocketCollector(
                         okx_public_subscription(tuple(normalized_okx_subscriptions))
                     ).collect_forever(
+                        stop_event=local_stop, on_payload=on_okx, on_error=on_okx_error
+                    )
+
+                collectors.append(
+                    supervise_optional_feed(
                         stop_event=stop_event,
-                        on_payload=on_okx,
-                        on_error=on_okx_error,
+                        enabled_event=optional_enabled,
+                        run_once=run_optional_okx,
+                        on_disabled=lambda: _record_okx_boundaries(
+                            self, "disk_pressure_optional_feed_disabled"
+                        ),
+                        on_recovered=lambda: _record_okx_boundaries(
+                            self, "disk_pressure_optional_feed_recovered"
+                        ),
                     )
                 )
             feed_tasks = tuple(
@@ -3359,6 +3473,11 @@ def _add_quality_counts(
         previous_duplicates + duplicate_count,
         previous_gaps + gap_count,
     )
+
+
+async def _record_okx_boundaries(collector: BtcForwardCollector, reason: str) -> None:
+    await collector.record_optional_feed_boundary("okx_spot", reason=reason)
+    await collector.record_optional_feed_boundary("okx_swap", reason=reason)
 
 
 __all__ = [

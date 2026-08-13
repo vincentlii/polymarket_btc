@@ -8,6 +8,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+import json
 from math import isfinite
 from pathlib import Path
 
@@ -33,9 +34,15 @@ from btc_short_horizon.data.forward import (  # noqa: E402
 )
 from btc_short_horizon.data.gamma import GammaMarketClient  # noqa: E402
 from btc_short_horizon.data.market_catalog import MarketCatalog  # noqa: E402
+from btc_short_horizon.data.readiness import register_readiness_candidate  # noqa: E402
+from btc_short_horizon.data.coverage_index import SessionCoverageIndex  # noqa: E402
+from btc_short_horizon.data.rule_contract import rule_contract_sha256  # noqa: E402
 from btc_short_horizon.data.session_inventory import (  # noqa: E402
     CollectorStorageLease,
     SessionInventoryRepository,
+)
+from btc_short_horizon.research.opening_proxy import (  # noqa: E402
+    opening_proxy_decision_offsets_ms,
 )
 
 
@@ -54,6 +61,7 @@ class WindowCollectorSettings:
     polymarket_subscription_windows: tuple[PolymarketSubscriptionWindow, ...]
     ingest_version: str
     epoch_id_offset: int
+    rule_contract_sha256: str
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -281,6 +289,7 @@ async def _collect_with_storage_lease(
             polymarket_capture_lead_seconds=polymarket_capture_lead_seconds,
             opening_handoff_delay_seconds=opening_handoff_delay_seconds,
             stop_event=asyncio.Event(),
+            **_readiness_protocol(config),
         )
         return
     collector = build_collector(args, config=config)
@@ -327,6 +336,12 @@ async def collect_current_market_windows(
     | None = None,
     on_market_active: Callable[[MarketWindow, MarketWindow | None, BtcForwardCollector], None]
     | None = None,
+    readiness_decision_offsets_seconds: tuple[int, ...],
+    readiness_protocol_sha256: str,
+    readiness_max_feature_lookback_seconds: int,
+    readiness_required_sources: tuple[str, ...],
+    optional_feeds_enabled: asyncio.Event | None = None,
+    extended_capture_enabled: asyncio.Event | None = None,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> None:
     """Keep BTC feeds continuous while bounding each current/next CLOB connection."""
@@ -388,11 +403,16 @@ async def collect_current_market_windows(
                     (lookahead.up_token_id, lookahead.down_token_id),
                 )
             markets = (market,) if lookahead is None else (market, lookahead)
+            capture_seconds = (
+                opening_handoff_delay_seconds
+                if extended_capture_enabled is None or extended_capture_enabled.is_set()
+                else min(opening_handoff_delay_seconds, 180.0)
+            )
             subscription_windows = tuple(
                 PolymarketSubscriptionWindow(
                     token_ids=(item.up_token_id, item.down_token_id),
                     start=item.t0 - timedelta(seconds=polymarket_capture_lead_seconds),
-                    end=item.t0 + timedelta(seconds=opening_handoff_delay_seconds),
+                    end=item.t0 + timedelta(seconds=capture_seconds),
                 )
                 for item in markets
             )
@@ -420,6 +440,7 @@ async def collect_current_market_windows(
                         polymarket_subscription_windows=subscription_windows,
                         ingest_version=ingest_version,
                         epoch_id_offset=int(market.t0.timestamp()),
+                        rule_contract_sha256=rule_contract_sha256(rule_epoch),
                     ),
                 )
                 if on_market_active is not None:
@@ -431,6 +452,7 @@ async def collect_current_market_windows(
                         binance_futures_market_streams=binance_futures_market_streams,
                         binance_futures_public_streams=binance_futures_public_streams,
                         okx_subscriptions=okx_subscriptions,
+                        optional_feeds_enabled=optional_feeds_enabled,
                     ),
                     name="btc-forward-continuous",
                 )
@@ -461,7 +483,47 @@ async def collect_current_market_windows(
                 timeout_seconds=shutdown_flush_timeout_seconds,
             ):
                 break
-            await collector.rotate_storage_session(epoch_id_offset=int(market.t1.timestamp()))
+            closed_session_id = await collector.rotate_storage_session(
+                epoch_id_offset=int(market.t1.timestamp())
+            )
+            try:
+                evidence_sessions = SessionCoverageIndex(raw_data_root).coverage_evidence(
+                    start_ns=int(market.t0.timestamp() * 1_000_000_000)
+                    - readiness_max_feature_lookback_seconds * 1_000_000_000,
+                    end_ns=int(market.t0.timestamp() * 1_000_000_000)
+                    + readiness_decision_offsets_seconds[-1] * 1_000_000_000,
+                    required_sources=readiness_required_sources,
+                )
+                coverage_error = None
+            except ValueError as exc:
+                evidence_sessions = ()
+                coverage_error = str(exc)
+            try:
+                exit_evidence_sessions = SessionCoverageIndex(raw_data_root).coverage_evidence(
+                    start_ns=int(market.t0.timestamp() * 1_000_000_000),
+                    end_ns=int(market.t1.timestamp() * 1_000_000_000),
+                    required_sources=("polymarket_clob",),
+                )
+                exit_coverage_error = None
+            except ValueError as exc:
+                exit_evidence_sessions = ()
+                exit_coverage_error = str(exc)
+            register_readiness_candidate(
+                root=raw_data_root,
+                market=market,
+                ingest_version=ingest_version,
+                collector_session_id=closed_session_id,
+                evidence_sessions=evidence_sessions,
+                coverage_error=coverage_error,
+                exit_evidence_sessions=exit_evidence_sessions,
+                exit_coverage_error=exit_coverage_error,
+                exit_collection_policy=(
+                    "extended_t0_plus_900" if capture_seconds >= 900 else "core_t0_plus_180"
+                ),
+                catalog_path=catalog_path,
+                decision_offsets_seconds=readiness_decision_offsets_seconds,
+                protocol_sha256=readiness_protocol_sha256,
+            )
             await _wait_for_market_rotation(
                 stop_event=stop_event,
                 worker=worker,
@@ -480,6 +542,39 @@ def current_market_slug(family: BtcMarketFamily, now: datetime) -> str:
     epoch_seconds = int(current_time.timestamp())
     window_start = epoch_seconds - epoch_seconds % family.window_seconds
     return family.slug_for(datetime.fromtimestamp(window_start, UTC))
+
+
+def _readiness_protocol(config: BtcProjectConfig) -> dict[str, object]:
+    timing = config.research_timing
+    offsets_ms = opening_proxy_decision_offsets_ms(
+        cadence_ms=timing.model_cadence_ms,
+        entry_start_seconds=timing.entry_start_seconds,
+        entry_end_seconds=timing.entry_end_seconds,
+    )
+    offsets = tuple(value // 1_000 for value in offsets_ms)
+    required_sources = ["polymarket_clob", "polymarket_rtds_chainlink"]
+    collection = config.collection
+    if collection.binance_spot_streams:
+        required_sources.append("binance_spot")
+    if collection.binance_futures_market_streams or collection.binance_futures_public_streams:
+        required_sources.append("binance_perp")
+    if any(not item.instrument.endswith("-SWAP") for item in collection.okx_subscriptions):
+        required_sources.append("okx_spot")
+    if any(item.instrument.endswith("-SWAP") for item in collection.okx_subscriptions):
+        required_sources.append("okx_swap")
+    protocol = {
+        "decision_offsets_ms": offsets_ms,
+        "max_feature_lookback_seconds": timing.max_feature_lookback_seconds,
+        "required_sources": required_sources,
+        "ingest_version": collection.ingest_version,
+    }
+    payload = json.dumps(protocol, sort_keys=True, separators=(",", ":"))
+    return {
+        "readiness_decision_offsets_seconds": offsets,
+        "readiness_protocol_sha256": sha256(payload.encode()).hexdigest(),
+        "readiness_max_feature_lookback_seconds": timing.max_feature_lookback_seconds,
+        "readiness_required_sources": tuple(required_sources),
+    }
 
 
 def next_market_slug(family: BtcMarketFamily, now: datetime) -> str:
@@ -576,6 +671,7 @@ def _build_window_collector(
         polymarket_source_timestamp_regression_tolerance_seconds=(
             settings.polymarket_source_timestamp_regression_tolerance_seconds
         ),
+        rule_contract_sha256=settings.rule_contract_sha256,
     )
 
 

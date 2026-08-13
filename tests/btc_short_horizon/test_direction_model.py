@@ -304,11 +304,17 @@ def test_auto_calibration_persists_candidate_scores_and_selected_method(
     )
 
     assert model.calibration_selection is not None
-    assert model.calibration_selection.selected_method in {"identity", "sigmoid", "beta"}
+    assert model.calibration_selection.selected_method in {
+        "identity",
+        "sigmoid",
+        "beta",
+        "temperature",
+    }
     assert {item.method for item in model.calibration_selection.candidates} == {
         "identity",
         "sigmoid",
         "beta",
+        "temperature",
     }
 
 

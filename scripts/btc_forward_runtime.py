@@ -21,7 +21,7 @@ ensure_repo_root(__file__)
 
 from btc_short_horizon.config import BtcProjectConfig, load_btc_project_config  # noqa: E402
 from btc_short_horizon.data import BtcForwardCollector, MarketWindow  # noqa: E402
-from btc_short_horizon.data.disk_pressure import DiskPressureState  # noqa: E402
+from btc_short_horizon.data.disk_pressure import DiskFeedSupervisor  # noqa: E402
 from btc_short_horizon.data.forward import (  # noqa: E402
     AdmittedEventBuffer,
 )
@@ -41,6 +41,7 @@ from btc_short_horizon.live.runtime import (  # noqa: E402
     filesystem_usage,
 )
 from scripts.btc_forward_collector import (  # noqa: E402
+    _readiness_protocol,
     collect_current_market_windows,
     current_market_slug,
 )
@@ -306,13 +307,7 @@ async def run_async(args: argparse.Namespace) -> None:
             return True, "feed_startup_grace"
         if active is None:
             return False, "market_discovery_silent"
-        raw_usage = filesystem_usage(project.paths.raw_data_root)
-        free_gib = float(raw_usage["free_bytes"]) / (1024.0**3)
-        if (
-            project.collection.disk_protection.evaluate_free_gib(free_gib)
-            is DiskPressureState.SUSPEND_EXTENDED_CAPTURE
-        ):
-            return False, "disk_free_space_below_extended_capture_reserve"
+        # Disk pressure degrades optional/extended evidence but never restarts core feeds.
         _refresh_required_clob_feeds(
             active,
             now=datetime.now(UTC),
@@ -439,6 +434,27 @@ async def run_async(args: argparse.Namespace) -> None:
             )
         )
         try:
+            optional_feeds_enabled = asyncio.Event()
+            optional_feeds_enabled.set()
+            extended_capture_enabled = asyncio.Event()
+            extended_capture_enabled.set()
+            disk_supervisor = DiskFeedSupervisor(project.collection.disk_protection)
+
+            async def supervise_disk_feeds() -> None:
+                while not stop_event.is_set():
+                    free_bytes = filesystem_usage(project.paths.raw_data_root)["free_bytes"]
+                    disk_supervisor.update(float(free_bytes) / (1024.0**3))
+                    if disk_supervisor.optional_feeds_enabled:
+                        optional_feeds_enabled.set()
+                    else:
+                        optional_feeds_enabled.clear()
+                    if disk_supervisor.state.value == "suspend_extended_capture":
+                        extended_capture_enabled.clear()
+                    else:
+                        extended_capture_enabled.set()
+                    await asyncio.sleep(5.0)
+
+            disk_task = asyncio.create_task(supervise_disk_feeds(), name="btc-disk-feed-supervisor")
             await collect_current_market_windows(
                 family=project.primary_family,
                 rule_epoch=args.rule_epoch,
@@ -486,8 +502,14 @@ async def run_async(args: argparse.Namespace) -> None:
                 opening_handoff_delay_seconds=opening_handoff_delay_seconds,
                 stop_event=stop_event,
                 on_market_active=on_market_active,
+                **_readiness_protocol(project),
+                optional_feeds_enabled=optional_feeds_enabled,
+                extended_capture_enabled=extended_capture_enabled,
             )
         finally:
+            if "disk_task" in locals():
+                disk_task.cancel()
+                await asyncio.gather(disk_task, return_exceptions=True)
             if paper_task is not None:
                 if not stop_event.is_set():
                     stop_event.set()

@@ -1063,3 +1063,53 @@ Recognized resolution epochs expose a stable `rule_contract_sha256` derived
 from normalized source, sampling, comparison and schema rules. It is distinct
 from the immutable per-market `rule_hash`. Market-relative v2 has a separate
 dual-token book feature schema and cannot silently replace a v1 artifact.
+
+## v10 Research And Operations Contracts
+
+Market-relative v2 is trained as three independent residual models. Each model
+learns `g(x)` around the causally synchronized Polymarket anchor
+`logit(q_pm)`, and every OOF comparison uses that same `q_pm` rather than a
+constant 0.5 baseline. Probability quality is evaluated with paired log loss
+and Brier score. The trading objective uses the selected token's executable
+ask, visible size, the versioned fee rule and configured costs. Only actual
+opportunities enter net-EV confidence bounds; abstentions cannot narrow them.
+
+Uncertainty is market-first. Snapshot rows are aggregated within each market
+before market, UTC-day and UTC-week block resampling. Promotion requires all
+three stages, all configured lower-bound gates, independent-market LightGBM
+leaf audits, the exact rule-contract fingerprint and a separate sealed-holdout
+receipt. BBO execution evidence remains a research proxy until the full-depth
+exit replay validates partial fills, VWAP and fees.
+The current exit CLI consumes operator-supplied ladders and is explicitly
+non-promotable. Publication fails closed until a raw-derived full-depth
+producer with verifiable session/part lineage exists.
+
+Development selection is bounded to five Logistic and 64 LightGBM candidates
+per stage. Candidates reuse the same walk-forward folds, rank on median
+fold-level cost-after-execution EV, and LightGBM may replace Logistic only when
+all log-loss, Brier and net-EV tests pass the Bonferroni-adjusted familywise
+threshold. The selection receipt, the three selected config hashes and a
+passing full-depth exit-replay receipt are mandatory publication lineage.
+
+Forward collection writes a persistent, incremental session-coverage index at
+session close. A separate resource-limited readiness service validates closed
+markets without scanning the whole archive or sharing the collector process.
+It reports model-feature readiness through the configured entry horizon and
+exit-replay readiness through the full capture horizon separately. Failed or
+missing evidence is a machine-readable No-Go, never silently repaired.
+Recorded source gaps, empty feeds and source bounds which do not span the
+required interval also fail closed even when a Parquet file exists.
+
+Disk protection never deletes raw evidence. It keeps Polymarket, Chainlink and
+Binance Spot core feeds running, sheds optional Binance Perpetual and OKX
+sockets with an explicit gap/epoch boundary, and shortens only future extended
+capture windows under critical pressure. Recovery resets book state and waits
+for a new snapshot before evidence becomes eligible again.
+
+Research Paper ledgers are normalized append-only SQLite databases in WAL mode.
+The immutable epoch header binds model hashes, variant/execution config,
+market-rule epoch and `rule_contract_sha256`; legacy JSON is a migration source,
+not an ongoing rewrite target. Releases use a full-SHA image tag and OCI label,
+transactionally update the compose environment, verify preflight, containers,
+runtime health and API identity, and restore both the previous environment and
+image if any post-deploy check fails.
