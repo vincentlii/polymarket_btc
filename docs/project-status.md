@@ -632,9 +632,9 @@ the input/output contract and operational commands.
   read-only migration evidence.
 - [x] Rule-contract fingerprints are bound to catalog, raw session/part,
   readiness, artifact and Paper epoch identity.
-- [x] A matching legacy v1 follow-current catalog is preserved by content hash
-  before fresh Gamma metadata regenerates the strict v2 catalog; conflicting
-  legacy metadata remains fail-closed.
+- [x] Legacy v1 and strict v2 follow-current catalogs use separate immutable
+  filenames. v10 never overwrites evidence that a v9 rollback still needs;
+  conflicting v2 metadata remains fail-closed.
 - [x] Immutable releases require the previously deployed Compose file as an
   explicit rollback artifact, so a failed topology-changing deployment
   restores both the prior image and its exact service set.
