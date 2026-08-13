@@ -33,6 +33,9 @@ def test_vps_compose_pins_identity_and_bounds_container_logs() -> None:
     assert "ENV PYTHONDONTWRITEBYTECODE=1" in dockerfile
     assert "BTC_CODE_REVISION=${BTC_CODE_REVISION}" in dockerfile
     assert "LABEL org.opencontainers.image.revision=${BTC_CODE_REVISION}" in dockerfile
+    assert dockerfile.index(
+        "RUN uv sync --locked --no-dev --no-install-project"
+    ) < dockerfile.index("ARG BTC_CODE_REVISION")
     assert "apt-get install --yes --no-install-recommends libgomp1" in dockerfile
     assert all(
         mount["type"] == "bind" and mount["bind"]["create_host_path"] is False
