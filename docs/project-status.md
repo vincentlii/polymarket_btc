@@ -1,6 +1,16 @@
 # Project Status
 
-## 2026-08-13 Paper dashboard and ledger correctness
+## 2026-08-13 v9 full-lifecycle Research Paper upgrade
+
+- Execution epoch `paper-v9-full-lifecycle-research` preserves v8 and all older
+  epochs as read-only history. It keeps exactly the Legacy and 2.0 one-signal
+  FAK variants and expands causal CLOB capture through market end.
+- Qualified-opportunity Edge is now distinct from rejected-candidate Edge;
+  tail quarantine, evidence target and the five-share execution cap are explicit.
+- Forward ingest v16 adds the lightweight Binance/OKX feeds, rule-contract
+  fingerprint and disk-pressure observability needed for the 28-day study.
+
+## 2026-08-13 Paper dashboard and ledger correctness (v8 history)
 
 - Research Paper now reports a distinct `paper` lifecycle stage. The dashboard
   renders a flat current-epoch equity line even before the first settlement and
@@ -582,6 +592,18 @@ the input/output contract and operational commands.
 - [x] PMXT timing output, source labels, and raw-hour progress reporting are clearer and better aligned with the actual runner behavior [PR#55](https://github.com/evan-kolberg/prediction-market-backtesting/pull/55), [PR#59](https://github.com/evan-kolberg/prediction-market-backtesting/pull/59), [PR#60](https://github.com/evan-kolberg/prediction-market-backtesting/pull/60)
 - [x] repo CI and docs validation now match the documented local gate, and PR docs builds validate without trying to deploy Pages [PR#58](https://github.com/evan-kolberg/prediction-market-backtesting/pull/58), [PR#64](https://github.com/evan-kolberg/prediction-market-backtesting/pull/64)
 # BTC Stage-Aware Taker Challenger v2
+
+## v9 Upgrade Status
+
+- [x] Qualified-opportunity Edge is separated from all evaluated candidates;
+  the 0.35 tail quarantine and Paper evidence target are explicit config.
+- [x] FAK may select a smaller positive-EV executable quantity, and disabled
+  variants are absent from the active baseline while historical ledgers remain.
+- [x] Forward ingest v16 freezes `t0-90s` through `t0+900s`, lightweight
+  Binance/OKX feeds, rule-contract fingerprints and disk protection thresholds.
+- [x] Dual-token v2 features, an independent-market LightGBM leaf gate and
+  Hold/Sell-FAK/Pair-lock offline exit seams are implemented without silently
+  replacing the deployed v1 artifact.
 
 - The v2 implementation is isolated from the VPS `2d1be` release and uses the
   new `paper-v4-stage-aware-taker-v2` epoch.

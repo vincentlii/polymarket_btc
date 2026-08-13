@@ -103,6 +103,7 @@ def evaluate_robust_executable_cost(
     limit_price: float | None = None
     outside_band = False
     remaining = requested_shares
+    candidates: list[RobustExecutableCost] = []
     for level in book.asks:
         if not minimum_price <= level.price <= maximum_price:
             outside_band = True
@@ -121,42 +122,61 @@ def evaluate_robust_executable_cost(
         fees += fee
         remaining -= quantity
         limit_price = level.price
+        if filled + 1e-12 >= book.minimum_order_size:
+            executable_vwap = notional / filled
+            fee_per_share = fees / filled
+            gross_edge = robust_fair - executable_vwap
+            robust_net_edge = gross_edge - fee_per_share - slippage_stress - latency_stress
+            if notional + fees > available_balance + 1e-12:
+                reason = RobustTakerRejection.INSUFFICIENT_BALANCE
+            elif robust_net_edge + 1e-12 < minimum_net_edge:
+                reason = RobustTakerRejection.EDGE_BELOW_THRESHOLD
+            else:
+                reason = RobustTakerRejection.SELECTED
+            candidates.append(
+                RobustExecutableCost(
+                    side=normalized_side,
+                    requested_shares=requested_shares,
+                    executable_shares=filled,
+                    point_fair=point_fair,
+                    robust_fair=robust_fair,
+                    executable_vwap=executable_vwap,
+                    fee_per_share=fee_per_share,
+                    slippage_stress=slippage_stress,
+                    latency_stress=latency_stress,
+                    gross_edge=gross_edge,
+                    robust_net_edge=robust_net_edge,
+                    limit_price=limit_price,
+                    filled_notional=notional,
+                    taker_fees=fees,
+                    reason=reason,
+                )
+            )
         if remaining <= 1e-12:
             break
+    eligible = tuple(item for item in candidates if item.reason is RobustTakerRejection.SELECTED)
+    if eligible:
+        return max(
+            eligible,
+            key=lambda item: (
+                (item.robust_net_edge or 0.0) * item.executable_shares,
+                -item.executable_shares,
+            ),
+        )
+    if candidates:
+        return max(
+            candidates,
+            key=lambda item: (
+                float("-inf") if item.robust_net_edge is None else item.robust_net_edge,
+                -item.executable_shares,
+            ),
+        )
     if outside_band:
         reason = RobustTakerRejection.OUTSIDE_PRICE_BAND
-    elif remaining > 1e-12:
-        reason = RobustTakerRejection.INSUFFICIENT_DEPTH
-    elif filled + 1e-12 < book.minimum_order_size:
+    elif filled > 0.0:
         reason = RobustTakerRejection.BELOW_MINIMUM_SIZE
     else:
-        executable_vwap = notional / filled
-        fee_per_share = fees / filled
-        gross_edge = robust_fair - executable_vwap
-        robust_net_edge = gross_edge - fee_per_share - slippage_stress - latency_stress
-        if notional + fees > available_balance + 1e-12:
-            reason = RobustTakerRejection.INSUFFICIENT_BALANCE
-        elif robust_net_edge + 1e-12 < minimum_net_edge:
-            reason = RobustTakerRejection.EDGE_BELOW_THRESHOLD
-        else:
-            reason = RobustTakerRejection.SELECTED
-        return RobustExecutableCost(
-            side=normalized_side,
-            requested_shares=requested_shares,
-            executable_shares=filled,
-            point_fair=point_fair,
-            robust_fair=robust_fair,
-            executable_vwap=executable_vwap,
-            fee_per_share=fee_per_share,
-            slippage_stress=slippage_stress,
-            latency_stress=latency_stress,
-            gross_edge=gross_edge,
-            robust_net_edge=robust_net_edge,
-            limit_price=limit_price,
-            filled_notional=notional,
-            taker_fees=fees,
-            reason=reason,
-        )
+        reason = RobustTakerRejection.INSUFFICIENT_DEPTH
     return RobustExecutableCost(
         side=normalized_side,
         requested_shares=requested_shares,
@@ -249,6 +269,11 @@ class OneSignalTakerPolicy:
         selected = max(
             eligible,
             key=lambda item: (
+                (
+                    item.robust_net_edge * item.executable_shares
+                    if item.robust_net_edge is not None
+                    else float("-inf")
+                ),
                 item.robust_net_edge if item.robust_net_edge is not None else float("-inf"),
                 1 if item.side is TokenSide.UP else 0,
             ),

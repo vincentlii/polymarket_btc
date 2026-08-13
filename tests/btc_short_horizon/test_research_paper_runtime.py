@@ -295,6 +295,9 @@ def _engine(
             selected_variant.variant_id,
         ),
         starting_balance=starting_balance,
+        clob_capture_end_seconds=215.0,
+        tail_entry_price_threshold=0.35,
+        evidence_target_markets=300,
     )
 
 

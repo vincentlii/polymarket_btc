@@ -15,6 +15,7 @@ from prediction_market_extensions.backtesting._execution_config import (
 )
 
 from btc_short_horizon.data import BtcMarketFamily, MarketCollectionMode
+from btc_short_horizon.data.disk_pressure import DiskProtectionPolicy
 from btc_short_horizon.execution_timing import (
     CLOB_DELAYED_TAKER_SERVER_MS,
     paper_execution_lifecycle_tail_seconds,
@@ -46,6 +47,12 @@ class ResearchTimingConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class OkxPublicSubscriptionConfig:
+    channel: str
+    instrument: str
+
+
+@dataclass(frozen=True, slots=True)
 class ForwardCollectionConfig:
     flush_size: int
     flush_interval_seconds: float
@@ -60,6 +67,11 @@ class ForwardCollectionConfig:
     binance_depth_snapshot_retry_initial_seconds: float
     binance_depth_snapshot_retry_max_seconds: float
     polymarket_source_timestamp_regression_tolerance_seconds: float
+    binance_spot_streams: tuple[str, ...]
+    binance_futures_market_streams: tuple[str, ...]
+    binance_futures_public_streams: tuple[str, ...]
+    okx_subscriptions: tuple[OkxPublicSubscriptionConfig, ...]
+    disk_protection: DiskProtectionPolicy
     ingest_version: str
 
 
@@ -197,6 +209,12 @@ class PaperExecutionVariantConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class PaperResearchConfig:
+    tail_entry_price_threshold: float
+    evidence_target_markets: int
+
+
+@dataclass(frozen=True, slots=True)
 class BtcProjectConfig:
     paths: ProjectPaths
     primary_family: BtcMarketFamily
@@ -208,6 +226,7 @@ class BtcProjectConfig:
     model_rule_epoch: str
     allow_rule_epoch_transition_proxy: bool
     paper_execution_epoch: str
+    paper_research: PaperResearchConfig
     paper_execution_variants: tuple[PaperExecutionVariantConfig, ...]
     data_sources: tuple[str, ...]
     scenarios: tuple[ExecutionScenario, ...]
@@ -325,6 +344,17 @@ def load_btc_project_config(path: Path) -> BtcProjectConfig:
         raw.get("paper_execution_epoch"),
         "paper_execution_epoch",
     )
+    paper_research_section = _mapping(raw, "paper_research")
+    paper_research = PaperResearchConfig(
+        tail_entry_price_threshold=_probability_excluding_zero(
+            paper_research_section,
+            "tail_entry_price_threshold",
+        ),
+        evidence_target_markets=_positive_int(
+            paper_research_section,
+            "evidence_target_markets",
+        ),
+    )
     sources = _data_sources(root, raw)
     scenarios = tuple(_scenario(item) for item in _mapping_list(raw, "execution_scenarios"))
     if not scenarios:
@@ -377,6 +407,7 @@ def load_btc_project_config(path: Path) -> BtcProjectConfig:
         model_rule_epoch=model_rule_epoch,
         allow_rule_epoch_transition_proxy=allow_rule_epoch_transition_proxy,
         paper_execution_epoch=paper_execution_epoch,
+        paper_research=paper_research,
         paper_execution_variants=paper_variants,
         data_sources=sources,
         scenarios=scenarios,
@@ -561,6 +592,21 @@ def _forward_collection(section: Mapping[str, object]) -> ForwardCollectionConfi
             section,
             "polymarket_source_timestamp_regression_tolerance_seconds",
         ),
+        binance_spot_streams=_stream_names(section, "binance_spot_streams"),
+        binance_futures_market_streams=_stream_names(section, "binance_futures_market_streams"),
+        binance_futures_public_streams=_stream_names(section, "binance_futures_public_streams"),
+        okx_subscriptions=tuple(
+            OkxPublicSubscriptionConfig(
+                channel=_text(item, "channel"),
+                instrument=_text(item, "inst_id"),
+            )
+            for item in _mapping_list(section, "okx_subscriptions")
+        ),
+        disk_protection=DiskProtectionPolicy(
+            warning_free_gib=_positive_float(section, "disk_warning_free_gib"),
+            optional_feeds_free_gib=_positive_float(section, "disk_optional_feeds_free_gib"),
+            extended_capture_free_gib=_positive_float(section, "disk_extended_capture_free_gib"),
+        ),
         ingest_version=_text(section, "ingest_version"),
     )
     if config.max_pending_events < config.flush_size:
@@ -578,6 +624,20 @@ def _forward_collection(section: Mapping[str, object]) -> ForwardCollectionConfi
             "binance_depth_snapshot_retry_initial_seconds"
         )
     return config
+
+
+def _stream_names(section: Mapping[str, object], name: str) -> tuple[str, ...]:
+    value = section.get(name)
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{name} must be a non-empty array")
+    streams: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item or item.strip() != item:
+            raise ValueError(f"{name} must contain non-empty stream names without whitespace")
+        streams.append(item)
+    if len(set(streams)) != len(streams):
+        raise ValueError(f"{name} must not contain duplicate stream names")
+    return tuple(streams)
 
 
 def _family(section: Mapping[str, object]) -> BtcMarketFamily:

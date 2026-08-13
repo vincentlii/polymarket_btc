@@ -21,11 +21,9 @@ ensure_repo_root(__file__)
 
 from btc_short_horizon.config import BtcProjectConfig, load_btc_project_config  # noqa: E402
 from btc_short_horizon.data import BtcForwardCollector, MarketWindow  # noqa: E402
+from btc_short_horizon.data.disk_pressure import DiskPressureState  # noqa: E402
 from btc_short_horizon.data.forward import (  # noqa: E402
     AdmittedEventBuffer,
-    DEFAULT_BINANCE_FUTURES_MARKET_STREAMS,
-    DEFAULT_BINANCE_FUTURES_PUBLIC_STREAMS,
-    DEFAULT_BINANCE_STREAMS,
 )
 from btc_short_horizon.data.session_inventory import (  # noqa: E402
     CollectorStorageLease,
@@ -229,12 +227,16 @@ async def run_async(args: argparse.Namespace) -> None:
     )
     active: _ActiveWindow | None = None
     started_at = datetime.now(UTC)
-    binance_streams = tuple(args.binance_stream or DEFAULT_BINANCE_STREAMS)
+    binance_streams = tuple(args.binance_stream or project.collection.binance_spot_streams)
     binance_futures_market_streams = tuple(
-        args.binance_futures_market_stream or DEFAULT_BINANCE_FUTURES_MARKET_STREAMS
+        args.binance_futures_market_stream or project.collection.binance_futures_market_streams
     )
     binance_futures_public_streams = tuple(
-        args.binance_futures_public_stream or DEFAULT_BINANCE_FUTURES_PUBLIC_STREAMS
+        args.binance_futures_public_stream or project.collection.binance_futures_public_streams
+    )
+    okx_subscriptions = tuple(
+        {"channel": item.channel, "instId": item.instrument}
+        for item in project.collection.okx_subscriptions
     )
     polymarket_capture_lead_seconds = (
         args.polymarket_capture_lead_seconds
@@ -285,6 +287,7 @@ async def run_async(args: argparse.Namespace) -> None:
             binance_streams=binance_streams,
             binance_futures_market_streams=binance_futures_market_streams,
             binance_futures_public_streams=binance_futures_public_streams,
+            okx_subscriptions=okx_subscriptions,
         )
         if paper_buffer is not None and paper_runtime is not None:
             if first_activation:
@@ -303,6 +306,13 @@ async def run_async(args: argparse.Namespace) -> None:
             return True, "feed_startup_grace"
         if active is None:
             return False, "market_discovery_silent"
+        raw_usage = filesystem_usage(project.paths.raw_data_root)
+        free_gib = float(raw_usage["free_bytes"]) / (1024.0**3)
+        if (
+            project.collection.disk_protection.evaluate_free_gib(free_gib)
+            is DiskPressureState.SUSPEND_EXTENDED_CAPTURE
+        ):
+            return False, "disk_free_space_below_extended_capture_reserve"
         _refresh_required_clob_feeds(
             active,
             now=datetime.now(UTC),
@@ -316,6 +326,9 @@ async def run_async(args: argparse.Namespace) -> None:
         return health.healthy, health.reason
 
     def status_details() -> dict[str, object]:
+        raw_usage = filesystem_usage(project.paths.raw_data_root)
+        free_gib = float(raw_usage["free_bytes"]) / (1024.0**3)
+        disk_pressure = project.collection.disk_protection.evaluate_free_gib(free_gib)
         details: dict[str, object] = {
             "family": project.primary_family.name,
             "ingest_version": project.collection.ingest_version,
@@ -323,8 +336,20 @@ async def run_async(args: argparse.Namespace) -> None:
             "identity": identity,
             "recovered_interrupted_sessions": list(recovered_interrupted_sessions),
             "storage": {
-                "raw_data": filesystem_usage(project.paths.raw_data_root),
+                "raw_data": raw_usage,
                 "runtime": filesystem_usage(runtime_root),
+            },
+            "disk_pressure": {
+                "state": disk_pressure.value,
+                "free_gib": free_gib,
+                "warning_free_gib": project.collection.disk_protection.warning_free_gib,
+                "optional_feeds_free_gib": (
+                    project.collection.disk_protection.optional_feeds_free_gib
+                ),
+                "extended_capture_free_gib": (
+                    project.collection.disk_protection.extended_capture_free_gib
+                ),
+                "automatic_deletion": False,
             },
         }
         if active is None:
@@ -451,6 +476,7 @@ async def run_async(args: argparse.Namespace) -> None:
                 binance_streams=binance_streams,
                 binance_futures_market_streams=binance_futures_market_streams,
                 binance_futures_public_streams=binance_futures_public_streams,
+                okx_subscriptions=okx_subscriptions,
                 rotation_poll_seconds=(
                     args.rotation_poll_seconds
                     if args.rotation_poll_seconds is not None

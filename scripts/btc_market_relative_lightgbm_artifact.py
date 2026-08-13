@@ -29,6 +29,7 @@ from btc_short_horizon.models.market_relative_artifacts import (  # noqa: E402
 )
 from btc_short_horizon.models.market_relative_lightgbm import (  # noqa: E402
     fit_market_relative_lightgbm,
+    require_minimum_leaf_unique_markets,
 )
 from btc_short_horizon.research.market_relative_shadow import (  # noqa: E402
     load_market_relative_shadow_dataset,
@@ -44,6 +45,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--model-id", required=True)
     parser.add_argument("--maximum-pair-age-seconds", type=float, default=1.0)
     parser.add_argument("--probability-uncertainty-radius", type=float, default=0.03)
+    parser.add_argument("--minimum-markets-per-leaf", type=int, default=100)
     return parser.parse_args(argv)
 
 
@@ -103,6 +105,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         train_weights=weights[train],
         validation_weights=weights[validation],
     )
+    minimum_leaf_markets = require_minimum_leaf_unique_markets(
+        leaf_indices=np.asarray(
+            model.booster.predict(
+                dataset.vectors[train],
+                pred_leaf=True,
+                num_iteration=model.booster.best_iteration,
+            )
+        ),
+        market_slugs=tuple(dataset.market_slugs[index] for index in train),
+        minimum_markets_per_leaf=args.minimum_markets_per_leaf,
+    )
     source_paths = [
         *args.market_catalog,
         *sorted(args.shadow_root.glob("*/predictions.parquet")),
@@ -129,6 +142,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "validation_market_count": len({dataset.market_slugs[index] for index in validation}),
             "validation_day": validation_day.isoformat(),
             "best_iteration": model.booster.best_iteration,
+            "minimum_leaf_unique_market_count": minimum_leaf_markets,
+            "minimum_markets_per_leaf_required": args.minimum_markets_per_leaf,
         },
     )
     saved = MarketRelativeArtifactStore.save(
@@ -144,6 +159,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "model_sha256": saved.model_sha256,
                 "eligible_markets": dataset.market_count,
                 "best_iteration": model.booster.best_iteration,
+                "minimum_leaf_unique_market_count": minimum_leaf_markets,
                 "paper_experiment_only": True,
             },
             sort_keys=True,

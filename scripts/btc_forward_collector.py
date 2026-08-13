@@ -28,9 +28,6 @@ from btc_short_horizon.data.contracts import (  # noqa: E402
     MarketWindow,
 )
 from btc_short_horizon.data.forward import (  # noqa: E402
-    DEFAULT_BINANCE_FUTURES_MARKET_STREAMS,
-    DEFAULT_BINANCE_FUTURES_PUBLIC_STREAMS,
-    DEFAULT_BINANCE_STREAMS,
     BtcForwardCollector,
     PolymarketSubscriptionWindow,
 )
@@ -225,12 +222,16 @@ async def _collect_with_storage_lease(
     *,
     config: BtcProjectConfig,
 ) -> None:
-    streams = tuple(args.binance_stream or DEFAULT_BINANCE_STREAMS)
+    streams = tuple(args.binance_stream or config.collection.binance_spot_streams)
     futures_market_streams = tuple(
-        args.binance_futures_market_stream or DEFAULT_BINANCE_FUTURES_MARKET_STREAMS
+        args.binance_futures_market_stream or config.collection.binance_futures_market_streams
     )
     futures_public_streams = tuple(
-        args.binance_futures_public_stream or DEFAULT_BINANCE_FUTURES_PUBLIC_STREAMS
+        args.binance_futures_public_stream or config.collection.binance_futures_public_streams
+    )
+    okx_subscriptions = tuple(
+        {"channel": item.channel, "instId": item.instrument}
+        for item in config.collection.okx_subscriptions
     )
     flush_size, flush_interval_seconds, rotation_poll_seconds = _collection_settings(args, config)
     if args.follow_current:
@@ -275,6 +276,7 @@ async def _collect_with_storage_lease(
             binance_streams=streams,
             binance_futures_market_streams=futures_market_streams,
             binance_futures_public_streams=futures_public_streams,
+            okx_subscriptions=okx_subscriptions,
             rotation_poll_seconds=rotation_poll_seconds,
             polymarket_capture_lead_seconds=polymarket_capture_lead_seconds,
             opening_handoff_delay_seconds=opening_handoff_delay_seconds,
@@ -288,6 +290,7 @@ async def _collect_with_storage_lease(
         binance_streams=streams,
         binance_futures_market_streams=futures_market_streams,
         binance_futures_public_streams=futures_public_streams,
+        okx_subscriptions=okx_subscriptions,
     )
 
 
@@ -315,6 +318,7 @@ async def collect_current_market_windows(
     polymarket_capture_lead_seconds: float,
     opening_handoff_delay_seconds: float,
     stop_event: asyncio.Event,
+    okx_subscriptions: Sequence[dict[str, str]] = (),
     gamma_client: GammaMarketClient | None = None,
     collector_factory: Callable[
         [Path, tuple[tuple[str, ...], ...], WindowCollectorSettings],
@@ -426,6 +430,7 @@ async def collect_current_market_windows(
                         binance_streams=binance_streams,
                         binance_futures_market_streams=binance_futures_market_streams,
                         binance_futures_public_streams=binance_futures_public_streams,
+                        okx_subscriptions=okx_subscriptions,
                     ),
                     name="btc-forward-continuous",
                 )

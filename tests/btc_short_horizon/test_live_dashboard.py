@@ -271,8 +271,9 @@ def test_dashboard_html_labels_research_paper_as_simulated_not_account_truth() -
     assert 'data-variant-filter="all" aria-pressed="false"' in html
     assert "variantView.filter==='all'" in html
     assert "filter(item=>item.enabled!==false)" in html
-    assert "平均 Gross edge" in html
-    assert "平均稳健 Net edge" in html
+    assert "合格机会 Gross edge" in html
+    assert "合格机会稳健 Net edge" in html
+    assert "全部候选 Gross / Net edge" in html
     assert "rejection_counts" in html
 
 

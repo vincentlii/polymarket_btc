@@ -534,6 +534,8 @@ class PaperEvaluationCounts:
     mean_slippage_stress: float | None = None
     mean_latency_stress: float | None = None
     mean_net_edge: float | None = None
+    candidate_mean_gross_edge: float | None = None
+    candidate_mean_net_edge: float | None = None
 
 
 class PaperEvaluationStore:
@@ -650,8 +652,12 @@ class PaperEvaluationStore:
                    SUM(CASE WHEN selected_side IS NOT NULL THEN 1 ELSE 0 END),
                    SUM(CASE WHEN selected_side = 'up' THEN 1 ELSE 0 END),
                    SUM(CASE WHEN selected_side = 'down' THEN 1 ELSE 0 END),
-                   AVG(gross_edge), AVG(fee_per_share), AVG(slippage_stress),
-                   AVG(latency_stress), AVG(net_edge)
+                   AVG(CASE WHEN selected_side IS NOT NULL THEN gross_edge END),
+                   AVG(CASE WHEN selected_side IS NOT NULL THEN fee_per_share END),
+                   AVG(CASE WHEN selected_side IS NOT NULL THEN slippage_stress END),
+                   AVG(CASE WHEN selected_side IS NOT NULL THEN latency_stress END),
+                   AVG(CASE WHEN selected_side IS NOT NULL THEN net_edge END),
+                   AVG(gross_edge), AVG(net_edge)
             FROM evaluations GROUP BY variant_id
             """
         )
@@ -677,6 +683,8 @@ class PaperEvaluationStore:
                 None if mean_slippage is None else float(mean_slippage),
                 None if mean_latency is None else float(mean_latency),
                 None if mean_net is None else float(mean_net),
+                None if candidate_mean_gross is None else float(candidate_mean_gross),
+                None if candidate_mean_net is None else float(candidate_mean_net),
             )
             for (
                 variant_id,
@@ -689,6 +697,8 @@ class PaperEvaluationStore:
                 mean_slippage,
                 mean_latency,
                 mean_net,
+                candidate_mean_gross,
+                candidate_mean_net,
             ) in rows
         }
 
@@ -828,7 +838,9 @@ class ResearchPaperEngine:
         starting_balance: float,
         kline_history: BinanceKlineHistory | None = None,
         stage_policy: StagePolicyConfig | None = None,
-        clob_capture_end_seconds: float = 215.0,
+        clob_capture_end_seconds: float,
+        tail_entry_price_threshold: float,
+        evidence_target_markets: int,
         dashboard_primary_model_id: str | None = None,
         dashboard_dependency_model_id: str | None = None,
     ) -> None:
@@ -847,7 +859,17 @@ class ResearchPaperEngine:
         self.stage_policy = stage_policy or StagePolicyConfig.default()
         if not isfinite(clob_capture_end_seconds) or clob_capture_end_seconds <= 0.0:
             raise ValueError("clob_capture_end_seconds must be finite and > 0")
+        if not 0.0 < tail_entry_price_threshold < 1.0:
+            raise ValueError("tail_entry_price_threshold must satisfy 0 < value < 1")
+        if (
+            isinstance(evidence_target_markets, bool)
+            or not isinstance(evidence_target_markets, int)
+            or evidence_target_markets <= 0
+        ):
+            raise ValueError("evidence_target_markets must be an integer > 0")
         self.clob_capture_end_seconds = clob_capture_end_seconds
+        self.tail_entry_price_threshold = tail_entry_price_threshold
+        self.evidence_target_markets = evidence_target_markets
         restored = ledger_store.read()
         if restored is not None and abs(restored.starting_balance - starting_balance) > 1e-9:
             raise ValueError("configured Paper starting balance differs from persisted ledger")
@@ -1290,17 +1312,21 @@ class ResearchPaperEngine:
                     stage_rule.minimum_net_edge,
                 ),
                 available_balance=self._available_balance(),
-                minimum_price=max(0.35, stage_rule.minimum_price),
+                minimum_price=max(self.tail_entry_price_threshold, stage_rule.minimum_price),
                 maximum_price=stage_rule.maximum_price,
             )
             if not robust_decision.evaluations:
                 return robust_decision.reason.value
-            robust_candidate = max(
-                robust_decision.evaluations,
-                key=lambda item: (
-                    float("-inf") if item.robust_net_edge is None else item.robust_net_edge,
-                    1 if item.side is TokenSide.UP else 0,
-                ),
+            robust_candidate = (
+                robust_decision.plan.evaluation
+                if robust_decision.plan is not None
+                else max(
+                    robust_decision.evaluations,
+                    key=lambda item: (
+                        float("-inf") if item.robust_net_edge is None else item.robust_net_edge,
+                        1 if item.side is TokenSide.UP else 0,
+                    ),
+                )
             )
             evaluations = tuple(
                 TakerCandidateEvaluation(
@@ -1813,7 +1839,7 @@ class ResearchPaperEngine:
                 challenger_model_id=self.dashboard_dependency_model_id,
                 progress_label="已完成模拟市场",
                 progress_current=float(sum(item.realized_pnl is not None for item in self.records)),
-                progress_target=300.0,
+                progress_target=float(self.evidence_target_markets),
             ),
             performance=performance,
             health=(
@@ -2608,6 +2634,14 @@ class ResearchPaperPortfolio:
                     engine.variant.variant_id,
                     PaperEvaluationCounts(0, 0),
                 ).mean_net_edge,
+                candidate_mean_gross_edge=evaluation_counts.get(
+                    engine.variant.variant_id,
+                    PaperEvaluationCounts(0, 0),
+                ).candidate_mean_gross_edge,
+                candidate_mean_net_edge=evaluation_counts.get(
+                    engine.variant.variant_id,
+                    PaperEvaluationCounts(0, 0),
+                ).candidate_mean_net_edge,
                 direction_summaries=_direction_execution_performance(
                     engine.records,
                     evaluation_counts.get(

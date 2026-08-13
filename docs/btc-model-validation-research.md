@@ -117,6 +117,13 @@ probability-radius safety margin inside the artifact; the robust taker route
 must not subtract a second model-uncertainty margin. Legacy 1x5s runs in the
 same epoch as the control.
 
+Market-relative LightGBM publication fails closed unless every fitted leaf
+contains at least the configured number of independent markets; the default is
+100. `min_child_samples` is only an observation count. The artifact records the
+required and observed minima. A future replacement for the uniform Paper-only
+uncertainty radius must use OOF market units and UTC day/week blocks; snapshot
+bootstrap is not eligible for `p_lower`.
+
 ## 验收标准
 
 - 浮点/布尔/非有限标签无法进入训练。

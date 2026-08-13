@@ -101,6 +101,12 @@ sockets. CLI overrides are
 available for a deliberately bounded operator run; do not lower these defaults
 without measuring resulting evidence coverage.
 
+Research Paper risk policy is explicit under `[paper_research]`.
+`tail_entry_price_threshold` is a risk-quarantine boundary rather than an alpha
+claim, and `evidence_target_markets` drives the dashboard progress denominator.
+The runtime receives both values and the configured CLOB capture horizon
+explicitly; it has no hidden price, market-count, or capture-horizon fallback.
+
 `collection.ingest_version` is a mandatory reader/writer boundary for collector
 semantics. A behavior change that can alter causal reconstruction must use a
 new value; the market-evidence reader selects exactly that value and never
@@ -433,6 +439,13 @@ It permits a side below 50% when its robust fair value still exceeds executable
 cost, but rejects prices outside 0.35--0.80, insufficient depth, stale evidence
 and a second opportunity in the same market.
 
+Requested shares are a cap, not a fill requirement. The robust FAK planner
+evaluates cumulative executable ask prefixes and selects the qualifying prefix
+with the greatest conservative total expected value. A smaller immediately
+executable FAK is therefore valid when the full cap is unavailable or deeper
+prices would destroy edge; the venue may still partially fill the submitted
+size and cancels the remainder.
+
 The walk-forward protocol keeps every snapshot of one market in the same
 group. A train/calibration/test/holdout boundary may never split a market,
 because doing so would leak the shared final label across partitions. Each
@@ -692,22 +705,22 @@ revalued through `entry_end + max_work`; stale/gapped data, probability decay,
 rule changes and expiry request a simulated cancel, with fills still possible
 during the configured cancel latency.
 
-Execution epoch `paper-v8-dashboard-ledger-identity` enables exactly two
+Execution epoch `paper-v9-full-lifecycle-research` enables exactly two
 immediate-FAK variants:
 the one-signal `independent_fak_1x5s` legacy control and the one-signal
 `independent_fak_1x5s_2_0` challenger. They write isolated variant ledgers.
-It supersedes v7 without rewriting its ledgers and binds each active ledger to
+It supersedes v8 without rewriting its ledgers and binds each active ledger to
 the full model hashes, rule epochs, variant configuration and execution stress
 configuration. The 2.0 route is the Paper primary only and loads an artifact explicitly marked
 ineligible for Canary/live promotion; Legacy 1x5s runs simultaneously as its
 control. The artifact's 3-cent probability radius is the route's sole model-
-uncertainty deduction. Maker, 2x5, and 3x5 variants remain
-declared rollback/history code but are not instantiated by the current runtime,
-so they cannot receive events, freeze rules, or create current Paper evidence.
+uncertainty deduction. Maker, 2x5, and 3x5 variants are absent from the active
+baseline. Their old ledgers remain readable history, while generic execution
+primitives remain available to isolated replay research.
 
-The disabled market-end maker rollback path does not expand durable CLOB capture
-through all 15 minutes. Live trade evidence updates its queue only through
-`t0+215s`. Once Gamma reports the market resolved, Paper fetches public
+The v9 collector expands durable CLOB capture through all 15 minutes. The
+historical disabled market-end maker path remains read-only evidence. Once Gamma
+reports the market resolved, Paper may fetch public
 seller-initiated trades for the remaining interval from the Polymarket Data API,
 stores the immutable response projection, and applies the same 50% volume stress
 against the remaining queue. The query starts one whole second after the live
@@ -1036,3 +1049,17 @@ process. A malformed snapshot, schema mismatch, market-identity mismatch, or
 rules-hash mismatch remains fail-closed. Concurrent first activations retain
 the same atomic link creation boundary: the loser reads and validates the
 winner's snapshot rather than overwriting it.
+
+## v9 Upgrade Contracts
+
+Forward ingest v16 extends each BTC 15m dual-token CLOB window through
+`t0+900s` for pre-registered exit research. Baseline feature feeds explicitly
+include lightweight Binance Spot/Perpetual and OKX Spot/Swap depth and trades.
+These are model inputs, never substitutes for Polymarket execution evidence.
+Ordered disk thresholds protect the core collector; unverified raw evidence is
+never deleted automatically.
+
+Recognized resolution epochs expose a stable `rule_contract_sha256` derived
+from normalized source, sampling, comparison and schema rules. It is distinct
+from the immutable per-market `rule_hash`. Market-relative v2 has a separate
+dual-token book feature schema and cannot silently replace a v1 artifact.

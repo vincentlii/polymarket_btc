@@ -36,13 +36,19 @@ def test_baseline_config_is_path_relative_and_has_explicit_queue_scenarios() -> 
     assert config.collection.max_pending_events == 100_000
     assert config.collection.max_pending_bytes == 67_108_864
     assert config.collection.polymarket_capture_lead_seconds == 90.0
-    assert config.collection.opening_handoff_delay_seconds == 215.0
-    assert config.collection.ingest_version == "btc-short-horizon-v15"
+    assert config.collection.opening_handoff_delay_seconds == 900.0
+    assert config.paper_research.tail_entry_price_threshold == 0.35
+    assert config.paper_research.evidence_target_markets == 300
+    assert config.collection.ingest_version == "btc-short-horizon-v16"
     assert config.rule_epoch == "chainlink-btc-usd-twap-60s-v1"
     assert config.model_rule_epoch == "chainlink-btc-usd-point-v1"
     assert config.allow_rule_epoch_transition_proxy is True
-    assert config.paper_execution_epoch == "paper-v8-dashboard-ledger-identity"
+    assert config.paper_execution_epoch == "paper-v9-full-lifecycle-research"
     variants = {variant.variant_id: variant for variant in config.paper_execution_variants}
+    assert set(variants) == {
+        "independent_fak_1x5s",
+        "independent_fak_1x5s_2_0",
+    }
     assert [
         variant.variant_id for variant in config.paper_execution_variants if variant.enabled
     ] == [
@@ -59,14 +65,6 @@ def test_baseline_config_is_path_relative_and_has_explicit_queue_scenarios() -> 
     assert variants["independent_fak_1x5s_2_0"].opportunity_policy == "robust_independent_taker"
     assert variants["independent_fak_1x5s_2_0"].primary is True
     assert variants["independent_fak_1x5s_2_0"].model_uncertainty_buffer == 0.0
-    assert all(
-        not variants[variant_id].enabled and not variants[variant_id].primary
-        for variant_id in (
-            "independent_maker_1x5s_market_end",
-            "independent_fak_2x5s",
-            "independent_fak_stable_3x5s",
-        )
-    )
     assert [rule.stage.value for rule in config.stage_policy.rules] == [
         "early_3s_to_30s",
         "price_discovery_35s_to_90s",
@@ -126,7 +124,7 @@ def test_collection_window_covers_cancel_race_latency(tmp_path: Path) -> None:
     path = tmp_path / "short-capture.toml"
     path.write_text(
         baseline.replace(
-            "opening_handoff_delay_seconds = 215.0", "opening_handoff_delay_seconds = 180.0"
+            "opening_handoff_delay_seconds = 900.0", "opening_handoff_delay_seconds = 180.0"
         ),
         encoding="utf-8",
     )
@@ -135,27 +133,16 @@ def test_collection_window_covers_cancel_race_latency(tmp_path: Path) -> None:
         load_btc_project_config(path)
 
 
-def test_disabled_settlement_trades_maker_does_not_constrain_active_maker_structure(
-    tmp_path: Path,
-) -> None:
-    baseline = Path("configs/btc_short_horizon/baseline.toml").read_text(encoding="utf-8")
-    path = tmp_path / "disabled-settlement-maker.toml"
-    path.write_text(
-        baseline.replace('structure = "single"', 'structure = "two_level"', 1).replace(
-            "price_level_tick_offsets = [0]", "price_level_tick_offsets = [0, 1]", 1
-        ),
-        encoding="utf-8",
-    )
-
-    config = load_btc_project_config(path)
-
-    assert config.maker.structure.value == "two_level"
-
-
 def test_paper_execution_variant_ids_cannot_escape_the_ledger_root(tmp_path: Path) -> None:
     baseline = Path("configs/btc_short_horizon/baseline.toml").read_text(encoding="utf-8")
     path = tmp_path / "unsafe-variant.toml"
-    path.write_text(baseline.replace('id = "maker_15s"', 'id = "../maker_15s"'), encoding="utf-8")
+    path.write_text(
+        baseline.replace(
+            'id = "independent_fak_1x5s"',
+            'id = "../independent_fak_1x5s"',
+        ),
+        encoding="utf-8",
+    )
 
     with pytest.raises(ValueError, match="ASCII identifier"):
         load_btc_project_config(path)
@@ -166,7 +153,7 @@ def test_paper_execution_epoch_cannot_escape_the_ledger_root(tmp_path: Path) -> 
     path = tmp_path / "unsafe-epoch.toml"
     path.write_text(
         baseline.replace(
-            'paper_execution_epoch = "paper-v8-dashboard-ledger-identity"',
+            'paper_execution_epoch = "paper-v9-full-lifecycle-research"',
             'paper_execution_epoch = "../paper-v3-independent-fak"',
         ),
         encoding="utf-8",

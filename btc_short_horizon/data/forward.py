@@ -1429,7 +1429,7 @@ class BtcForwardCollector:
                 collector_receive_ts=collector_receive_ts,
                 source=source,
             )
-        if channel == "books":
+        if channel in {"books", "books5"}:
             action = payload.get("action")
             if not isinstance(action, str):
                 self._invalidate_okx_book_after_error(
@@ -3257,7 +3257,7 @@ def _binance_feed_keys(source: str, streams: Sequence[str]) -> set[_QualityStrea
 def _okx_stream_id(channel: object) -> str | None:
     if channel == "trades":
         return _TRADE_STREAM
-    if channel == "books":
+    if channel in {"books", "books5"}:
         return _BOOK_STREAM
     return None
 

@@ -527,6 +527,8 @@ class ExecutionVariantPerformance:
     mean_slippage_stress: float | None = None
     mean_latency_stress: float | None = None
     mean_net_edge: float | None = None
+    candidate_mean_gross_edge: float | None = None
+    candidate_mean_net_edge: float | None = None
     resolved_opportunity_count: int = 0
     core_resolved_opportunity_count: int = 0
     tail_resolved_opportunity_count: int = 0
@@ -593,6 +595,8 @@ class ExecutionVariantPerformance:
             "mean_slippage_stress",
             "mean_latency_stress",
             "mean_net_edge",
+            "candidate_mean_gross_edge",
+            "candidate_mean_net_edge",
         ):
             _optional_finite(getattr(self, name), name)
         object.__setattr__(self, "segment_summaries", tuple(self.segment_summaries))
@@ -621,6 +625,8 @@ class ExecutionVariantPerformance:
             "mean_slippage_stress": self.mean_slippage_stress,
             "mean_latency_stress": self.mean_latency_stress,
             "mean_net_edge": self.mean_net_edge,
+            "candidate_mean_gross_edge": self.candidate_mean_gross_edge,
+            "candidate_mean_net_edge": self.candidate_mean_net_edge,
             "starting_balance": self.starting_balance,
             "equity": self.equity,
             "realized_pnl": self.realized_pnl,
@@ -684,6 +690,12 @@ class ExecutionVariantPerformance:
                 value.get("mean_latency_stress"), "mean_latency_stress"
             ),
             mean_net_edge=_optional_float(value.get("mean_net_edge"), "mean_net_edge"),
+            candidate_mean_gross_edge=_optional_float(
+                value.get("candidate_mean_gross_edge"), "candidate_mean_gross_edge"
+            ),
+            candidate_mean_net_edge=_optional_float(
+                value.get("candidate_mean_net_edge"), "candidate_mean_net_edge"
+            ),
             resolved_opportunity_count=_integer(
                 value.get("resolved_opportunity_count", 0), "resolved_opportunity_count"
             ),

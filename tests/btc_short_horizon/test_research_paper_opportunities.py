@@ -52,6 +52,27 @@ def test_evaluation_store_is_incremental_idempotent_and_aggregated(tmp_path) -> 
     assert store.path.name == "evaluations.sqlite3"
 
 
+def test_evaluation_store_separates_qualified_edge_from_all_candidates(tmp_path) -> None:
+    store = PaperEvaluationStore(tmp_path, "paper-v5-stage-integrity")
+    selected = PaperEvaluationObservation(
+        **(_evaluation(selected=True, edge=0.04).to_json() | {"gross_edge": 0.09})
+    )
+    rejected = PaperEvaluationObservation(
+        **(
+            _evaluation(selected=False, edge=-0.05).to_json()
+            | {"evaluation_id": "market:105", "gross_edge": -0.02}
+        )
+    )
+    store.append((selected, rejected))
+
+    counts = store.counts_by_variant()[selected.variant_id]
+
+    assert counts.mean_gross_edge == pytest.approx(0.09)
+    assert counts.mean_net_edge == pytest.approx(0.04)
+    assert counts.candidate_mean_gross_edge == pytest.approx(0.035)
+    assert counts.candidate_mean_net_edge == pytest.approx(-0.005)
+
+
 def test_evaluation_store_fails_closed_for_identity_conflict(tmp_path) -> None:
     store = PaperEvaluationStore(tmp_path, "paper-v5-stage-integrity")
     store.append((_evaluation(),))

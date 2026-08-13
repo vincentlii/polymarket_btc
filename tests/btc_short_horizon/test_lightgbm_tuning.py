@@ -8,6 +8,7 @@ from btc_short_horizon.research.lightgbm_tuning import (
 from btc_short_horizon.models.market_relative_lightgbm import (
     fit_market_relative_lightgbm,
     minimum_leaf_unique_market_count,
+    require_minimum_leaf_unique_markets,
 )
 
 import numpy as np
@@ -58,6 +59,26 @@ def test_residual_leaf_audit_counts_unique_markets_not_snapshot_rows() -> None:
             market_slugs=("a", "a", "b", "c"),
         )
         == 1
+    )
+
+
+def test_artifact_leaf_gate_rejects_a_model_with_too_few_independent_markets() -> None:
+    leaves = np.asarray([[0], [0], [1], [1]])
+
+    with pytest.raises(ValueError, match="independent markets per leaf"):
+        require_minimum_leaf_unique_markets(
+            leaf_indices=leaves,
+            market_slugs=("m1", "m1", "m2", "m2"),
+            minimum_markets_per_leaf=2,
+        )
+
+    assert (
+        require_minimum_leaf_unique_markets(
+            leaf_indices=leaves,
+            market_slugs=("m1", "m2", "m3", "m4"),
+            minimum_markets_per_leaf=2,
+        )
+        == 2
     )
 
 

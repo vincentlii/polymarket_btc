@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from hashlib import sha256
+import json
 import re
 
 from btc_short_horizon.data.contracts import MarketValidationError
@@ -23,6 +25,34 @@ _TEXT_FIELDS = (
 _BTC_USD = re.compile(r"\bbtc\s*/\s*usd\b|\bbitcoin\b", re.IGNORECASE)
 _TWAP = re.compile(r"\btwap\b|time[- ]weighted average", re.IGNORECASE)
 _SIXTY_SECONDS = re.compile(r"\b60(?:[- ]?second|s)\b", re.IGNORECASE)
+
+_RULE_CONTRACTS: dict[str, dict[str, object]] = {
+    CHAINLINK_BTC_USD_POINT_V1: {
+        "schema_version": "btc-rule-contract-v1",
+        "reference": "BTC/USD",
+        "resolution_source": _POINT_SOURCE,
+        "sampling": {"kind": "point"},
+        "comparison": "end_gte_start_is_up",
+    },
+    CHAINLINK_BTC_USD_TWAP_60S_V1: {
+        "schema_version": "btc-rule-contract-v1",
+        "reference": "BTC/USD",
+        "resolution_source": _TWAP_60S_SOURCE,
+        "sampling": {"kind": "twap", "window_seconds": 60},
+        "comparison": "end_gte_start_is_up",
+    },
+}
+
+
+def rule_contract_sha256(rule_epoch: str) -> str:
+    """Return the stable resolution-contract fingerprint for one known epoch."""
+
+    try:
+        contract = _RULE_CONTRACTS[rule_epoch]
+    except KeyError as exc:
+        raise ValueError(f"unsupported BTC 15m rule epoch: {rule_epoch!r}") from exc
+    encoded = json.dumps(contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return sha256(encoded).hexdigest()
 
 
 def classify_btc_15m_rule_epoch(payload: Mapping[str, object]) -> str:

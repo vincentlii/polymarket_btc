@@ -1,13 +1,17 @@
 rule_epoch = "chainlink-btc-usd-twap-60s-v1"
 model_rule_epoch = "chainlink-btc-usd-point-v1"
 allow_rule_epoch_transition_proxy = true
-paper_execution_epoch = "paper-v8-dashboard-ledger-identity"
+paper_execution_epoch = "paper-v9-full-lifecycle-research"
 
 data_sources = [
   "local:../../data/pmxt_raw",
   "archive:r2v2.pmxt.dev",
   "archive:r2.pmxt.dev",
 ]
+
+[paper_research]
+tail_entry_price_threshold = 0.35
+evidence_target_markets = 300
 
 [paths]
 raw_data_root = "../../data/btc_short_horizon"
@@ -72,13 +76,29 @@ max_pending_events = 100000
 max_pending_bytes = 67108864
 rotation_poll_seconds = 2.0
 polymarket_capture_lead_seconds = 90.0
-opening_handoff_delay_seconds = 215.0
+opening_handoff_delay_seconds = 900.0
 binance_spot_depth_snapshot_limit = 1000
 binance_futures_depth_snapshot_limit = 1000
 binance_depth_snapshot_retry_initial_seconds = 0.5
 binance_depth_snapshot_retry_max_seconds = 30.0
 polymarket_source_timestamp_regression_tolerance_seconds = 1.0
-ingest_version = "btc-short-horizon-v15"
+binance_spot_streams = [
+  "btcusdt@kline_1s",
+  "btcusdt@aggTrade",
+  "btcusdt@depth20@100ms",
+]
+binance_futures_market_streams = ["btcusdt@aggTrade"]
+binance_futures_public_streams = ["btcusdt@depth20@100ms"]
+okx_subscriptions = [
+  { channel = "books5", inst_id = "BTC-USDT" },
+  { channel = "trades", inst_id = "BTC-USDT" },
+  { channel = "books5", inst_id = "BTC-USDT-SWAP" },
+  { channel = "trades", inst_id = "BTC-USDT-SWAP" },
+]
+disk_warning_free_gib = 20.0
+disk_optional_feeds_free_gib = 15.0
+disk_extended_capture_free_gib = 10.0
+ingest_version = "btc-short-horizon-v16"
 
 [maker]
 structure = "single"
@@ -96,51 +116,6 @@ cancel_probability_drop = 0.03
 max_visible_depth_fraction = 0.05
 price_level_tick_offsets = [0]
 improve_inside_spread = true
-
-[[paper_execution_variants]]
-id = "maker_15s"
-label = "Maker 15s"
-mode = "maker"
-maker_work_seconds = 15.0
-primary = false
-enabled = false
-minimum_taker_net_edge = 0.0
-slippage_buffer = 0.0
-model_uncertainty_buffer = 0.0
-opportunity_policy = "shared_maker"
-confirmation_policy = "side_only"
-confirmation_signals = 2
-maximum_edge_decay = 0.0
-
-[[paper_execution_variants]]
-id = "immediate_fak"
-label = "Immediate FAK"
-mode = "immediate_fak"
-maker_work_seconds = 0.0
-primary = false
-enabled = false
-minimum_taker_net_edge = 0.03
-slippage_buffer = 0.005
-model_uncertainty_buffer = 0.03
-opportunity_policy = "shared_maker"
-confirmation_policy = "side_only"
-confirmation_signals = 2
-maximum_edge_decay = 0.0
-
-[[paper_execution_variants]]
-id = "maker_5s_then_fak"
-label = "Maker 5s -> FAK"
-mode = "maker_then_fak"
-maker_work_seconds = 5.0
-primary = false
-enabled = false
-minimum_taker_net_edge = 0.03
-slippage_buffer = 0.005
-model_uncertainty_buffer = 0.03
-opportunity_policy = "shared_maker"
-confirmation_policy = "side_only"
-confirmation_signals = 2
-maximum_edge_decay = 0.0
 
 [[paper_execution_variants]]
 id = "independent_fak_1x5s"
@@ -171,53 +146,6 @@ opportunity_policy = "robust_independent_taker"
 confirmation_policy = "side_only"
 confirmation_signals = 1
 maximum_edge_decay = 0.0
-
-[[paper_execution_variants]]
-id = "independent_maker_1x5s_market_end"
-label = "Independent Maker 1x5s Market-End Control"
-mode = "maker"
-maker_work_seconds = 0.0
-maker_expiry_policy = "market_end"
-maker_fill_evidence_policy = "settlement_trades"
-primary = false
-enabled = false
-minimum_taker_net_edge = 0.03
-slippage_buffer = 0.005
-model_uncertainty_buffer = 0.03
-opportunity_policy = "independent_taker"
-confirmation_policy = "side_only"
-confirmation_signals = 1
-maximum_edge_decay = 0.0
-
-[[paper_execution_variants]]
-id = "independent_fak_2x5s"
-label = "Independent FAK 2x5s Main"
-mode = "immediate_fak"
-maker_work_seconds = 0.0
-primary = false
-enabled = false
-minimum_taker_net_edge = 0.03
-slippage_buffer = 0.005
-model_uncertainty_buffer = 0.03
-opportunity_policy = "independent_taker"
-confirmation_policy = "side_only"
-confirmation_signals = 2
-maximum_edge_decay = 0.0
-
-[[paper_execution_variants]]
-id = "independent_fak_stable_3x5s"
-label = "Independent FAK Stable 3x5s Control"
-mode = "immediate_fak"
-maker_work_seconds = 0.0
-primary = false
-enabled = false
-minimum_taker_net_edge = 0.03
-slippage_buffer = 0.005
-model_uncertainty_buffer = 0.03
-opportunity_policy = "independent_taker"
-confirmation_policy = "edge_stable"
-confirmation_signals = 3
-maximum_edge_decay = 0.01
 
 [[execution_scenarios]]
 name = "zero"

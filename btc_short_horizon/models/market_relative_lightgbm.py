@@ -165,6 +165,28 @@ def minimum_leaf_unique_market_count(
     return min(counts)
 
 
+def require_minimum_leaf_unique_markets(
+    *,
+    leaf_indices: np.ndarray,
+    market_slugs: Sequence[str],
+    minimum_markets_per_leaf: int,
+) -> int:
+    """Fail artifact publication when any fitted leaf lacks independent markets."""
+
+    if minimum_markets_per_leaf < 1:
+        raise ValueError("minimum_markets_per_leaf must be >= 1")
+    observed = minimum_leaf_unique_market_count(
+        leaf_indices=leaf_indices,
+        market_slugs=market_slugs,
+    )
+    if observed < minimum_markets_per_leaf:
+        raise ValueError(
+            "artifact requires at least "
+            f"{minimum_markets_per_leaf} independent markets per leaf; observed {observed}"
+        )
+    return observed
+
+
 def _matrix(values: np.ndarray) -> np.ndarray:
     matrix = np.asarray(values, dtype=float)
     if matrix.ndim != 2 or not len(matrix) or not np.isfinite(matrix).all():
@@ -211,4 +233,5 @@ __all__ = [
     "FittedMarketRelativeLightGBM",
     "fit_market_relative_lightgbm",
     "minimum_leaf_unique_market_count",
+    "require_minimum_leaf_unique_markets",
 ]

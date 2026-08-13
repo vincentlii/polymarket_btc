@@ -337,6 +337,8 @@ def build_research_paper_portfolio(
                 starting_balance=starting_balance,
                 stage_policy=stage_policy or project.stage_policy,
                 clob_capture_end_seconds=project.collection.opening_handoff_delay_seconds,
+                tail_entry_price_threshold=project.paper_research.tail_entry_price_threshold,
+                evidence_target_markets=project.paper_research.evidence_target_markets,
                 dashboard_primary_model_id=(
                     getattr(predictor, "market_relative_model_id", None)
                     if variant.opportunity_policy == "robust_independent_taker"

@@ -52,7 +52,7 @@ def test_forward_collector_cli_builds_btc_only_collector_from_explicit_token_ids
     assert collector.flush_size == 25
     assert collector.flush_interval_seconds == 60.0
     assert collector.shutdown_flush_timeout_seconds == 30.0
-    assert collector.ingest_version == "btc-short-horizon-v15"
+    assert collector.ingest_version == "btc-short-horizon-v16"
     assert collector.polymarket_source_timestamp_regression_tolerance_seconds == 1.0
     assert collector.max_pending_events == 100_000
     assert collector.max_pending_bytes == 67_108_864
@@ -163,6 +163,7 @@ def test_follow_current_rotates_from_exact_gamma_catalog_and_persists_metadata(t
             binance_streams=("btcusdt@trade",),
             binance_futures_market_streams=(),
             binance_futures_public_streams=("btcusdt@bookTicker",),
+            okx_subscriptions=({"channel": "books5", "instId": "BTC-USDT"},),
             rotation_poll_seconds=1.0,
             polymarket_capture_lead_seconds=90.0,
             opening_handoff_delay_seconds=60.0,
@@ -457,10 +458,12 @@ class _FakeWindowCollector:
         binance_streams: tuple[str, ...],
         binance_futures_market_streams: tuple[str, ...],
         binance_futures_public_streams: tuple[str, ...],
+        okx_subscriptions: tuple[dict[str, str], ...],
     ) -> None:
         assert binance_streams == ("btcusdt@trade",)
         assert binance_futures_market_streams == ()
         assert binance_futures_public_streams == ("btcusdt@bookTicker",)
+        assert okx_subscriptions == ({"channel": "books5", "instId": "BTC-USDT"},)
         self.started.set()
         await stop_event.wait()
 

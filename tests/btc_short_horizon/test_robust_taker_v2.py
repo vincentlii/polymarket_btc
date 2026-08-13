@@ -29,7 +29,14 @@ def _book(token: str, bid: float, asks: tuple[tuple[float, float], ...]) -> Side
     )
 
 
-def _pair(*, decision_seconds: int = 5, up_ask: float = 0.40, down_ask: float = 0.60):
+def _pair(
+    *,
+    decision_seconds: int = 5,
+    up_ask: float = 0.40,
+    down_ask: float = 0.60,
+    up_asks: tuple[tuple[float, float], ...] | None = None,
+    down_asks: tuple[tuple[float, float], ...] | None = None,
+):
     session = CausalPairSession(
         market_slug="btc-updown-15m-1",
         condition_id="condition",
@@ -40,8 +47,8 @@ def _pair(*, decision_seconds: int = 5, up_ask: float = 0.40, down_ask: float = 
         t0_ns=0,
         t1_ns=900_000_000_000,
     )
-    up_book = _book("up", up_ask - 0.01, ((up_ask, 10.0),))
-    down_book = _book("down", down_ask - 0.01, ((down_ask, 10.0),))
+    up_book = _book("up", up_ask - 0.01, up_asks or ((up_ask, 10.0),))
+    down_book = _book("down", down_ask - 0.01, down_asks or ((down_ask, 10.0),))
     decision_ns = decision_seconds * 1_000_000_000
     return session, session.validate(
         up=PairBookEvidence(
@@ -115,7 +122,7 @@ def test_executable_cost_reconciles_once_with_book_walk_fee_and_stresses() -> No
     )
 
 
-def test_executable_cost_rejects_insufficient_depth_and_tail_price() -> None:
+def test_executable_cost_selects_profitable_partial_fak_and_rejects_tail_price() -> None:
     interval = ProbabilityInterval(0.49, 0.52, 0.56)
     insufficient = evaluate_robust_executable_cost(
         side="up",
@@ -140,8 +147,29 @@ def test_executable_cost_rejects_insufficient_depth_and_tail_price() -> None:
         available_balance=100.0,
     )
 
-    assert insufficient.reason is RobustTakerRejection.INSUFFICIENT_DEPTH
+    assert insufficient.reason is RobustTakerRejection.SELECTED
+    assert insufficient.requested_shares == 2.0
+    assert insufficient.executable_shares == 1.0
+    assert insufficient.executable_vwap == pytest.approx(0.35)
     assert tail.reason is RobustTakerRejection.OUTSIDE_PRICE_BAND
+
+
+def test_executable_cost_chooses_size_with_highest_total_robust_ev() -> None:
+    result = evaluate_robust_executable_cost(
+        side="up",
+        interval=ProbabilityInterval(0.50, 0.60, 0.65),
+        book=_book("up", 0.39, ((0.40, 1.0), (0.58, 4.0))),
+        requested_shares=5.0,
+        fee_rate=0.0,
+        slippage_stress=0.0,
+        latency_stress=0.0,
+        minimum_net_edge=0.01,
+        available_balance=100.0,
+    )
+
+    assert result.reason is RobustTakerRejection.SELECTED
+    assert result.executable_shares == 1.0
+    assert result.robust_net_edge == pytest.approx(0.10)
 
 
 def test_probability_below_half_can_trade_when_robust_edge_is_supported() -> None:
@@ -204,3 +232,28 @@ def test_one_signal_policy_submits_first_qualifying_cadence_only_even_after_zero
         available_balance=100.0,
     )
     assert later.reason is RobustTakerRejection.ALREADY_CONSUMED
+
+
+def test_one_signal_policy_selects_side_with_highest_total_robust_ev() -> None:
+    session, pair = _pair(
+        up_ask=0.40,
+        down_ask=0.35,
+        up_asks=((0.40, 1.0), (0.59, 4.0)),
+        down_asks=((0.35, 5.0),),
+    )
+
+    decision = OneSignalTakerPolicy().evaluate(
+        session=session,
+        pair=pair,
+        interval=ProbabilityInterval(0.55, 0.55, 0.55),
+        requested_shares=5.0,
+        fee_rate_by_side={TokenSide.UP: 0.0, TokenSide.DOWN: 0.0},
+        slippage_stress=0.0,
+        latency_stress=0.0,
+        minimum_net_edge=0.01,
+        available_balance=100.0,
+    )
+
+    assert decision.plan is not None
+    assert decision.plan.side is TokenSide.DOWN
+    assert decision.plan.evaluation.executable_shares == 5.0
