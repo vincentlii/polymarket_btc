@@ -33,10 +33,6 @@ services:
       - "${BTC_MODEL_DIRECTORY:?set BTC_MODEL_DIRECTORY to a validated model artifact inside /app/data}"
       - --paper-starting-balance
       - "${BTC_PAPER_STARTING_BALANCE:-1000}"
-      - --binance-stream
-      - btcusdt@kline_1s
-      - --binance-stream
-      - btcusdt@depth@100ms
     environment:
       PYTHONUNBUFFERED: "1"
       BTC_MARKET_RELATIVE_MODEL_DIRECTORY: "${BTC_MARKET_RELATIVE_MODEL_DIRECTORY:-}"

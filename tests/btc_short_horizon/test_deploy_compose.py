@@ -24,6 +24,7 @@ def test_vps_compose_pins_identity_and_bounds_container_logs() -> None:
         assert not any(key.startswith("POLY_") for key in service["environment"])
 
     collector = compose["services"]["forward_collector"]
+    assert "--binance-stream" not in collector["command"]
     assert collector["restart"] == "on-failure:5"
     assert collector["stop_signal"] == "SIGINT"
     assert collector["stop_grace_period"] == "45s"
