@@ -3534,3 +3534,59 @@ class _OkxInstrumentClient:
     async def get(self, _url: str, *, params: dict[str, str]) -> _OkxInstrumentResponse:
         assert params == {"instType": "SWAP", "instId": "BTC-USDT-SWAP"}
         return _OkxInstrumentResponse()
+
+
+def test_forward_collector_accepts_binance_partial_depth_as_snapshot(
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    collector = BtcForwardCollector(
+        raw_data_root=tmp_path,
+        polymarket_token_ids=("up-token",),
+    )
+
+    result = collector.handle_binance(
+        {
+            "stream": "btcusdt@depth20@100ms",
+            "data": {
+                "lastUpdateId": 160,
+                "bids": [["100000", "2"]],
+                "asks": [["100001", "3"]],
+            },
+        },
+        collector_receive_ts=SOURCE_TIME,
+    )
+
+    assert result.accepted_events == 1
+    assert result.rejected_events == 0
+    assert not result.resubscribe_required
+    assert collector.quality_stats[("binance_spot", "BTCUSDT", "partial_book")].accepted_events == 1
+
+
+def test_forward_collector_accepts_okx_books5_snapshot_without_incremental_fields(
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    collector = BtcForwardCollector(
+        raw_data_root=tmp_path,
+        polymarket_token_ids=("up-token",),
+    )
+
+    result = collector.handle_okx(
+        {
+            "arg": {"channel": "books5", "instId": "BTC-USDT"},
+            "data": [
+                {
+                    "instId": "BTC-USDT",
+                    "ts": str(int(SOURCE_TIME.timestamp() * 1_000)),
+                    "seqId": "100",
+                    "bids": [["100000", "2", "0", "1"]],
+                    "asks": [["100001", "3", "0", "1"]],
+                }
+            ],
+        },
+        collector_receive_ts=SOURCE_TIME,
+    )
+
+    assert result.accepted_events == 1
+    assert result.rejected_events == 0
+    assert not result.resubscribe_required
+    assert collector.quality_stats[("okx_spot", "BTC-USDT", "book")].accepted_events == 1

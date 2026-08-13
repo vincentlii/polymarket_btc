@@ -12,6 +12,8 @@
 | Binance Spot diff depth | WebSocket buffer plus REST snapshot, bridged by `U`/`u` | Discard the local book and repeat snapshot synchronization |
 | Binance USD-M Futures diff depth | WebSocket buffer plus REST snapshot, then `pu == previous u` | Discard the local book and repeat snapshot synchronization |
 | OKX `books` | Initial `snapshot`, then `prevSeqId`/`seqId` continuity | Invalidate the book and force a fresh subscription snapshot |
+| Binance partial depth (`depth5/10/20`) | Independent top-N snapshots with `lastUpdateId`; no `U/u` delta bridge | Persist each receive-timed snapshot independently; never feed it to the diff-depth synchronizer |
+| OKX `books5` | Independent five-level snapshots; `prevSeqId` is not supplied | Treat every payload as a full snapshot and preserve the original raw message |
 | Polymarket CLOB market channel | Full `book` snapshot per token, then `price_change` deltas | Invalidate the token book and resubscribe for a new full `book` |
 
 No feed may expose a usable book before its own synchronization boundary has

@@ -80,6 +80,7 @@ _TWAP_60S_STREAM = "twap_60s"
 _TRADE_STREAM = "trade"
 _KLINE_STREAM = "kline_1s"
 _DEPTH_STREAM = "depth"
+_PARTIAL_BOOK_STREAM = "partial_book"
 _BOOK_TICKER_STREAM = "book_ticker"
 _BOOK_STREAM = "book"
 _INSTRUMENT_METADATA_STREAM = "instrument_metadata"
@@ -958,6 +959,15 @@ class BtcForwardCollector:
                 collector_receive_ts=collector_receive_ts,
                 source=source,
             )
+        if _is_binance_partial_depth_stream(stream):
+            instrument = stream.partition("@")[0].upper()
+            return self._handle_binance_partial_depth_snapshot(
+                message,
+                payload=payload,
+                instrument=instrument,
+                collector_receive_ts=collector_receive_ts,
+                source=source,
+            )
         if event_type == "depthupdate" or "@depth" in stream:
             return self._handle_binance_depth_update(
                 message,
@@ -973,6 +983,33 @@ class BtcForwardCollector:
                 source=source,
             )
         return _rejected("unsupported_binance_event")
+
+    def _handle_binance_partial_depth_snapshot(
+        self,
+        message: Mapping[str, object],
+        *,
+        payload: Mapping[str, object],
+        instrument: str,
+        collector_receive_ts: datetime,
+        source: str,
+    ) -> CollectorIngressResult:
+        """Persist Binance top-N depth as an independent receive-timed snapshot."""
+
+        try:
+            timing = normalize_binance_depth_snapshot(
+                message,
+                instrument=instrument,
+                collector_receive_ts=collector_receive_ts,
+                source=source,
+            )
+        except ValueError as exc:
+            return _rejected(str(exc))
+        return self._ingest(
+            timing=timing,
+            event_type="partial_depth_snapshot",
+            payload=payload,
+            stream_id=_PARTIAL_BOOK_STREAM,
+        )
 
     def handle_binance_depth_snapshot(
         self,
@@ -1430,7 +1467,8 @@ class BtcForwardCollector:
                 source=source,
             )
         if channel in {"books", "books5"}:
-            action = payload.get("action")
+            snapshot_only = channel == "books5"
+            action = "snapshot" if snapshot_only else payload.get("action")
             if not isinstance(action, str):
                 self._invalidate_okx_book_after_error(
                     source=source,
@@ -1448,6 +1486,7 @@ class BtcForwardCollector:
                 instrument=instrument,
                 collector_receive_ts=collector_receive_ts,
                 source=source,
+                snapshot_only=snapshot_only,
             )
         return _rejected("unsupported_okx_channel")
 
@@ -1566,6 +1605,7 @@ class BtcForwardCollector:
         instrument: str,
         collector_receive_ts: datetime,
         source: str,
+        snapshot_only: bool = False,
     ) -> CollectorIngressResult:
         outcome = CollectorIngressResult()
         normalized: list[tuple[TimedMarketEvent, Mapping[str, object], Mapping[str, object]]] = []
@@ -1573,9 +1613,12 @@ class BtcForwardCollector:
             if not isinstance(item, Mapping):
                 outcome = outcome.merged(_rejected("OKX book data must contain objects"))
                 continue
+            normalized_item = dict(item)
+            if snapshot_only:
+                normalized_item["prevSeqId"] = -1
             try:
                 timing = normalize_okx_book_update(
-                    item,
+                    normalized_item,
                     action=action,
                     instrument=instrument,
                     collector_receive_ts=collector_receive_ts,
@@ -1588,7 +1631,7 @@ class BtcForwardCollector:
                 (
                     timing,
                     _okx_item_payload(payload, item),
-                    item,
+                    normalized_item,
                 )
             )
         if outcome.rejected_events:
@@ -3218,6 +3261,7 @@ def _binance_depth_instruments(streams: Sequence[str]) -> tuple[str, ...]:
         if any(
             stream.partition("@")[0].upper() == instrument
             and stream.casefold().partition("@")[2].startswith("depth")
+            and not _is_binance_partial_depth_suffix(stream.casefold().partition("@")[2])
             for stream in streams
         )
     )
@@ -3231,6 +3275,8 @@ def _binance_stream_ids(streams: Sequence[str]) -> tuple[str, ...]:
             stream_id = _TRADE_STREAM
         elif suffix == "kline_1s":
             stream_id = _KLINE_STREAM
+        elif _is_binance_partial_depth_suffix(suffix):
+            stream_id = _PARTIAL_BOOK_STREAM
         elif suffix.startswith("depth"):
             stream_id = _DEPTH_STREAM
         elif suffix == "bookticker":
@@ -3240,6 +3286,22 @@ def _binance_stream_ids(streams: Sequence[str]) -> tuple[str, ...]:
         if stream_id not in stream_ids:
             stream_ids.append(stream_id)
     return tuple(stream_ids)
+
+
+def _is_binance_partial_depth_stream(stream: str) -> bool:
+    _symbol, separator, suffix = stream.casefold().partition("@")
+    return bool(separator) and _is_binance_partial_depth_suffix(suffix)
+
+
+def _is_binance_partial_depth_suffix(suffix: str) -> bool:
+    return suffix in {
+        "depth5",
+        "depth5@100ms",
+        "depth10",
+        "depth10@100ms",
+        "depth20",
+        "depth20@100ms",
+    }
 
 
 def _binance_feed_keys(source: str, streams: Sequence[str]) -> set[_QualityStreamKey]:
