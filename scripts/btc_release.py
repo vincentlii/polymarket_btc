@@ -246,7 +246,7 @@ def _wait_for_runtime_health(
     service: str,
     max_age_seconds: str,
     env: dict[str, str],
-    attempts: int = 12,
+    attempts: int = 24,
 ) -> str:
     command = (
         "uv",

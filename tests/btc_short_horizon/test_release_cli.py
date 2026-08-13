@@ -1,3 +1,4 @@
+import inspect
 import json
 from pathlib import Path
 import subprocess
@@ -5,6 +6,7 @@ import sys
 
 import pytest
 
+from scripts import btc_release as release_module
 from scripts.btc_release import release
 
 
@@ -220,6 +222,13 @@ def test_release_waits_for_paper_bootstrap_before_declaring_failure(tmp_path) ->
     )
 
     assert sum(command == ("sleep", "10") for command, _ in runner.calls) == 2
+
+
+def test_runtime_health_wait_budget_covers_observed_low_resource_cold_start() -> None:
+    assert (
+        inspect.signature(release_module._wait_for_runtime_health).parameters["attempts"].default
+        == 24
+    )
 
 
 @pytest.mark.parametrize("failure", ["label", "readiness"])
