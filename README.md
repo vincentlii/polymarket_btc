@@ -156,6 +156,7 @@ Detailed guides have been filed away in the [docs index](https://evan-kolberg.gi
   - [Current Evidence Boundary](https://evan-kolberg.github.io/prediction-market-backtesting/btc-short-horizon-architecture/#current-evidence-boundary)
   - [Research Paper Execution Epoch V2](https://evan-kolberg.github.io/prediction-market-backtesting/btc-short-horizon-architecture/#research-paper-execution-epoch-v2)
   - [Research Paper Execution Epoch V3](https://evan-kolberg.github.io/prediction-market-backtesting/btc-short-horizon-architecture/#research-paper-execution-epoch-v3)
+  - [v9 Upgrade Contracts](https://evan-kolberg.github.io/prediction-market-backtesting/btc-short-horizon-architecture/#v9-upgrade-contracts)
 - [BTC Chainlink 60-second TWAP Evidence](https://evan-kolberg.github.io/prediction-market-backtesting/btc-chainlink-twap-research/)
   - [Current Boundary](https://evan-kolberg.github.io/prediction-market-backtesting/btc-chainlink-twap-research/#current-boundary)
   - [Fail-closed Limits](https://evan-kolberg.github.io/prediction-market-backtesting/btc-chainlink-twap-research/#fail-closed-limits)
