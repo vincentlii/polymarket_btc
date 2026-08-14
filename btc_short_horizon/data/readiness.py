@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 from btc_short_horizon.data.contracts import MarketWindow
-from btc_short_horizon.data.coverage_index import coverage_evidence_sha256
+from btc_short_horizon.data.coverage_index import SessionCoverageIndex, coverage_evidence_sha256
 from btc_short_horizon.data.rule_contract import rule_contract_sha256
 from btc_short_horizon.data.storage import write_atomic_json
 
@@ -83,4 +83,50 @@ def register_readiness_candidate(
     return path
 
 
-__all__ = ["ReadinessCandidate", "register_readiness_candidate"]
+def collect_source_window_evidence(
+    *,
+    index: SessionCoverageIndex,
+    source_windows_ns: dict[str, tuple[int, int]],
+) -> tuple[dict[str, object], ...]:
+    """Combine immutable session evidence for source-specific causal windows."""
+    by_session_id: dict[str, dict[str, object]] = {}
+    for source, (start_ns, end_ns) in sorted(source_windows_ns.items()):
+        for entry in index.coverage_evidence(
+            start_ns=start_ns,
+            end_ns=end_ns,
+            required_sources=(source,),
+        ):
+            session_id = str(entry["session_id"])
+            existing = by_session_id.get(session_id)
+            if existing is not None and existing != entry:
+                raise ValueError("readiness session evidence identity conflict")
+            by_session_id[session_id] = entry
+    return tuple(
+        sorted(
+            by_session_id.values(),
+            key=lambda item: (int(item["started_at_ns"]), str(item["session_id"])),
+        )
+    )
+
+
+def current_protocol_receipts(
+    payloads: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Return only receipts belonging to the newest observed research protocol."""
+    receipts = [
+        item
+        for item in payloads
+        if item.get("schema_version") == "btc-training-readiness-receipt-v1"
+    ]
+    if not receipts:
+        return []
+    current_protocol = receipts[-1].get("protocol_sha256")
+    return [item for item in receipts if item.get("protocol_sha256") == current_protocol]
+
+
+__all__ = [
+    "ReadinessCandidate",
+    "collect_source_window_evidence",
+    "current_protocol_receipts",
+    "register_readiness_candidate",
+]

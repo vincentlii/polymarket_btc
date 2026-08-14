@@ -174,6 +174,7 @@ def test_follow_current_rotates_from_exact_gamma_catalog_and_persists_metadata(t
             readiness_protocol_sha256="a" * 64,
             readiness_max_feature_lookback_seconds=3600,
             readiness_required_sources=("binance_spot",),
+            readiness_source_window_offsets_seconds={"binance_spot": (-3600.0, 180.0)},
             gamma_client=gamma,
             collector_factory=collector_factory,
             now=lambda: t0,
@@ -423,7 +424,7 @@ async def test_follow_current_rotates_storage_without_restarting_shared_feeds(
     monkeypatch.setattr(
         forward_collector_module.SessionCoverageIndex,
         "coverage_evidence",
-        lambda *_args, **_kwargs: ({"session_id": "session-1"},),
+        lambda *_args, **_kwargs: ({"session_id": "session-1", "started_at_ns": 0},),
     )
 
     await collect_current_market_windows(
@@ -453,6 +454,7 @@ async def test_follow_current_rotates_storage_without_restarting_shared_feeds(
         readiness_protocol_sha256="a" * 64,
         readiness_max_feature_lookback_seconds=3600,
         readiness_required_sources=("binance_spot",),
+        readiness_source_window_offsets_seconds={"binance_spot": (-3600.0, 180.0)},
         gamma_client=Gamma(),
         collector_factory=factory,
         now=lambda: clock[0],

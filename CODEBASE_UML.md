@@ -1,8 +1,8 @@
 # Codebase UML Inventory
 
 This file is generated from Python AST metadata and excludes `tests/` plus git-ignored private strategy/research directories.
-Generated: 2026-08-13T16:26:31+00:00
-Modules: 258 | Classes: 532 | Functions/methods: 3498
+Generated: 2026-08-14T05:19:16+00:00
+Modules: 258 | Classes: 532 | Functions/methods: 3502
 
 ## Backtesting Data Flow
 
@@ -437,15 +437,15 @@ flowchart TD
 
 ### `btc_short_horizon/data/coverage_index.py`
 - Imports: `__future__, btc_short_horizon, dataclasses, datetime, hashlib, json, pathlib`
-- Function L157: `coverage_evidence_sha256(entries: tuple[dict[str, object], ...]) -> str`
-- Function L161: `_timestamp_ns(value: str) -> int`
+- Function L149: `coverage_evidence_sha256(entries: tuple[dict[str, object], ...]) -> str`
+- Function L153: `_timestamp_ns(value: str) -> int`
 - Class L16: `SessionCoverage`
 - Class L25: `SessionCoverageIndex`
   - Method L26: `__init__(self, root: Path) -> None`
   - Method L29: `append(self, session: CollectorSessionRecord, *, inventory_path: Path) -> None`
-  - Method L86: `coverage_evidence(self, *, start_ns: int, end_ns: int, required_sources: tuple[str, ...], maximum_session_gap_ns: int = 1000000, maximum_source_boundary_gap_ns: int = 5000000000) -> tuple[dict[str, object], ...]`
-  - Method L133: `overlapping_session_ids(self, *, start_ns: int, end_ns: int, required_sources: tuple[str, ...]) -> tuple[str, ...]`
-  - Method L145: `_read(self) -> dict[str, object]`
+  - Method L86: `coverage_evidence(self, *, start_ns: int, end_ns: int, required_sources: tuple[str, ...], maximum_session_gap_ns: int = 5000000000) -> tuple[dict[str, object], ...]`
+  - Method L125: `overlapping_session_ids(self, *, start_ns: int, end_ns: int, required_sources: tuple[str, ...]) -> tuple[str, ...]`
+  - Method L137: `_read(self) -> dict[str, object]`
 
 ### `btc_short_horizon/data/disk_pressure.py`
 - Imports: `__future__, asyncio, collections, dataclasses, enum, math`
@@ -636,11 +636,12 @@ flowchart TD
 - Function L451: `_text(value: object, name: str) -> str`
 - Function L457: `_number(value: object, name: str) -> float`
 - Function L467: `_probability(value: object, name: str) -> float`
-- Function L474: `_positive_float(value: object, name: str) -> float`
-- Function L481: `_nonnegative_float(value: object, name: str) -> float`
-- Function L488: `_timestamp_millis(value: object, name: str) -> datetime`
-- Function L498: `_as_utc(value: datetime, name: str) -> datetime`
-- Function L504: `_datetime_to_ns(value: datetime) -> int`
+- Function L474: `_book_boundary_probability(value: object, name: str) -> float`
+- Function L481: `_positive_float(value: object, name: str) -> float`
+- Function L488: `_nonnegative_float(value: object, name: str) -> float`
+- Function L495: `_timestamp_millis(value: object, name: str) -> datetime`
+- Function L505: `_as_utc(value: datetime, name: str) -> datetime`
+- Function L511: `_datetime_to_ns(value: datetime) -> int`
 - Class L17: `PolymarketL2Status(StrEnum)`
 - Class L25: `PolymarketL2Result`
 - Class L38: `PolymarketL2Normalizer`
@@ -682,6 +683,8 @@ flowchart TD
 ### `btc_short_horizon/data/readiness.py`
 - Imports: `__future__, btc_short_horizon, dataclasses, hashlib, json, pathlib`
 - Function L39: `register_readiness_candidate(*, root: Path, market: MarketWindow, ingest_version: str, collector_session_id: str, evidence_sessions: tuple[dict[str, object], ...], coverage_error: str | None, exit_evidence_sessions: tuple[dict[str, object], ...], exit_coverage_error: str | None, exit_collection_policy: str, catalog_path: Path, decision_offsets_seconds: tuple[int, ...], protocol_sha256: str) -> Path`
+- Function L86: `collect_source_window_evidence(*, index: SessionCoverageIndex, source_windows_ns: dict[str, tuple[int, int]]) -> tuple[dict[str, object], ...]`
+- Function L112: `current_protocol_receipts(payloads: list[dict[str, object]]) -> list[dict[str, object]]`
 - Class L17: `ReadinessCandidate`
 
 ### `btc_short_horizon/data/rtds.py`
@@ -895,38 +898,38 @@ flowchart TD
 
 ### `btc_short_horizon/live/dashboard.py`
 - Imports: `__future__, base64, binascii, btc_short_horizon, collections, dataclasses, datetime, http, json, math, os, pathlib, urllib`
-- Function L69: `build_dashboard_payload(config: DashboardConfig, *, now: datetime | None = None) -> dict[str, object]`
-- Function L156: `_readiness_status(runtime_root: Path) -> dict[str, object]`
-- Function L182: `build_order_history_payload(config: DashboardConfig, *, limit: int = _ORDER_HISTORY_DEFAULT_LIMIT, cursor: str | None = None, variant: str | None = None, epoch: str | None = None) -> dict[str, object]`
-- Function L240: `_read_order_history(runtime_root: Path) -> tuple[list[tuple[tuple[int, str, str, str], dict[str, object]]], list[str], list[str]]`
-- Function L346: `_paper_ledger_paths(runtime_root: Path) -> list[Path]`
-- Function L382: `_project_order_record(raw: object, *, schema_version: int, variant_id: str, execution_epoch: str) -> tuple[tuple[int, str, str, str], dict[str, object]]`
-- Function L504: `_encode_order_cursor(key: tuple[int, str, str, str]) -> str`
-- Function L509: `_decode_order_cursor(value: str) -> tuple[int, str, str, str]`
-- Function L529: `_history_query(raw_query: str) -> tuple[int, str | None, str | None, str | None]`
-- Function L550: `_validate_variant_id(value: str) -> None`
-- Function L554: `_request_variant_id(value: object) -> str`
-- Function L561: `_data_variant_id(value: object) -> str`
-- Function L575: `_data_text(value: object, *, maximum: int) -> str`
-- Function L581: `_data_optional_text(value: object, *, maximum: int) -> str | None`
-- Function L587: `_data_integer(value: object, *, minimum: int) -> int`
-- Function L593: `_data_optional_integer(value: object, *, minimum: int) -> int | None`
-- Function L599: `_data_number(value: object, *, minimum: float | None = None, maximum: float | None = None) -> float`
-- Function L617: `_data_optional_number(value: object) -> float | None`
-- Function L623: `_data_boolean(value: object) -> bool`
-- Function L629: `_project_signal_observation(raw: object) -> dict[str, object]`
-- Function L658: `_request_integer(value: object, label: str) -> int`
-- Function L665: `_reject_nonfinite_json(_value: str) -> None`
-- Function L669: `_snapshot_health(snapshot: BotDashboardSnapshot | None, *, now: datetime, max_age_seconds: float) -> dict[str, object]`
-- Function L690: `_shadow_projection(status: RuntimeStatus | None, errors: list[str]) -> dict[str, object] | None`
-- Function L708: `create_dashboard_server(config: DashboardConfig, *, host: str, port: int, now: Callable[[], datetime] = lambda: datetime.now(UTC)) -> ThreadingHTTPServer`
-- Function L802: `serve_dashboard(config: DashboardConfig, *, host: str, port: int) -> None`
-- Function L809: `_status_payload(status: RuntimeStatus, now: datetime, max_age_seconds: float) -> dict[str, object]`
-- Function L829: `_status_max_age_seconds(status: RuntimeStatus | None, *, config: DashboardConfig) -> float`
-- Class L35: `_OrderHistoryDataError(ValueError)`
-- Class L39: `_OrderHistoryRequestError(ValueError)`
-- Class L44: `DashboardConfig`
-  - Method L51: `__post_init__(self) -> None`
+- Function L70: `build_dashboard_payload(config: DashboardConfig, *, now: datetime | None = None) -> dict[str, object]`
+- Function L157: `_readiness_status(runtime_root: Path) -> dict[str, object]`
+- Function L179: `build_order_history_payload(config: DashboardConfig, *, limit: int = _ORDER_HISTORY_DEFAULT_LIMIT, cursor: str | None = None, variant: str | None = None, epoch: str | None = None) -> dict[str, object]`
+- Function L237: `_read_order_history(runtime_root: Path) -> tuple[list[tuple[tuple[int, str, str, str], dict[str, object]]], list[str], list[str]]`
+- Function L343: `_paper_ledger_paths(runtime_root: Path) -> list[Path]`
+- Function L379: `_project_order_record(raw: object, *, schema_version: int, variant_id: str, execution_epoch: str) -> tuple[tuple[int, str, str, str], dict[str, object]]`
+- Function L501: `_encode_order_cursor(key: tuple[int, str, str, str]) -> str`
+- Function L506: `_decode_order_cursor(value: str) -> tuple[int, str, str, str]`
+- Function L526: `_history_query(raw_query: str) -> tuple[int, str | None, str | None, str | None]`
+- Function L547: `_validate_variant_id(value: str) -> None`
+- Function L551: `_request_variant_id(value: object) -> str`
+- Function L558: `_data_variant_id(value: object) -> str`
+- Function L572: `_data_text(value: object, *, maximum: int) -> str`
+- Function L578: `_data_optional_text(value: object, *, maximum: int) -> str | None`
+- Function L584: `_data_integer(value: object, *, minimum: int) -> int`
+- Function L590: `_data_optional_integer(value: object, *, minimum: int) -> int | None`
+- Function L596: `_data_number(value: object, *, minimum: float | None = None, maximum: float | None = None) -> float`
+- Function L614: `_data_optional_number(value: object) -> float | None`
+- Function L620: `_data_boolean(value: object) -> bool`
+- Function L626: `_project_signal_observation(raw: object) -> dict[str, object]`
+- Function L655: `_request_integer(value: object, label: str) -> int`
+- Function L662: `_reject_nonfinite_json(_value: str) -> None`
+- Function L666: `_snapshot_health(snapshot: BotDashboardSnapshot | None, *, now: datetime, max_age_seconds: float) -> dict[str, object]`
+- Function L687: `_shadow_projection(status: RuntimeStatus | None, errors: list[str]) -> dict[str, object] | None`
+- Function L705: `create_dashboard_server(config: DashboardConfig, *, host: str, port: int, now: Callable[[], datetime] = lambda: datetime.now(UTC)) -> ThreadingHTTPServer`
+- Function L799: `serve_dashboard(config: DashboardConfig, *, host: str, port: int) -> None`
+- Function L806: `_status_payload(status: RuntimeStatus, now: datetime, max_age_seconds: float) -> dict[str, object]`
+- Function L826: `_status_max_age_seconds(status: RuntimeStatus | None, *, config: DashboardConfig) -> float`
+- Class L36: `_OrderHistoryDataError(ValueError)`
+- Class L40: `_OrderHistoryRequestError(ValueError)`
+- Class L45: `DashboardConfig`
+  - Method L52: `__post_init__(self) -> None`
 
 ### `btc_short_horizon/live/dashboard_page.py`
 - Imports: `__future__`
@@ -4229,27 +4232,27 @@ flowchart TD
 
 ### `scripts/btc_forward_collector.py`
 - Imports: `__future__, argparse, asyncio, btc_short_horizon, collections, dataclasses, datetime, hashlib, httpx, json, math, pathlib`
-- Function L67: `parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace`
-- Function L164: `build_collector(args: argparse.Namespace, *, config: BtcProjectConfig | None = None) -> BtcForwardCollector`
-- Function L197: `_token_ids(args: argparse.Namespace) -> tuple[str, ...]`
-- Function L215: `async collect(args: argparse.Namespace) -> None`
-- Function L228: `async _collect_with_storage_lease(args: argparse.Namespace, *, config: BtcProjectConfig) -> None`
-- Function L306: `async collect_current_market_windows(*, family: BtcMarketFamily, rule_epoch: str, raw_data_root: Path, catalog_directory: Path, flush_size: int, flush_interval_seconds: float, shutdown_flush_timeout_seconds: float, max_pending_events: int, max_pending_bytes: int, binance_spot_depth_snapshot_limit: int, binance_futures_depth_snapshot_limit: int, binance_depth_snapshot_retry_initial_seconds: float, binance_depth_snapshot_retry_max_seconds: float, polymarket_source_timestamp_regression_tolerance_seconds: float, ingest_version: str, binance_streams: Sequence[str], binance_futures_market_streams: Sequence[str], binance_futures_public_streams: Sequence[str], rotation_poll_seconds: float, polymarket_capture_lead_seconds: float, opening_handoff_delay_seconds: float, stop_event: asyncio.Event, okx_subscriptions: Sequence[dict[str, str]] = (), gamma_client: GammaMarketClient | None = None, collector_factory: Callable[[Path, tuple[tuple[str, ...], ...], WindowCollectorSettings], BtcForwardCollector] | None = None, on_market_active: Callable[[MarketWindow, MarketWindow | None, BtcForwardCollector], None] | None = None, readiness_decision_offsets_seconds: tuple[int, ...], readiness_protocol_sha256: str, readiness_max_feature_lookback_seconds: int, readiness_required_sources: tuple[str, ...], optional_feeds_enabled: asyncio.Event | None = None, extended_capture_enabled: asyncio.Event | None = None, now: Callable[[], datetime] = lambda: datetime.now(UTC)) -> None`
-- Function L540: `current_market_slug(family: BtcMarketFamily, now: datetime) -> str`
-- Function L547: `_readiness_protocol(config: BtcProjectConfig) -> dict[str, object]`
-- Function L580: `next_market_slug(family: BtcMarketFamily, now: datetime) -> str`
-- Function L587: `_write_single_market_catalog(*, directory: Path, family: BtcMarketFamily, market: MarketWindow) -> Path`
-- Function L605: `_single_market_catalog_path(*, directory: Path, market: MarketWindow) -> Path`
-- Function L610: `_validate_follow_current_args(args: argparse.Namespace) -> None`
-- Function L619: `_follow_family(config: BtcProjectConfig, name: str) -> BtcMarketFamily`
-- Function L627: `_collection_settings(args: argparse.Namespace, config: BtcProjectConfig) -> tuple[int, float, float]`
-- Function L645: `_build_window_collector(raw_data_root: Path, token_groups: tuple[tuple[str, ...], ...], settings: WindowCollectorSettings) -> BtcForwardCollector`
-- Function L678: `async _wait_or_stop(stop_event: asyncio.Event, seconds: float) -> None`
-- Function L685: `async _wait_for_market_rotation(*, stop_event: asyncio.Event, worker: asyncio.Task[None], market: MarketWindow, handoff_delay_seconds: float, now: Callable[[], datetime]) -> None`
-- Function L702: `async _wait_for_collector_deadline(*, stop_event: asyncio.Event, worker: asyncio.Task[None], deadline: datetime, now: Callable[[], datetime]) -> None`
-- Function L728: `_as_utc(value: datetime) -> datetime`
-- Function L734: `main(argv: Sequence[str] | None = None) -> int`
-- Class L50: `WindowCollectorSettings`
+- Function L70: `parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace`
+- Function L167: `build_collector(args: argparse.Namespace, *, config: BtcProjectConfig | None = None) -> BtcForwardCollector`
+- Function L200: `_token_ids(args: argparse.Namespace) -> tuple[str, ...]`
+- Function L218: `async collect(args: argparse.Namespace) -> None`
+- Function L231: `async _collect_with_storage_lease(args: argparse.Namespace, *, config: BtcProjectConfig) -> None`
+- Function L309: `async collect_current_market_windows(*, family: BtcMarketFamily, rule_epoch: str, raw_data_root: Path, catalog_directory: Path, flush_size: int, flush_interval_seconds: float, shutdown_flush_timeout_seconds: float, max_pending_events: int, max_pending_bytes: int, binance_spot_depth_snapshot_limit: int, binance_futures_depth_snapshot_limit: int, binance_depth_snapshot_retry_initial_seconds: float, binance_depth_snapshot_retry_max_seconds: float, polymarket_source_timestamp_regression_tolerance_seconds: float, ingest_version: str, binance_streams: Sequence[str], binance_futures_market_streams: Sequence[str], binance_futures_public_streams: Sequence[str], rotation_poll_seconds: float, polymarket_capture_lead_seconds: float, opening_handoff_delay_seconds: float, stop_event: asyncio.Event, okx_subscriptions: Sequence[dict[str, str]] = (), gamma_client: GammaMarketClient | None = None, collector_factory: Callable[[Path, tuple[tuple[str, ...], ...], WindowCollectorSettings], BtcForwardCollector] | None = None, on_market_active: Callable[[MarketWindow, MarketWindow | None, BtcForwardCollector], None] | None = None, readiness_decision_offsets_seconds: tuple[int, ...], readiness_protocol_sha256: str, readiness_max_feature_lookback_seconds: int, readiness_required_sources: tuple[str, ...], readiness_source_window_offsets_seconds: dict[str, tuple[float, float]], optional_feeds_enabled: asyncio.Event | None = None, extended_capture_enabled: asyncio.Event | None = None, now: Callable[[], datetime] = lambda: datetime.now(UTC)) -> None`
+- Function L559: `current_market_slug(family: BtcMarketFamily, now: datetime) -> str`
+- Function L566: `_readiness_protocol(config: BtcProjectConfig) -> dict[str, object]`
+- Function L610: `next_market_slug(family: BtcMarketFamily, now: datetime) -> str`
+- Function L617: `_write_single_market_catalog(*, directory: Path, family: BtcMarketFamily, market: MarketWindow) -> Path`
+- Function L635: `_single_market_catalog_path(*, directory: Path, market: MarketWindow) -> Path`
+- Function L640: `_validate_follow_current_args(args: argparse.Namespace) -> None`
+- Function L649: `_follow_family(config: BtcProjectConfig, name: str) -> BtcMarketFamily`
+- Function L657: `_collection_settings(args: argparse.Namespace, config: BtcProjectConfig) -> tuple[int, float, float]`
+- Function L675: `_build_window_collector(raw_data_root: Path, token_groups: tuple[tuple[str, ...], ...], settings: WindowCollectorSettings) -> BtcForwardCollector`
+- Function L708: `async _wait_or_stop(stop_event: asyncio.Event, seconds: float) -> None`
+- Function L715: `async _wait_for_market_rotation(*, stop_event: asyncio.Event, worker: asyncio.Task[None], market: MarketWindow, handoff_delay_seconds: float, now: Callable[[], datetime]) -> None`
+- Function L732: `async _wait_for_collector_deadline(*, stop_event: asyncio.Event, worker: asyncio.Task[None], deadline: datetime, now: Callable[[], datetime]) -> None`
+- Function L758: `_as_utc(value: datetime) -> datetime`
+- Function L764: `main(argv: Sequence[str] | None = None) -> int`
+- Class L53: `WindowCollectorSettings`
 
 ### `scripts/btc_forward_runtime.py`
 - Imports: `__future__, argparse, asyncio, btc_short_horizon, collections, dataclasses, datetime, math, os, pathlib, scripts, signal`
@@ -4406,7 +4409,7 @@ flowchart TD
 ### `scripts/btc_release.py`
 - Imports: `__future__, argparse, btc_short_horizon, dataclasses, hashlib, json, os, pathlib, subprocess, typing`
 - Function L49: `release(*, runner: Runner, release_sha: str, env_file: Path, previous_compose_file: Path, receipt_root: Path, rule_epoch: str, data_root: Path, output_root: Path, runtime_root: Path) -> Path`
-- Function L242: `_wait_for_runtime_health(*, runner: Runner, runtime_root: Path, service: str, max_age_seconds: str, env: dict[str, str], attempts: int = 12) -> str`
+- Function L242: `_wait_for_runtime_health(*, runner: Runner, runtime_root: Path, service: str, max_age_seconds: str, env: dict[str, str], attempts: int = 24) -> str`
 - Function L275: `main() -> int`
 - Function L302: `_env_value(content: str, key: str) -> str`
 - Function L313: `_write_release_env(path: Path, content: str, revision: str, image: str) -> None`
@@ -4463,11 +4466,12 @@ flowchart TD
 
 ### `scripts/btc_training_readiness_worker.py`
 - Imports: `__future__, argparse, btc_short_horizon, collections, dataclasses, datetime, hashlib, json, os, pathlib, scripts, time`
-- Function L45: `_expected_coverage_evidence(*, index: SessionCoverageIndex, evidence_payload: tuple[dict[str, object], ...], coverage_error: object, start_ns: int, end_ns: int, required_sources: tuple[str, ...]) -> tuple[dict[str, object], ...]`
-- Function L65: `audit_candidate(candidate_path: Path, *, raw_data_root: Path, config_path: Path) -> dict[str, object]`
-- Function L238: `_audit_raw_exit_evidence(*, raw_data_root: Path, market: object, ingest_version: str, capture_lead_seconds: float, collection_policy: str, coverage_error: object) -> list[str]`
-- Function L285: `main() -> int`
-- Function L366: `aggregate_receipts(receipt_root: Path, *, limit: int = 96) -> dict[str, object]`
+- Function L50: `_readiness_runtime_status(*, started_at: datetime, updated_at: datetime, backlog: int, last_candidate: str | None, last_receipt: str | None, last_error: str | None, code_revision: str | None) -> RuntimeStatus`
+- Function L79: `_expected_coverage_evidence(*, index: SessionCoverageIndex, evidence_payload: tuple[dict[str, object], ...], coverage_error: object, source_windows_ns: dict[str, tuple[int, int]]) -> tuple[dict[str, object], ...]`
+- Function L96: `audit_candidate(candidate_path: Path, *, raw_data_root: Path, config_path: Path) -> dict[str, object]`
+- Function L272: `_audit_raw_exit_evidence(*, raw_data_root: Path, market: object, ingest_version: str, capture_lead_seconds: float, collection_policy: str, coverage_error: object) -> list[str]`
+- Function L319: `main() -> int`
+- Function L393: `aggregate_receipts(receipt_root: Path, *, limit: int = 96) -> dict[str, object]`
 
 ### `scripts/btc_vps_preflight.py`
 - Imports: `__future__, argparse, btc_short_horizon, collections, datetime, httpx, json, math, pathlib, re, subprocess`

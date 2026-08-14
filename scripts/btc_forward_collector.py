@@ -34,8 +34,11 @@ from btc_short_horizon.data.forward import (  # noqa: E402
 )
 from btc_short_horizon.data.gamma import GammaMarketClient  # noqa: E402
 from btc_short_horizon.data.market_catalog import MarketCatalog  # noqa: E402
-from btc_short_horizon.data.readiness import register_readiness_candidate  # noqa: E402
 from btc_short_horizon.data.coverage_index import SessionCoverageIndex  # noqa: E402
+from btc_short_horizon.data.readiness import (  # noqa: E402
+    collect_source_window_evidence,
+    register_readiness_candidate,
+)
 from btc_short_horizon.data.rule_contract import rule_contract_sha256  # noqa: E402
 from btc_short_horizon.data.session_inventory import (  # noqa: E402
     CollectorStorageLease,
@@ -340,6 +343,7 @@ async def collect_current_market_windows(
     readiness_protocol_sha256: str,
     readiness_max_feature_lookback_seconds: int,
     readiness_required_sources: tuple[str, ...],
+    readiness_source_window_offsets_seconds: dict[str, tuple[float, float]],
     optional_feeds_enabled: asyncio.Event | None = None,
     extended_capture_enabled: asyncio.Event | None = None,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
@@ -354,6 +358,17 @@ async def collect_current_market_windows(
         raise ValueError("polymarket_capture_lead_seconds must be finite and > 0")
     if not isfinite(opening_handoff_delay_seconds) or opening_handoff_delay_seconds <= 0.0:
         raise ValueError("opening_handoff_delay_seconds must be finite and > 0")
+    expected_source_windows = {
+        source: (
+            -polymarket_capture_lead_seconds
+            if source == "polymarket_clob"
+            else -float(readiness_max_feature_lookback_seconds),
+            float(readiness_decision_offsets_seconds[-1]),
+        )
+        for source in readiness_required_sources
+    }
+    if readiness_source_window_offsets_seconds != expected_source_windows:
+        raise ValueError("readiness source windows do not match collection timing")
     client = gamma_client or GammaMarketClient()
     factory = collector_factory or _build_window_collector
     collector: BtcForwardCollector | None = None
@@ -486,13 +501,17 @@ async def collect_current_market_windows(
             closed_session_id = await collector.rotate_storage_session(
                 epoch_id_offset=int(market.t1.timestamp())
             )
+            t0_ns = int(market.t0.timestamp() * 1_000_000_000)
             try:
-                evidence_sessions = SessionCoverageIndex(raw_data_root).coverage_evidence(
-                    start_ns=int(market.t0.timestamp() * 1_000_000_000)
-                    - readiness_max_feature_lookback_seconds * 1_000_000_000,
-                    end_ns=int(market.t0.timestamp() * 1_000_000_000)
-                    + readiness_decision_offsets_seconds[-1] * 1_000_000_000,
-                    required_sources=readiness_required_sources,
+                evidence_sessions = collect_source_window_evidence(
+                    index=SessionCoverageIndex(raw_data_root),
+                    source_windows_ns={
+                        source: (
+                            int(t0_ns + offsets[0] * 1_000_000_000),
+                            int(t0_ns + offsets[1] * 1_000_000_000),
+                        )
+                        for source, offsets in readiness_source_window_offsets_seconds.items()
+                    },
                 )
                 coverage_error = None
             except ValueError as exc:
@@ -562,10 +581,20 @@ def _readiness_protocol(config: BtcProjectConfig) -> dict[str, object]:
         required_sources.append("okx_spot")
     if any(item.instrument.endswith("-SWAP") for item in collection.okx_subscriptions):
         required_sources.append("okx_swap")
+    source_window_offsets_seconds = {
+        source: (
+            -collection.polymarket_capture_lead_seconds
+            if source == "polymarket_clob"
+            else -float(timing.max_feature_lookback_seconds),
+            float(offsets[-1]),
+        )
+        for source in required_sources
+    }
     protocol = {
         "decision_offsets_ms": offsets_ms,
         "max_feature_lookback_seconds": timing.max_feature_lookback_seconds,
         "required_sources": required_sources,
+        "source_window_offsets_seconds": source_window_offsets_seconds,
         "ingest_version": collection.ingest_version,
     }
     payload = json.dumps(protocol, sort_keys=True, separators=(",", ":"))
@@ -574,6 +603,7 @@ def _readiness_protocol(config: BtcProjectConfig) -> dict[str, object]:
         "readiness_protocol_sha256": sha256(payload.encode()).hexdigest(),
         "readiness_max_feature_lookback_seconds": timing.max_feature_lookback_seconds,
         "readiness_required_sources": tuple(required_sources),
+        "readiness_source_window_offsets_seconds": source_window_offsets_seconds,
     }
 
 

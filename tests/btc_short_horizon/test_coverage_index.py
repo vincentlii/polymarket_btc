@@ -92,13 +92,70 @@ def test_index_fails_closed_when_prior_session_leaves_lookback_gap(tmp_path: Pat
         )
         index.append(session, inventory_path=inventory)
 
-    with pytest.raises(ValueError, match="coverage gap"):
+    with pytest.raises(ValueError, match="session coverage gap"):
         index.coverage_evidence(
             start_ns=int(datetime.fromisoformat("2026-08-13T00:00:00+00:00").timestamp() * 1e9),
             end_ns=int(datetime.fromisoformat("2026-08-13T01:00:00+00:00").timestamp() * 1e9),
             required_sources=("binance_spot",),
-            maximum_session_gap_ns=0,
         )
+
+
+def test_index_uses_source_continuity_across_storage_session_rotation(tmp_path: Path) -> None:
+    index = SessionCoverageIndex(tmp_path)
+    source_boundary = "2026-08-13T00:15:00+00:00"
+    for session_id, started, completed, source_min, source_max, digest_char in (
+        (
+            "first",
+            "2026-08-13T00:00:00+00:00",
+            "2026-08-13T00:15:06+00:00",
+            "2026-08-13T00:00:00+00:00",
+            source_boundary,
+            "e",
+        ),
+        (
+            "second",
+            "2026-08-13T00:15:06.065000+00:00",
+            "2026-08-13T00:30:00+00:00",
+            source_boundary,
+            "2026-08-13T00:30:00+00:00",
+            "f",
+        ),
+    ):
+        inventory = tmp_path / f"{session_id}.json"
+        inventory.write_text(session_id)
+        digest = digest_char * 64
+        manifest = DataPartitionManifest(
+            source="polymarket_clob",
+            instrument="BTC-15M",
+            schema_version="v1",
+            ingest_version="v16",
+            data_path=(
+                f"raw/polymarket_clob/BTC-15M/date=2026-08-13/hour=00/part-{digest[:32]}.parquet"
+            ),
+            sha256=digest,
+            row_count=10,
+            min_source_ts_ns=int(datetime.fromisoformat(source_min).timestamp() * 1e9),
+            max_source_ts_ns=int(datetime.fromisoformat(source_max).timestamp() * 1e9),
+            min_available_ts_ns=int(datetime.fromisoformat(source_min).timestamp() * 1e9),
+            max_available_ts_ns=int(datetime.fromisoformat(source_max).timestamp() * 1e9),
+            duplicate_count=0,
+            gap_count=0,
+            created_at=started,
+            attributes={},
+        )
+        part = SessionPartRecord("manifest.json", digest, manifest, "committed", started, completed)
+        session = CollectorSessionRecord(
+            session_id, "v16", started, completed, "complete", completed, None, {}, (part,)
+        )
+        index.append(session, inventory_path=inventory)
+
+    start_ns = int(datetime.fromisoformat("2026-08-13T00:00:00+00:00").timestamp() * 1e9)
+    end_ns = int(datetime.fromisoformat("2026-08-13T00:30:00+00:00").timestamp() * 1e9)
+    assert index.overlapping_session_ids(
+        start_ns=start_ns,
+        end_ns=end_ns,
+        required_sources=("polymarket_clob",),
+    ) == ("first", "second")
 
 
 @pytest.mark.parametrize("gap_count", [1, 3])
@@ -144,7 +201,7 @@ def test_index_rejects_recorded_source_gap_even_when_session_bounds_overlap(
         )
 
 
-def test_index_rejects_source_that_exists_but_does_not_span_session_interval(
+def test_index_does_not_treat_event_silence_as_a_transport_gap(
     tmp_path: Path,
 ) -> None:
     index = SessionCoverageIndex(tmp_path)
@@ -178,9 +235,8 @@ def test_index_rejects_source_that_exists_but_does_not_span_session_interval(
     )
     index.append(session, inventory_path=inventory)
 
-    with pytest.raises(ValueError, match="source boundary gap"):
-        index.coverage_evidence(
-            start_ns=lower,
-            end_ns=upper,
-            required_sources=("binance_spot",),
-        )
+    assert index.overlapping_session_ids(
+        start_ns=lower,
+        end_ns=upper,
+        required_sources=("binance_spot",),
+    ) == ("sparse",)

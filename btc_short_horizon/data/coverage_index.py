@@ -89,39 +89,31 @@ class SessionCoverageIndex:
         start_ns: int,
         end_ns: int,
         required_sources: tuple[str, ...],
-        maximum_session_gap_ns: int = 1_000_000,
-        maximum_source_boundary_gap_ns: int = 5_000_000_000,
+        maximum_session_gap_ns: int = 5_000_000_000,
     ) -> tuple[dict[str, object], ...]:
-        """Return immutable evidence only when complete sessions cover the whole interval."""
-        if start_ns >= end_ns or maximum_session_gap_ns < 0 or maximum_source_boundary_gap_ns < 0:
+        """Return evidence when durable sessions cover the interval without declared gaps."""
+        if start_ns >= end_ns or maximum_session_gap_ns < 0:
             raise ValueError("invalid coverage interval")
         entries = tuple(
             entry
             for entry in self._read()["entries"]
             if entry["started_at_ns"] <= end_ns and entry["completed_at_ns"] >= start_ns
         )
+        if not entries:
+            raise ValueError("session coverage gap")
         cursor = start_ns
         selected: list[dict[str, object]] = []
         for entry in entries:
-            if entry["started_at_ns"] > cursor + maximum_session_gap_ns:
+            if int(entry["started_at_ns"]) > cursor + maximum_session_gap_ns:
                 raise ValueError("session coverage gap")
             if any(source not in entry["sources"] for source in required_sources):
                 raise ValueError("session coverage missing required source")
-            required_start = max(start_ns, int(entry["started_at_ns"]))
-            required_end = min(end_ns, int(entry["completed_at_ns"]))
             for source in required_sources:
                 source_evidence = entry["sources"][source]
                 if int(source_evidence["gap_count"]) > 0:
                     raise ValueError(f"session coverage recorded source gap: {source}")
                 if int(source_evidence["row_count"]) < 1:
                     raise ValueError(f"session coverage empty required source: {source}")
-                if (
-                    int(source_evidence["min_available_ts_ns"])
-                    > required_start + maximum_source_boundary_gap_ns
-                    or int(source_evidence["max_available_ts_ns"])
-                    < required_end - maximum_source_boundary_gap_ns
-                ):
-                    raise ValueError(f"session coverage source boundary gap: {source}")
             selected.append(entry)
             cursor = max(cursor, int(entry["completed_at_ns"]))
             if cursor + maximum_session_gap_ns >= end_ns:

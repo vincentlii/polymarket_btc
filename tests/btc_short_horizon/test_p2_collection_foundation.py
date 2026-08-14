@@ -11,6 +11,7 @@ from btc_short_horizon.data.rule_contract import (
     CHAINLINK_BTC_USD_TWAP_60S_V1,
     rule_contract_sha256,
 )
+from scripts.btc_forward_collector import _readiness_protocol
 
 
 def test_rule_contract_sha256_is_stable_for_each_resolution_contract() -> None:
@@ -48,6 +49,23 @@ def test_baseline_collects_full_lifecycle_and_explicit_lightweight_feeds() -> No
         ("trades", "BTC-USDT-SWAP"),
     )
     assert config.collection.ingest_version == "btc-short-horizon-v16"
+
+
+def test_readiness_protocol_scopes_clob_to_the_current_market_window() -> None:
+    config = load_btc_project_config(Path("configs/btc_short_horizon/baseline.toml"))
+
+    protocol = _readiness_protocol(config)
+
+    windows = protocol["readiness_source_window_offsets_seconds"]
+    assert windows["polymarket_clob"] == (-90, 180)
+    for source in (
+        "polymarket_rtds_chainlink",
+        "binance_spot",
+        "binance_perp",
+        "okx_spot",
+        "okx_swap",
+    ):
+        assert windows[source] == (-3_600, 180)
 
 
 def test_disk_protection_policy_has_ordered_fail_safe_thresholds() -> None:

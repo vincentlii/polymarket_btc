@@ -1097,8 +1097,16 @@ markets without scanning the whole archive or sharing the collector process.
 It reports model-feature readiness through the configured entry horizon and
 exit-replay readiness through the full capture horizon separately. Failed or
 missing evidence is a machine-readable No-Go, never silently repaired.
-Recorded source gaps, empty feeds and source bounds which do not span the
-required interval also fail closed even when a Parquet file exists.
+Coverage is source-specific: continuous BTC/reference feeds cover their feature
+lookback, the current market's CLOB covers `t0-90s` through `t0+180s`, and exit
+evidence covers CLOB from `t0` through `t1`. Storage-session continuity is
+measured from durable session intervals with a five-second rotation tolerance;
+event silence is not treated as a transport gap because CLOB, OKX and trade
+streams do not guarantee a minimum message frequency. Recorded continuity
+gaps, missing/empty sources, ineligible decision snapshots and stale or absent
+book state still fail closed. Readiness status is scoped to the latest protocol
+hash so immutable receipts from an older contract remain historical evidence
+without poisoning the current epoch.
 
 Disk protection never deletes raw evidence. It keeps Polymarket, Chainlink and
 Binance Spot core feeds running, sheds optional Binance Perpetual and OKX

@@ -26,6 +26,10 @@ from btc_short_horizon.data.coverage_index import (  # noqa: E402
     coverage_evidence_sha256,
 )
 from btc_short_horizon.data.rule_contract import rule_contract_sha256  # noqa: E402
+from btc_short_horizon.data.readiness import (  # noqa: E402
+    collect_source_window_evidence,
+    current_protocol_receipts,
+)
 from btc_short_horizon.data.session_inventory import (  # noqa: E402
     PART_STATUS_COMMITTED,
     SESSION_STATUS_COMPLETE,
@@ -77,18 +81,15 @@ def _expected_coverage_evidence(
     index: SessionCoverageIndex,
     evidence_payload: tuple[dict[str, object], ...],
     coverage_error: object,
-    start_ns: int,
-    end_ns: int,
-    required_sources: tuple[str, ...],
+    source_windows_ns: dict[str, tuple[int, int]],
 ) -> tuple[dict[str, object], ...]:
     if coverage_error:
         if evidence_payload:
             raise ValueError("failed coverage candidate must not include evidence sessions")
         return ()
-    return index.coverage_evidence(
-        start_ns=start_ns,
-        end_ns=end_ns,
-        required_sources=required_sources,
+    return collect_source_window_evidence(
+        index=index,
+        source_windows_ns=source_windows_ns,
     )
 
 
@@ -123,15 +124,20 @@ def audit_candidate(
     if coverage_evidence_sha256(evidence_payload) != candidate.get("coverage_evidence_sha256"):
         raise ValueError("readiness coverage evidence hash mismatch")
     coverage_index = SessionCoverageIndex(raw_data_root)
+    t0_ns = int(market.t0.timestamp() * 1e9)
     expected_evidence = _expected_coverage_evidence(
         index=coverage_index,
         evidence_payload=evidence_payload,
         coverage_error=candidate.get("coverage_error"),
-        start_ns=int(market.t0.timestamp() * 1e9)
-        - int(expected_protocol["readiness_max_feature_lookback_seconds"]) * 1_000_000_000,
-        end_ns=int(market.t0.timestamp() * 1e9)
-        + int(tuple(expected_protocol["readiness_decision_offsets_seconds"])[-1]) * 1_000_000_000,
-        required_sources=required_sources,
+        source_windows_ns={
+            source: (
+                int(t0_ns + offsets[0] * 1_000_000_000),
+                int(t0_ns + offsets[1] * 1_000_000_000),
+            )
+            for source, offsets in expected_protocol[
+                "readiness_source_window_offsets_seconds"
+            ].items()
+        },
     )
     if expected_evidence != evidence_payload:
         raise ValueError("readiness coverage evidence no longer matches persistent index")
@@ -144,9 +150,7 @@ def audit_candidate(
         index=coverage_index,
         evidence_payload=exit_evidence_payload,
         coverage_error=candidate.get("exit_coverage_error"),
-        start_ns=int(market.t0.timestamp() * 1e9),
-        end_ns=int(market.t1.timestamp() * 1e9),
-        required_sources=("polymarket_clob",),
+        source_windows_ns={"polymarket_clob": (t0_ns, int(market.t1.timestamp() * 1e9))},
     )
     if expected_exit_evidence != exit_evidence_payload:
         raise ValueError("exit coverage evidence no longer matches persistent index")
@@ -389,11 +393,7 @@ def main() -> int:
 def aggregate_receipts(receipt_root: Path, *, limit: int = 96) -> dict[str, object]:
     paths = sorted(receipt_root.glob("*.json"), key=lambda item: item.name)[-limit:]
     payloads = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
-    receipts = [
-        item
-        for item in payloads
-        if item.get("schema_version") == "btc-training-readiness-receipt-v1"
-    ]
+    receipts = current_protocol_receipts(payloads)
     errors = [
         item for item in payloads if item.get("schema_version") == "btc-training-readiness-error-v1"
     ]

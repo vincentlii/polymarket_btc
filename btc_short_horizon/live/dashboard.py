@@ -25,6 +25,7 @@ from btc_short_horizon.live.runtime import (
     RuntimeStatusStore,
     check_runtime_health,
 )
+from btc_short_horizon.data.readiness import current_protocol_receipts
 
 
 _ORDER_HISTORY_DEFAULT_LIMIT = 50
@@ -160,11 +161,7 @@ def _readiness_status(runtime_root: Path) -> dict[str, object]:
         payloads = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
     except (OSError, json.JSONDecodeError):
         return {"healthy": False, "reason": "invalid_receipt", "receipt_count": len(paths)}
-    receipts = [
-        item
-        for item in payloads
-        if item.get("schema_version") == "btc-training-readiness-receipt-v1"
-    ]
+    receipts = current_protocol_receipts(payloads)
     errors = [
         item for item in payloads if item.get("schema_version") == "btc-training-readiness-error-v1"
     ]

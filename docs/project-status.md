@@ -1,5 +1,17 @@
 # Project Status
 
+## 2026-08-14 readiness coverage-contract correction
+
+- Readiness now distinguishes durable storage-session continuity from
+  event-driven message activity. Normal 60--70ms writer rotation and a quiet
+  CLOB/OKX interval no longer masquerade as data loss; explicit persisted gaps
+  remain fail-closed.
+- Each source has its causal window: BTC/reference lookback, current-market
+  CLOB pre-open through `t0+180s`, and full-lifecycle CLOB exit evidence.
+- Dashboard readiness aggregates only the newest protocol hash. Prior immutable
+  failure receipts remain available for audit but no longer define current
+  health after a contract upgrade.
+
 ## 2026-08-13 v10 multisource readiness activation
 
 - Execution epoch `paper-v10-multisource-readiness` isolates the new
