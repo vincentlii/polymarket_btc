@@ -165,6 +165,15 @@ advances that logical stream's epoch, and reconnects with bounded exponential
 backoff. Low-frequency CLOB, OKX, and trade-only subscriptions retain no generic
 payload deadline because their protocols do not guarantee a safe minimum event
 rate.
+Version v17 scopes Polymarket source-timestamp regression watermarks to logical
+event lanes. `book` and `price_change` retain one shared book-state watermark,
+while `last_trade_price`, tick-size, and market-metadata notifications no longer
+compare their source clocks against newer book deltas. Live CLOB evidence showed
+trade notifications arriving 2.61 seconds after newer price changes on the same
+socket; the venue does not document cross-event timestamp monotonicity. Local
+receive time and admission sequence remain the causal order, and a material
+regression inside the book-state lane, explicit disconnect, malformed state, or
+backpressure loss still creates a fail-closed continuity gap.
 Every bounded connection still starts from the venue's
 official initial full-book dump; window-external deltas are neither required
 nor silently treated as collected evidence. A collector restart after a capture

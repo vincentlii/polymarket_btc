@@ -98,7 +98,7 @@ okx_subscriptions = [
 disk_warning_free_gib = 20.0
 disk_optional_feeds_free_gib = 15.0
 disk_extended_capture_free_gib = 10.0
-ingest_version = "btc-short-horizon-v16"
+ingest_version = "btc-short-horizon-v17"
 
 [maker]
 structure = "single"

@@ -819,7 +819,7 @@ def test_opening_market_audit_writes_observations_and_coverage(tmp_path: Path) -
     event_time = T0 + timedelta(seconds=2)
     inventory = SessionInventoryRepository(tmp_path).start_session(
         session_id="test-session",
-        ingest_version="btc-short-horizon-v16",
+        ingest_version="btc-short-horizon-v17",
     )
     writer = PartitionedRawEventWriter(
         tmp_path,
@@ -836,14 +836,14 @@ def test_opening_market_audit_writes_observations_and_coverage(tmp_path: Path) -
                 at=event_time,
                 bid="0.60",
                 ask="0.61",
-                ingest_version="btc-short-horizon-v16",
+                ingest_version="btc-short-horizon-v17",
             ),
             _raw_book_event(
                 token_id=DOWN_TOKEN,
                 at=event_time,
                 bid="0.39",
                 ask="0.40",
-                ingest_version="btc-short-horizon-v16",
+                ingest_version="btc-short-horizon-v17",
             ),
         )
     )

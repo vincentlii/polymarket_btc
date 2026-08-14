@@ -39,7 +39,7 @@ def test_baseline_config_is_path_relative_and_has_explicit_queue_scenarios() -> 
     assert config.collection.opening_handoff_delay_seconds == 900.0
     assert config.paper_research.tail_entry_price_threshold == 0.35
     assert config.paper_research.evidence_target_markets == 300
-    assert config.collection.ingest_version == "btc-short-horizon-v16"
+    assert config.collection.ingest_version == "btc-short-horizon-v17"
     assert config.rule_epoch == "chainlink-btc-usd-twap-60s-v1"
     assert config.model_rule_epoch == "chainlink-btc-usd-point-v1"
     assert config.allow_rule_epoch_transition_proxy is True

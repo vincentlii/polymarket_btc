@@ -2894,6 +2894,84 @@ def test_forward_collector_invalidates_l2_state_after_quality_time_regression(
     assert after_gap.resubscribe_required
 
 
+def test_forward_collector_keeps_delayed_trade_out_of_book_continuity_lane(
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    collector = BtcForwardCollector(
+        raw_data_root=tmp_path,
+        polymarket_token_ids=("up-token",),
+    )
+    book = collector.handle_polymarket(
+        {
+            "event_type": "book",
+            "asset_id": "up-token",
+            "timestamp": int(SOURCE_TIME.timestamp() * 1_000),
+            "bids": [{"price": "0.48", "size": "11"}],
+            "asks": [{"price": "0.52", "size": "9"}],
+            "hash": "book-1",
+        },
+        collector_receive_ts=SOURCE_TIME + timedelta(seconds=1),
+    )
+    changed = collector.handle_polymarket(
+        {
+            "event_type": "price_change",
+            "timestamp": int((SOURCE_TIME + timedelta(seconds=5)).timestamp() * 1_000),
+            "price_changes": [
+                {"asset_id": "up-token", "price": "0.49", "size": "5", "side": "BUY"}
+            ],
+        },
+        collector_receive_ts=SOURCE_TIME + timedelta(seconds=6),
+    )
+    newer_trade = collector.handle_polymarket(
+        {
+            "event_type": "last_trade_price",
+            "asset_id": "up-token",
+            "price": "0.51",
+            "size": "1",
+            "side": "BUY",
+            "timestamp": int((SOURCE_TIME + timedelta(seconds=4)).timestamp() * 1_000),
+        },
+        collector_receive_ts=SOURCE_TIME + timedelta(seconds=6, milliseconds=500),
+    )
+    delayed_trade = collector.handle_polymarket(
+        {
+            "event_type": "last_trade_price",
+            "asset_id": "up-token",
+            "price": "0.51",
+            "size": "2",
+            "side": "BUY",
+            "timestamp": int((SOURCE_TIME + timedelta(seconds=2)).timestamp() * 1_000),
+        },
+        collector_receive_ts=SOURCE_TIME + timedelta(seconds=7),
+    )
+    next_change = collector.handle_polymarket(
+        {
+            "event_type": "price_change",
+            "timestamp": int((SOURCE_TIME + timedelta(seconds=6)).timestamp() * 1_000),
+            "price_changes": [
+                {"asset_id": "up-token", "price": "0.50", "size": "4", "side": "BUY"}
+            ],
+        },
+        collector_receive_ts=SOURCE_TIME + timedelta(seconds=8),
+    )
+    collector.flush()
+    loaded = load_forward_raw_events(
+        raw_data_root=tmp_path,
+        source="polymarket_clob",
+        instrument="up-token",
+        start_time=SOURCE_TIME,
+        end_time=SOURCE_TIME + timedelta(seconds=9),
+        ingest_version="btc-short-horizon-v1",
+    )
+
+    assert all(
+        result.accepted_events == 1 and not result.resubscribe_required
+        for result in (book, changed, newer_trade, delayed_trade, next_change)
+    )
+    assert sum(item.gap_events for item in collector.quality_stats.values()) == 0
+    assert not [event for event in loaded.events if event.event_type == "continuity_gap"]
+
+
 def test_forward_collector_invalidates_binance_depth_after_quality_time_regression(
     tmp_path,
 ) -> None:  # type: ignore[no-untyped-def]

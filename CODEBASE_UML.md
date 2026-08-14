@@ -1,8 +1,8 @@
 # Codebase UML Inventory
 
 This file is generated from Python AST metadata and excludes `tests/` plus git-ignored private strategy/research directories.
-Generated: 2026-08-14T05:19:16+00:00
-Modules: 258 | Classes: 532 | Functions/methods: 3502
+Generated: 2026-08-14T07:02:24+00:00
+Modules: 258 | Classes: 532 | Functions/methods: 3503
 
 ## Backtesting Data Flow
 
@@ -630,18 +630,19 @@ flowchart TD
 
 ### `btc_short_horizon/data/polymarket.py`
 - Imports: `__future__, btc_short_horizon, dataclasses, datetime, enum, hashlib, json, math, typing`
-- Function L418: `_levels(value: object) -> tuple[tuple[float, float], ...]`
-- Function L434: `_metadata_references_token(payload: Mapping[str, object], token_id: str) -> bool`
-- Function L446: `_payload_hash(payload: Mapping[str, object]) -> str`
-- Function L451: `_text(value: object, name: str) -> str`
-- Function L457: `_number(value: object, name: str) -> float`
-- Function L467: `_probability(value: object, name: str) -> float`
-- Function L474: `_book_boundary_probability(value: object, name: str) -> float`
-- Function L481: `_positive_float(value: object, name: str) -> float`
-- Function L488: `_nonnegative_float(value: object, name: str) -> float`
-- Function L495: `_timestamp_millis(value: object, name: str) -> datetime`
-- Function L505: `_as_utc(value: datetime, name: str) -> datetime`
-- Function L511: `_datetime_to_ns(value: datetime) -> int`
+- Function L430: `_levels(value: object) -> tuple[tuple[float, float], ...]`
+- Function L446: `_metadata_references_token(payload: Mapping[str, object], token_id: str) -> bool`
+- Function L458: `_source_timestamp_lane(event_type: str) -> str`
+- Function L468: `_payload_hash(payload: Mapping[str, object]) -> str`
+- Function L473: `_text(value: object, name: str) -> str`
+- Function L479: `_number(value: object, name: str) -> float`
+- Function L489: `_probability(value: object, name: str) -> float`
+- Function L496: `_book_boundary_probability(value: object, name: str) -> float`
+- Function L503: `_positive_float(value: object, name: str) -> float`
+- Function L510: `_nonnegative_float(value: object, name: str) -> float`
+- Function L517: `_timestamp_millis(value: object, name: str) -> datetime`
+- Function L527: `_as_utc(value: datetime, name: str) -> datetime`
+- Function L533: `_datetime_to_ns(value: datetime) -> int`
 - Class L17: `PolymarketL2Status(StrEnum)`
 - Class L25: `PolymarketL2Result`
 - Class L38: `PolymarketL2Normalizer`
@@ -653,15 +654,15 @@ flowchart TD
   - Method L96: `reset(self) -> None`
   - Method L106: `apply(self, payload: Mapping[str, object], *, collector_receive_ts: datetime) -> PolymarketL2Result`
   - Method L136: `_apply_book(self, payload: Mapping[str, object], *, receive_ts: datetime) -> PolymarketL2Result`
-  - Method L172: `_apply_price_change(self, payload: Mapping[str, object], *, receive_ts: datetime) -> PolymarketL2Result`
-  - Method L258: `_apply_trade(self, payload: Mapping[str, object], *, receive_ts: datetime) -> PolymarketL2Result`
-  - Method L294: `_apply_tick_size_change(self, payload: Mapping[str, object], *, receive_ts: datetime) -> PolymarketL2Result`
-  - Method L323: `_apply_market_metadata(self, payload: Mapping[str, object], *, receive_ts: datetime, event_type: str) -> PolymarketL2Result`
-  - Method L346: `_ignored(self, payload: Mapping[str, object], receive_ts: datetime, reason: str) -> PolymarketL2Result`
-  - Method L356: `_timing(self, payload: Mapping[str, object], *, receive_ts: datetime) -> TimedMarketEvent`
-  - Method L377: `_accept_timing(self, timing: TimedMarketEvent) -> None`
-  - Method L386: `_has_material_source_timestamp_regression(self, source_ts: datetime) -> bool`
-  - Method L391: `_book_top(self, timing: TimedMarketEvent, *, bids: Mapping[float, float] | None = None, asks: Mapping[float, float] | None = None) -> BtcBookTop | None`
+  - Method L175: `_apply_price_change(self, payload: Mapping[str, object], *, receive_ts: datetime) -> PolymarketL2Result`
+  - Method L264: `_apply_trade(self, payload: Mapping[str, object], *, receive_ts: datetime) -> PolymarketL2Result`
+  - Method L290: `_apply_tick_size_change(self, payload: Mapping[str, object], *, receive_ts: datetime) -> PolymarketL2Result`
+  - Method L322: `_apply_market_metadata(self, payload: Mapping[str, object], *, receive_ts: datetime, event_type: str) -> PolymarketL2Result`
+  - Method L348: `_ignored(self, payload: Mapping[str, object], receive_ts: datetime, reason: str) -> PolymarketL2Result`
+  - Method L358: `_timing(self, payload: Mapping[str, object], *, receive_ts: datetime) -> TimedMarketEvent`
+  - Method L380: `_accept_timing(self, timing: TimedMarketEvent, *, event_type: str | None) -> None`
+  - Method L392: `_has_material_source_timestamp_regression(self, source_ts: datetime, *, event_type: str) -> bool`
+  - Method L403: `_book_top(self, timing: TimedMarketEvent, *, bids: Mapping[float, float] | None = None, asks: Mapping[float, float] | None = None) -> BtcBookTop | None`
 
 ### `btc_short_horizon/data/quality.py`
 - Imports: `__future__, btc_short_horizon, collections, dataclasses, datetime`

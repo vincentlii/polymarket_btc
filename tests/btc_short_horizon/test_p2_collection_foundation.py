@@ -48,7 +48,7 @@ def test_baseline_collects_full_lifecycle_and_explicit_lightweight_feeds() -> No
         ("books5", "BTC-USDT-SWAP"),
         ("trades", "BTC-USDT-SWAP"),
     )
-    assert config.collection.ingest_version == "btc-short-horizon-v16"
+    assert config.collection.ingest_version == "btc-short-horizon-v17"
 
 
 def test_readiness_protocol_scopes_clob_to_the_current_market_window() -> None:

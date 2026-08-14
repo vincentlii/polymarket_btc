@@ -57,7 +57,7 @@ class PolymarketL2Normalizer:
         self._has_snapshot = False
         self._tick_size: float | None = None
         self._last_available_ts: datetime | None = None
-        self._source_ts_high_water: datetime | None = None
+        self._source_ts_high_water_by_lane: dict[str, datetime] = {}
 
     @property
     def tick_size(self) -> float | None:
@@ -90,7 +90,7 @@ class PolymarketL2Normalizer:
         candidate._has_snapshot = self._has_snapshot
         candidate._tick_size = self._tick_size
         candidate._last_available_ts = self._last_available_ts
-        candidate._source_ts_high_water = self._source_ts_high_water
+        candidate._source_ts_high_water_by_lane = self._source_ts_high_water_by_lane.copy()
         return candidate
 
     def reset(self) -> None:
@@ -101,7 +101,7 @@ class PolymarketL2Normalizer:
         self._has_snapshot = False
         self._tick_size = None
         self._last_available_ts = None
-        self._source_ts_high_water = None
+        self._source_ts_high_water_by_lane = {}
 
     def apply(
         self, payload: Mapping[str, object], *, collector_receive_ts: datetime
@@ -141,7 +141,10 @@ class PolymarketL2Normalizer:
         bids = dict(_levels(payload.get("bids", ())))
         asks = dict(_levels(payload.get("asks", ())))
         timing = self._timing(payload, receive_ts=receive_ts)
-        source_time_regressed = self._has_material_source_timestamp_regression(timing.source_ts)
+        source_time_regressed = self._has_material_source_timestamp_regression(
+            timing.source_ts,
+            event_type="book",
+        )
         top = self._book_top(timing, bids=bids, asks=asks)
         if bids and asks and top is None:
             self.reset()
@@ -158,7 +161,7 @@ class PolymarketL2Normalizer:
         self._bids = bids
         self._asks = asks
         self._has_snapshot = True
-        self._accept_timing(timing)
+        self._accept_timing(timing, event_type="book")
         return PolymarketL2Result(
             status=PolymarketL2Status.APPLIED,
             timing=timing,
@@ -184,7 +187,10 @@ class PolymarketL2Normalizer:
         if not matched_changes:
             return self._ignored(payload, receive_ts, "other_token")
         timing = self._timing(payload, receive_ts=receive_ts)
-        if self._has_material_source_timestamp_regression(timing.source_ts):
+        if self._has_material_source_timestamp_regression(
+            timing.source_ts,
+            event_type="price_change",
+        ):
             self.reset()
             return PolymarketL2Result(
                 status=PolymarketL2Status.INVALID,
@@ -246,7 +252,7 @@ class PolymarketL2Normalizer:
             )
         self._bids = bids
         self._asks = asks
-        self._accept_timing(timing)
+        self._accept_timing(timing, event_type="price_change")
         return PolymarketL2Result(
             status=PolymarketL2Status.APPLIED,
             timing=timing,
@@ -261,20 +267,10 @@ class PolymarketL2Normalizer:
         if _text(payload.get("asset_id"), "asset_id") != self.token_id:
             return self._ignored(payload, receive_ts, "other_token")
         timing = self._timing(payload, receive_ts=receive_ts)
-        if self._has_material_source_timestamp_regression(timing.source_ts):
-            self.reset()
-            return PolymarketL2Result(
-                status=PolymarketL2Status.INVALID,
-                timing=timing,
-                event_type="last_trade_price",
-                reason="source_timestamp_regression",
-                starts_new_epoch=True,
-                requires_resubscribe=True,
-            )
         side = _text(payload.get("side"), "side").casefold()
         if side not in {"buy", "sell"}:
             raise ValueError("last_trade_price side must be BUY or SELL")
-        self._accept_timing(timing)
+        self._accept_timing(timing, event_type=None)
         return PolymarketL2Result(
             status=PolymarketL2Status.APPLIED,
             timing=timing,
@@ -298,7 +294,10 @@ class PolymarketL2Normalizer:
         if asset_id is not None and _text(asset_id, "asset_id") != self.token_id:
             return self._ignored(payload, receive_ts, "other_token")
         timing = self._timing(payload, receive_ts=receive_ts)
-        if self._has_material_source_timestamp_regression(timing.source_ts):
+        if self._has_material_source_timestamp_regression(
+            timing.source_ts,
+            event_type="tick_size_change",
+        ):
             self.reset()
             return PolymarketL2Result(
                 status=PolymarketL2Status.INVALID,
@@ -311,7 +310,7 @@ class PolymarketL2Normalizer:
         new_tick_size = _probability(payload.get("new_tick_size"), "new_tick_size")
         changed = self._tick_size is not None and self._tick_size != new_tick_size
         self._tick_size = new_tick_size
-        self._accept_timing(timing)
+        self._accept_timing(timing, event_type="tick_size_change")
         return PolymarketL2Result(
             status=PolymarketL2Status.APPLIED,
             timing=timing,
@@ -326,7 +325,10 @@ class PolymarketL2Normalizer:
         if not _metadata_references_token(payload, self.token_id):
             return self._ignored(payload, receive_ts, "other_token")
         timing = self._timing(payload, receive_ts=receive_ts)
-        if self._has_material_source_timestamp_regression(timing.source_ts):
+        if self._has_material_source_timestamp_regression(
+            timing.source_ts,
+            event_type=event_type,
+        ):
             self.reset()
             return PolymarketL2Result(
                 status=PolymarketL2Status.INVALID,
@@ -336,7 +338,7 @@ class PolymarketL2Normalizer:
                 starts_new_epoch=True,
                 requires_resubscribe=True,
             )
-        self._accept_timing(timing)
+        self._accept_timing(timing, event_type=event_type)
         return PolymarketL2Result(
             status=PolymarketL2Status.APPLIED,
             timing=timing,
@@ -356,7 +358,8 @@ class PolymarketL2Normalizer:
     def _timing(self, payload: Mapping[str, object], *, receive_ts: datetime) -> TimedMarketEvent:
         source_ts = _timestamp_millis(payload.get("timestamp"), "timestamp")
         base_available_ts = max(source_ts, receive_ts)
-        if self._has_material_source_timestamp_regression(source_ts):
+        event_type = _text(payload.get("event_type"), "event_type")
+        if self._has_material_source_timestamp_regression(source_ts, event_type=event_type):
             available_ts = base_available_ts
         else:
             available_ts = max(
@@ -374,19 +377,28 @@ class PolymarketL2Normalizer:
             ingest_version="btc-short-horizon-v1",
         )
 
-    def _accept_timing(self, timing: TimedMarketEvent) -> None:
+    def _accept_timing(self, timing: TimedMarketEvent, *, event_type: str | None) -> None:
         """Advance only on an applied token event; small source-clock jitter may delay, never rewind."""
 
         self._last_available_ts = timing.available_ts
-        self._source_ts_high_water = max(
+        if event_type is None:
+            return
+        lane = _source_timestamp_lane(event_type)
+        self._source_ts_high_water_by_lane[lane] = max(
             timing.source_ts,
-            self._source_ts_high_water or timing.source_ts,
+            self._source_ts_high_water_by_lane.get(lane, timing.source_ts),
         )
 
-    def _has_material_source_timestamp_regression(self, source_ts: datetime) -> bool:
-        if self._source_ts_high_water is None:
+    def _has_material_source_timestamp_regression(
+        self,
+        source_ts: datetime,
+        *,
+        event_type: str,
+    ) -> bool:
+        high_water = self._source_ts_high_water_by_lane.get(_source_timestamp_lane(event_type))
+        if high_water is None:
             return False
-        return source_ts + self.source_timestamp_regression_tolerance <= self._source_ts_high_water
+        return source_ts + self.source_timestamp_regression_tolerance <= high_water
 
     def _book_top(
         self,
@@ -441,6 +453,16 @@ def _metadata_references_token(payload: Mapping[str, object], token_id: str) -> 
             if any(item == token_id for item in value):
                 return True
     return False
+
+
+def _source_timestamp_lane(event_type: str) -> str:
+    """Group only events that mutate the same logical venue state."""
+
+    if event_type in {"book", "price_change"}:
+        return "book_state"
+    if event_type in {"new_market", "market_resolved"}:
+        return "market_metadata"
+    return event_type
 
 
 def _payload_hash(payload: Mapping[str, object]) -> str:

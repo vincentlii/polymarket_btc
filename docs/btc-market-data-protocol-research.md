@@ -252,6 +252,16 @@ whose default is `true` in the
   monotonic/wall-clock receive timestamp. Use local receipt as the causal
   availability boundary. Persist a collector-session admission sequence as the
   final tie-breaker because the venue does not guarantee timestamp uniqueness.
+- Do not compare `last_trade_price` source timestamps with newer `book` or
+  `price_change` timestamps. Production evidence contains delayed trade
+  notifications on the same socket, and the venue does not document
+  cross-event timestamp monotonicity. Maintain a shared source-time watermark
+  for the book-state lane (`book` plus `price_change`). Preserve trade source
+  timestamps as metadata, but do not use them as a continuity gate because a
+  trade notification does not mutate L2 state and resubscription cannot recover
+  a source-clock ordering guarantee. Tick-size and market-metadata notifications
+  retain independent watermarks. A material book-state regression remains a
+  hard gap; causal replay order remains local receipt plus admission sequence.
 - A real-time research consumer receives a bounded non-blocking copy only after
   the durable collector assigns that admission sequence. Duplicate/rejected
   payloads are not published. Consumer overflow is sticky and must stop that

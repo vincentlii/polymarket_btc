@@ -179,6 +179,63 @@ def test_polymarket_material_source_regression_fails_closed_with_monotonic_recei
     assert not normalizer.has_snapshot
 
 
+def test_polymarket_delayed_trade_timestamp_does_not_invalidate_newer_book_state() -> None:
+    """Trade notifications can arrive after newer book updates on the same socket."""
+
+    normalizer = PolymarketL2Normalizer(token_id=TOKEN)
+    source_start = datetime(2026, 4, 13, tzinfo=UTC)
+    normalizer.apply(
+        {
+            "event_type": "book",
+            "asset_id": TOKEN,
+            "bids": [{"price": "0.50", "size": "10"}],
+            "asks": [{"price": "0.52", "size": "20"}],
+            "timestamp": int(source_start.timestamp() * 1_000),
+        },
+        collector_receive_ts=source_start + timedelta(seconds=1),
+    )
+    changed = normalizer.apply(
+        {
+            "event_type": "price_change",
+            "timestamp": int((source_start + timedelta(seconds=5)).timestamp() * 1_000),
+            "price_changes": [{"asset_id": TOKEN, "price": "0.51", "size": "5", "side": "BUY"}],
+        },
+        collector_receive_ts=source_start + timedelta(seconds=6),
+    )
+    newer_trade = normalizer.apply(
+        {
+            "event_type": "last_trade_price",
+            "asset_id": TOKEN,
+            "price": "0.51",
+            "size": "1",
+            "side": "BUY",
+            "timestamp": int((source_start + timedelta(seconds=4)).timestamp() * 1_000),
+        },
+        collector_receive_ts=source_start + timedelta(seconds=6, milliseconds=500),
+    )
+
+    delayed_trade = normalizer.apply(
+        {
+            "event_type": "last_trade_price",
+            "asset_id": TOKEN,
+            "price": "0.51",
+            "size": "2",
+            "side": "BUY",
+            "timestamp": int((source_start + timedelta(seconds=2)).timestamp() * 1_000),
+        },
+        collector_receive_ts=source_start + timedelta(seconds=7),
+    )
+
+    assert changed.status is PolymarketL2Status.APPLIED
+    assert newer_trade.status is PolymarketL2Status.APPLIED
+    assert delayed_trade.status is PolymarketL2Status.APPLIED
+    assert delayed_trade.trade is not None
+    assert not delayed_trade.starts_new_epoch
+    assert not delayed_trade.requires_resubscribe
+    assert normalizer.has_snapshot
+    assert normalizer.book_levels()[0][0] == (0.51, 5.0)
+
+
 def test_polymarket_delta_before_snapshot_requires_resnapshot_and_crossed_book_is_invalid() -> None:
     normalizer = PolymarketL2Normalizer(token_id=TOKEN)
     waiting = normalizer.apply(
