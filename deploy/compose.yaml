@@ -129,12 +129,14 @@ services:
     pids_limit: 48
     mem_limit: 768m
     cpus: 0.35
-    tmpfs:
-      - /tmp:size=256m
     environment:
       PYTHONUNBUFFERED: "1"
       BTC_READINESS_DUCKDB_MEMORY_LIMIT: "64MB"
-      BTC_READINESS_TEMP_DIRECTORY: "/tmp"
+      BTC_READINESS_TEMP_DIRECTORY: "/app/readiness-tmp"
+      BTC_READINESS_TEMP_MAX_GIB: "4"
+      BTC_READINESS_TEMP_MIN_FREE_GIB: "2"
+      BTC_READINESS_TEMP_STALE_SECONDS: "21600"
+      TMPDIR: "/app/readiness-tmp"
     command: ["python", "scripts/btc_training_readiness_worker.py", "--watch", "--config", "configs/btc_short_horizon/baseline.toml", "--candidate-root", "/app/data/btc_short_horizon/readiness/candidates", "--raw-data-root", "/app/data/btc_short_horizon", "--receipt-root", "/app/output/btc_short_horizon/runtime/readiness/receipts", "--runtime-root", "/app/output/btc_short_horizon/runtime"]
     volumes:
       - type: bind
@@ -144,6 +146,11 @@ services:
       - type: bind
         source: ${BTC_OUTPUT_DIR:-./runtime/output}
         target: /app/output
+      - type: bind
+        source: ${BTC_READINESS_TEMP_DIR:-./runtime/tmp/readiness}
+        target: /app/readiness-tmp
+        bind:
+          create_host_path: false
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "scripts/btc_runtime_healthcheck.py", "--runtime-root", "/app/output/btc_short_horizon/runtime", "--service", "training_readiness", "--max-age-seconds", "150"]

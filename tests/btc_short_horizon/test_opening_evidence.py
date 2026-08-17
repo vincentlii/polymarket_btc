@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 import json
+import os
 from pathlib import Path
+import time
 
 import pyarrow as pa
 import pytest
@@ -28,8 +30,10 @@ from btc_short_horizon.data.storage import ImmutableParquetStore
 from btc_short_horizon.features.events import BtcBookTop
 from btc_short_horizon.research.opening_evidence import (
     RawPayloadError,
+    _cleanup_stale_readiness_scratch,
     TokenBookStateEvent,
     _duckdb_memory_limit,
+    _readiness_scratch_parent,
     build_opening_market_observations,
     load_forward_polymarket_book_events,
     pmxt_order_book_state_events,
@@ -53,6 +57,27 @@ def test_duckdb_readiness_memory_budget_is_bounded(monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("BTC_READINESS_DUCKDB_MEMORY_LIMIT", "96GB")
     with pytest.raises(RawPayloadError, match="MB value"):
         _duckdb_memory_limit()
+
+
+def test_readiness_spill_root_is_bounded_and_cleans_only_stale_runs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("BTC_READINESS_TEMP_DIRECTORY", str(tmp_path))
+    monkeypatch.setenv("BTC_READINESS_TEMP_MIN_FREE_GIB", "0")
+    monkeypatch.setenv("BTC_READINESS_TEMP_STALE_SECONDS", "600")
+    stale = tmp_path / "btc-readiness-sort-stale"
+    stale.mkdir()
+    (stale / "spill.tmp").write_bytes(b"stale")
+    old = time.time() - 601
+    os.utime(stale, (old, old))
+
+    assert _readiness_scratch_parent() == tmp_path
+    _cleanup_stale_readiness_scratch(tmp_path)
+    assert not stale.exists()
+
+    monkeypatch.setenv("BTC_READINESS_TEMP_MAX_GIB", "0.5")
+    with pytest.raises(RawPayloadError, match="between"):
+        _readiness_scratch_parent()
 
 
 def _market() -> MarketWindow:

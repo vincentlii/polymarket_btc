@@ -1125,7 +1125,14 @@ Readiness folds one source at a time and uses DuckDB's bounded external sort
 for append-only Parquet partitions, spilling to a short-lived directory rather
 than retaining a one-hour payload list in Python memory. The spill directory
 is controlled by `BTC_READINESS_TEMP_DIRECTORY`; missing or unwritable spill
-storage fails closed.
+storage fails closed. Production mounts this path from the host rather than a
+container `tmpfs`, because filesystem-backed spill pages must not count against
+the readiness cgroup memory budget. `BTC_READINESS_TEMP_MAX_GIB` configures
+DuckDB's hard temporary-file limit, `BTC_READINESS_TEMP_MIN_FREE_GIB` reserves
+host disk for the collector, and stale `btc-readiness-sort-*` directories from
+an interrupted worker are removed only after the configured age. Exceeding any
+quota is a machine-readable No-Go; the worker never silently falls back to
+unbounded `/tmp`.
 Coverage is source-specific: continuous BTC/reference feeds cover their feature
 lookback, the current market's CLOB covers `t0-90s` through `t0+180s`, and exit
 evidence covers CLOB from `t0` through `t1`. Storage-session continuity is

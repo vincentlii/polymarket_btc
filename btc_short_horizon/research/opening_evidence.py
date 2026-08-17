@@ -12,7 +12,9 @@ import json
 from math import isfinite
 import os
 from pathlib import Path
+import shutil
 import tempfile
+import time
 from typing import TYPE_CHECKING
 
 import pyarrow as pa
@@ -54,6 +56,15 @@ _RAW_LOOKUP_CACHE_BATCHES = 16
 _DEFAULT_DUCKDB_MEMORY_LIMIT = "64MB"
 _MIN_DUCKDB_MEMORY_MB = 32
 _MAX_DUCKDB_MEMORY_MB = 256
+_DEFAULT_READINESS_TEMP_MAX_GIB = 4
+_MIN_READINESS_TEMP_MAX_GIB = 1
+_MAX_READINESS_TEMP_MAX_GIB = 32
+_DEFAULT_READINESS_TEMP_MIN_FREE_GIB = 2
+_MIN_READINESS_TEMP_MIN_FREE_GIB = 0
+_MAX_READINESS_TEMP_MIN_FREE_GIB = 64
+_DEFAULT_READINESS_TEMP_STALE_SECONDS = 6 * 60 * 60
+_MIN_READINESS_TEMP_STALE_SECONDS = 5 * 60
+_MAX_READINESS_TEMP_STALE_SECONDS = 7 * 24 * 60 * 60
 _RAW_COLUMNS = (
     "source_ts_ns",
     "collector_receive_ts_ns",
@@ -1333,10 +1344,16 @@ def _duckdb_sorted_raw_rows(
     except ImportError as exc:  # pragma: no cover - dependency is pinned in the project
         raise RawPayloadError("duckdb is required for bounded raw streaming") from exc
 
-    scratch_root = os.environ.get("BTC_READINESS_TEMP_DIRECTORY")
-    scratch_parent = Path(scratch_root) if scratch_root else None
-    if scratch_parent is not None:
-        scratch_parent.mkdir(parents=True, exist_ok=True)
+    scratch_parent = _readiness_scratch_parent()
+    _cleanup_stale_readiness_scratch(scratch_parent)
+    max_temp_bytes, min_free_bytes = _readiness_temp_limits()
+    if _directory_size_bytes(scratch_parent) > max_temp_bytes:
+        raise RawPayloadError("readiness scratch directory exceeds its configured quota")
+    try:
+        if shutil.disk_usage(scratch_parent).free < min_free_bytes:
+            raise RawPayloadError("filesystem free space is below the readiness scratch reserve")
+    except OSError as exc:
+        raise RawPayloadError(f"cannot inspect readiness scratch filesystem: {scratch_parent}") from exc
     connection = duckdb.connect(database=":memory:")
     temp_directory: tempfile.TemporaryDirectory[str] | None = None
     try:
@@ -1349,6 +1366,7 @@ def _duckdb_sorted_raw_rows(
             "SET memory_limit=?",
             [_duckdb_memory_limit()],
         )
+        connection.execute("SET max_temp_directory_size=?", [f"{max_temp_bytes}B"])
         connection.execute("SET preserve_insertion_order=false")
         connection.execute("SET threads=1")
         connection.execute("SET temp_directory=?", [scratch_path])
@@ -1503,6 +1521,114 @@ def _duckdb_memory_limit() -> str:
             f"{_MIN_DUCKDB_MEMORY_MB}MB and {_MAX_DUCKDB_MEMORY_MB}MB"
         )
     return f"{megabytes}MB"
+
+
+def _readiness_scratch_parent() -> Path:
+    """Return a writable, bounded spill root for one readiness worker.
+
+    The production compose file bind-mounts this directory from the host.  A
+    dedicated directory is required so quota and stale-run cleanup cannot
+    touch unrelated system temporary files.
+    """
+
+    configured = os.environ.get("BTC_READINESS_TEMP_DIRECTORY", "").strip()
+    parent = Path(configured) if configured else Path(tempfile.gettempdir()) / "btc-readiness"
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise RawPayloadError(f"readiness scratch directory is not available: {parent}") from exc
+    if not parent.is_dir() or not os.access(parent, os.W_OK):
+        raise RawPayloadError(f"readiness scratch directory is not writable: {parent}")
+    _readiness_temp_limits()
+    return parent
+
+
+def _readiness_temp_limits() -> tuple[int, int]:
+    max_gib = _readiness_float_env(
+        "BTC_READINESS_TEMP_MAX_GIB",
+        _DEFAULT_READINESS_TEMP_MAX_GIB,
+        minimum=_MIN_READINESS_TEMP_MAX_GIB,
+        maximum=_MAX_READINESS_TEMP_MAX_GIB,
+    )
+    min_free_gib = _readiness_float_env(
+        "BTC_READINESS_TEMP_MIN_FREE_GIB",
+        _DEFAULT_READINESS_TEMP_MIN_FREE_GIB,
+        minimum=_MIN_READINESS_TEMP_MIN_FREE_GIB,
+        maximum=_MAX_READINESS_TEMP_MIN_FREE_GIB,
+    )
+    return int(max_gib * (1024**3)), int(min_free_gib * (1024**3))
+
+
+def _readiness_float_env(
+    name: str,
+    default: float,
+    *,
+    minimum: float,
+    maximum: float,
+) -> float:
+    value = os.environ.get(name)
+    try:
+        parsed = default if value is None or not value.strip() else float(value)
+    except ValueError as exc:
+        raise RawPayloadError(f"{name} must be a finite number") from exc
+    if not isfinite(parsed) or parsed < minimum or parsed > maximum:
+        raise RawPayloadError(f"{name} must be between {minimum} and {maximum} GiB")
+    return parsed
+
+
+def _readiness_temp_stale_seconds() -> float:
+    value = os.environ.get("BTC_READINESS_TEMP_STALE_SECONDS")
+    try:
+        parsed = (
+            _DEFAULT_READINESS_TEMP_STALE_SECONDS
+            if value is None or not value.strip()
+            else float(value)
+        )
+    except ValueError as exc:
+        raise RawPayloadError("BTC_READINESS_TEMP_STALE_SECONDS must be a finite number") from exc
+    if (
+        not isfinite(parsed)
+        or parsed < _MIN_READINESS_TEMP_STALE_SECONDS
+        or parsed > _MAX_READINESS_TEMP_STALE_SECONDS
+    ):
+        raise RawPayloadError(
+            "BTC_READINESS_TEMP_STALE_SECONDS must be between "
+            f"{_MIN_READINESS_TEMP_STALE_SECONDS} and {_MAX_READINESS_TEMP_STALE_SECONDS} seconds"
+        )
+    return parsed
+
+
+def _directory_size_bytes(parent: Path) -> int:
+    total = 0
+    try:
+        for root, directories, files in os.walk(parent, followlinks=False):
+            for name in directories:
+                if (Path(root) / name).is_symlink():
+                    raise RawPayloadError("readiness scratch directory contains a symlink")
+            for name in files:
+                path = Path(root) / name
+                if path.is_symlink():
+                    raise RawPayloadError("readiness scratch directory contains a symlink")
+                total += path.stat().st_size
+    except OSError as exc:
+        raise RawPayloadError(f"cannot inspect readiness scratch directory: {parent}") from exc
+    return total
+
+
+def _cleanup_stale_readiness_scratch(parent: Path) -> None:
+    cutoff = time.time() - _readiness_temp_stale_seconds()
+    try:
+        children = tuple(parent.iterdir())
+    except OSError as exc:
+        raise RawPayloadError(f"cannot inspect readiness scratch directory: {parent}") from exc
+    for child in children:
+        if not child.name.startswith("btc-readiness-sort-") or not child.is_dir():
+            continue
+        try:
+            if child.stat().st_mtime < cutoff:
+                shutil.rmtree(child)
+        except OSError as exc:
+            raise RawPayloadError(f"cannot remove stale readiness scratch: {child}") from exc
 
 
 def _stream_verified_raw_rows(

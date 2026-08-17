@@ -81,6 +81,17 @@ def test_readiness_worker_uses_same_raw_root_as_forward_collector() -> None:
     assert compose["services"]["readiness_worker"]["environment"] == {
         "PYTHONUNBUFFERED": "1",
         "BTC_READINESS_DUCKDB_MEMORY_LIMIT": "64MB",
-        "BTC_READINESS_TEMP_DIRECTORY": "/tmp",
+        "BTC_READINESS_TEMP_DIRECTORY": "/app/readiness-tmp",
+        "BTC_READINESS_TEMP_MAX_GIB": "4",
+        "BTC_READINESS_TEMP_MIN_FREE_GIB": "2",
+        "BTC_READINESS_TEMP_STALE_SECONDS": "21600",
+        "TMPDIR": "/app/readiness-tmp",
     }
-    assert "/tmp:size=256m" in compose["services"]["readiness_worker"]["tmpfs"]
+    assert "tmpfs" not in compose["services"]["readiness_worker"]
+    readiness_spill = next(
+        mount
+        for mount in compose["services"]["readiness_worker"]["volumes"]
+        if mount["target"] == "/app/readiness-tmp"
+    )
+    assert readiness_spill["source"] == "${BTC_READINESS_TEMP_DIR:-./runtime/tmp/readiness}"
+    assert readiness_spill["bind"]["create_host_path"] is False
