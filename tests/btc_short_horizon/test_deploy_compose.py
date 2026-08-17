@@ -77,10 +77,10 @@ def test_readiness_worker_uses_same_raw_root_as_forward_collector() -> None:
     )
     assert command[command.index("--raw-data-root") + 1] == "/app/data/btc_short_horizon"
     assert compose["services"]["readiness_worker"]["healthcheck"]["timeout"] == "60s"
-    assert compose["services"]["readiness_worker"]["mem_limit"] == "512m"
+    assert compose["services"]["readiness_worker"]["mem_limit"] == "768m"
     assert compose["services"]["readiness_worker"]["environment"] == {
         "PYTHONUNBUFFERED": "1",
-        "BTC_READINESS_DUCKDB_MEMORY_LIMIT": "96MB",
+        "BTC_READINESS_DUCKDB_MEMORY_LIMIT": "64MB",
         "BTC_READINESS_TEMP_DIRECTORY": "/tmp",
     }
     assert "/tmp:size=256m" in compose["services"]["readiness_worker"]["tmpfs"]
