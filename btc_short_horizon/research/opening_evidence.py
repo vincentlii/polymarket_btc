@@ -47,6 +47,9 @@ _POLYMARKET_SOURCE_REGRESSION_REQUIRED_INGEST_VERSIONS = {
     "btc-short-horizon-v17",
 }
 _RAW_SCAN_BATCH_SIZE = 64
+_DEFAULT_DUCKDB_MEMORY_LIMIT = "96MB"
+_MIN_DUCKDB_MEMORY_MB = 32
+_MAX_DUCKDB_MEMORY_MB = 256
 _RAW_COLUMNS = (
     "source_ts_ns",
     "collector_receive_ts_ns",
@@ -1312,12 +1315,17 @@ def _duckdb_sorted_raw_rows(
     connection = duckdb.connect(database=":memory:")
     temp_directory: tempfile.TemporaryDirectory[str] | None = None
     try:
-        if scratch_parent is None:
-            temp_directory = tempfile.TemporaryDirectory(prefix="btc-readiness-sort-")
-            scratch_path = temp_directory.name
-        else:
-            scratch_path = str(scratch_parent)
-        connection.execute("SET memory_limit='256MB'")
+        temp_directory = tempfile.TemporaryDirectory(
+            prefix="btc-readiness-sort-",
+            dir=str(scratch_parent) if scratch_parent is not None else None,
+        )
+        scratch_path = temp_directory.name
+        connection.execute(
+            "SET memory_limit=?",
+            [_duckdb_memory_limit()],
+        )
+        connection.execute("SET preserve_insertion_order=false")
+        connection.execute("SET threads=1")
         connection.execute("SET temp_directory=?", [scratch_path])
         columns = ", ".join(f'"{name}"' for name in _RAW_COLUMNS)
         query = f"""
@@ -1352,6 +1360,33 @@ def _duckdb_sorted_raw_rows(
         connection.close()
         if temp_directory is not None:
             temp_directory.cleanup()
+
+
+def _duckdb_memory_limit() -> str:
+    """Return a bounded DuckDB sort budget for the 512 MiB readiness worker.
+
+    The external sort must spill to its temporary directory instead of
+    competing with Python/Arrow object memory for the entire container limit.
+    Operators may tune the budget, but values outside the reviewed range are
+    rejected rather than silently reintroducing an unbounded setting.
+    """
+
+    value = os.environ.get("BTC_READINESS_DUCKDB_MEMORY_LIMIT", _DEFAULT_DUCKDB_MEMORY_LIMIT)
+    normalized = value.strip().upper()
+    if not normalized.endswith("MB"):
+        raise RawPayloadError("BTC_READINESS_DUCKDB_MEMORY_LIMIT must use an MB value")
+    try:
+        megabytes = int(normalized[:-2])
+    except ValueError as exc:
+        raise RawPayloadError(
+            "BTC_READINESS_DUCKDB_MEMORY_LIMIT must use an integer MB value"
+        ) from exc
+    if not _MIN_DUCKDB_MEMORY_MB <= megabytes <= _MAX_DUCKDB_MEMORY_MB:
+        raise RawPayloadError(
+            "BTC_READINESS_DUCKDB_MEMORY_LIMIT must be between "
+            f"{_MIN_DUCKDB_MEMORY_MB}MB and {_MAX_DUCKDB_MEMORY_MB}MB"
+        )
+    return f"{megabytes}MB"
 
 
 def _stream_verified_raw_rows(

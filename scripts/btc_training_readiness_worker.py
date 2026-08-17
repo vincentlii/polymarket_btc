@@ -58,6 +58,7 @@ def _readiness_runtime_status(
     last_receipt: str | None,
     last_error: str | None,
     code_revision: str | None,
+    processing_candidate: str | None = None,
 ) -> RuntimeStatus:
     return RuntimeStatus(
         service="training_readiness",
@@ -71,6 +72,7 @@ def _readiness_runtime_status(
             "last_candidate": last_candidate,
             "last_receipt": last_receipt,
             "last_error": last_error,
+            "processing_candidate": processing_candidate,
             "warming": last_candidate is None,
             "expected_status_interval_seconds": _WATCH_INTERVAL_SECONDS,
             "identity": {"code_revision": code_revision},
@@ -331,6 +333,35 @@ def main() -> int:
         if args.candidate_root is None:
             parser.error("--watch requires --candidate-root")
         started_at = datetime.now(UTC)
+        status_store = RuntimeStatusStore(args.runtime_root) if args.runtime_root else None
+
+        def write_watch_status(
+            *,
+            last_candidate: str | None,
+            last_receipt: str | None,
+            last_error: str | None,
+            processing_candidate: str | None = None,
+        ) -> None:
+            if status_store is None:
+                return
+            backlog = sum(
+                not (args.receipt_root / item.name).exists()
+                for item in args.candidate_root.glob("*.json")
+            )
+            status_store.write(
+                _readiness_runtime_status(
+                    started_at=started_at,
+                    updated_at=datetime.now(UTC),
+                    backlog=backlog,
+                    last_candidate=last_candidate,
+                    last_receipt=last_receipt,
+                    last_error=last_error,
+                    code_revision=os.environ.get("BTC_CODE_REVISION"),
+                    processing_candidate=processing_candidate,
+                )
+            )
+
+        write_watch_status(last_candidate=None, last_receipt=None, last_error=None)
         while True:
             last_candidate = None
             last_receipt = None
@@ -340,6 +371,12 @@ def main() -> int:
                 receipt_path = args.receipt_root / candidate.name
                 if receipt_path.exists():
                     continue
+                write_watch_status(
+                    last_candidate=last_candidate,
+                    last_receipt=last_receipt,
+                    last_error=None,
+                    processing_candidate=candidate.name,
+                )
                 try:
                     receipt = audit_candidate(
                         candidate, raw_data_root=args.raw_data_root, config_path=args.config
@@ -357,21 +394,25 @@ def main() -> int:
                             "error": type(exc).__name__,
                         },
                     )
-            if args.runtime_root is not None:
-                backlog = sum(
-                    not (args.receipt_root / item.name).exists()
-                    for item in args.candidate_root.glob("*.json")
-                )
-                RuntimeStatusStore(args.runtime_root).write(
-                    _readiness_runtime_status(
-                        started_at=started_at,
-                        updated_at=datetime.now(UTC),
-                        backlog=backlog,
+                    write_watch_status(
                         last_candidate=last_candidate,
                         last_receipt=last_receipt,
                         last_error=last_error,
-                        code_revision=os.environ.get("BTC_CODE_REVISION"),
+                        processing_candidate=None,
                     )
+                else:
+                    write_watch_status(
+                        last_candidate=last_candidate,
+                        last_receipt=last_receipt,
+                        last_error=None,
+                        processing_candidate=None,
+                    )
+            if status_store is not None:
+                write_watch_status(
+                    last_candidate=last_candidate,
+                    last_receipt=last_receipt,
+                    last_error=last_error,
+                    processing_candidate=None,
                 )
             time.sleep(_WATCH_INTERVAL_SECONDS)
     if args.candidate is None:

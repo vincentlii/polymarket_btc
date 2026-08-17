@@ -178,6 +178,13 @@ Offline readiness audits keep the same manifest, inventory, payload, epoch, and
 gap checks, but terminal CLOB evidence is folded from fixed-size Parquet batches.
 The worker retains only per-event-type counts and timestamp bounds; it must not
 materialize an entire Up/Down lifecycle beside the six-source feature build.
+Its DuckDB external sort uses a bounded memory budget and a per-query temporary
+directory, with one source stream processed at a time. The readiness container
+publishes a heartbeat before and after each candidate so a long audit is visible
+as processing rather than a stale service; an OOM/restart therefore fails closed
+without making the collector unhealthy. The collector health probe allows the
+bounded status serialization time observed under load, while still requiring a
+fresh status and all required feeds.
 Every bounded connection still starts from the venue's
 official initial full-book dump; window-external deltas are neither required
 nor silently treated as collected evidence. A collector restart after a capture

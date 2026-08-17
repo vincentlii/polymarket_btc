@@ -29,6 +29,7 @@ from btc_short_horizon.features.events import BtcBookTop
 from btc_short_horizon.research.opening_evidence import (
     RawPayloadError,
     TokenBookStateEvent,
+    _duckdb_memory_limit,
     build_opening_market_observations,
     load_forward_polymarket_book_events,
     pmxt_order_book_state_events,
@@ -39,6 +40,19 @@ from btc_short_horizon.research.opening_evidence import (
 T0 = datetime(2026, 4, 13, tzinfo=UTC)
 UP_TOKEN = "up-token"
 DOWN_TOKEN = "down-token"
+
+
+def test_duckdb_readiness_memory_budget_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BTC_READINESS_DUCKDB_MEMORY_LIMIT", "128MB")
+    assert _duckdb_memory_limit() == "128MB"
+
+    monkeypatch.setenv("BTC_READINESS_DUCKDB_MEMORY_LIMIT", "512MB")
+    with pytest.raises(RawPayloadError, match="between"):
+        _duckdb_memory_limit()
+
+    monkeypatch.setenv("BTC_READINESS_DUCKDB_MEMORY_LIMIT", "96GB")
+    with pytest.raises(RawPayloadError, match="MB value"):
+        _duckdb_memory_limit()
 
 
 def _market() -> MarketWindow:

@@ -28,6 +28,7 @@ def test_vps_compose_pins_identity_and_bounds_container_logs() -> None:
     assert collector["restart"] == "on-failure:5"
     assert collector["stop_signal"] == "SIGINT"
     assert collector["stop_grace_period"] == "45s"
+    assert collector["healthcheck"]["timeout"] == "15s"
     assert collector["build"]["args"]["BTC_CODE_REVISION"].startswith("${BTC_CODE_REVISION:?")
     dockerfile = Path("deploy/Dockerfile").read_text(encoding="utf-8")
     assert "ENV PYTHONDONTWRITEBYTECODE=1" in dockerfile
@@ -76,3 +77,10 @@ def test_readiness_worker_uses_same_raw_root_as_forward_collector() -> None:
     )
     assert command[command.index("--raw-data-root") + 1] == "/app/data/btc_short_horizon"
     assert compose["services"]["readiness_worker"]["healthcheck"]["timeout"] == "20s"
+    assert compose["services"]["readiness_worker"]["mem_limit"] == "512m"
+    assert compose["services"]["readiness_worker"]["environment"] == {
+        "PYTHONUNBUFFERED": "1",
+        "BTC_READINESS_DUCKDB_MEMORY_LIMIT": "96MB",
+        "BTC_READINESS_TEMP_DIRECTORY": "/tmp",
+    }
+    assert "/tmp:size=256m" in compose["services"]["readiness_worker"]["tmpfs"]
