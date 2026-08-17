@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 import time
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ from btc_short_horizon.live.runtime import RuntimeControl, RuntimeStatus, Runtim
 from scripts.btc_forward_runtime import (
     _captured_market,
     _effective_market,
+    _refresh_required_clob_feeds,
     parse_args as parse_forward_runtime_args,
 )
 from scripts.btc_runtime_control import main as runtime_control_main
@@ -71,6 +73,58 @@ def test_forward_runtime_only_requires_clob_during_capture_window() -> None:
         )
         is None
     )
+
+
+def test_forward_runtime_uses_core_capture_window_when_extended_capture_is_disabled() -> None:
+    t0 = datetime(2026, 7, 16, 15, 0, tzinfo=UTC)
+    current = SimpleNamespace(
+        slug="current",
+        t0=t0,
+        up_token_id="current-up",
+        down_token_id="current-down",
+    )
+    lookahead = SimpleNamespace(
+        slug="lookahead",
+        t0=t0.replace(minute=15),
+        up_token_id="lookahead-up",
+        down_token_id="lookahead-down",
+    )
+
+    class Collector:
+        def __init__(self) -> None:
+            self.required: tuple[str, ...] | None = None
+
+        def configure_required_polymarket_tokens(self, token_ids: tuple[str, ...]) -> None:
+            self.required = token_ids
+
+    collector = Collector()
+    window = SimpleNamespace(market=current, lookahead=lookahead, collector=collector)
+    capture_enabled = asyncio.Event()
+
+    captured = _refresh_required_clob_feeds(
+        window,
+        now=t0.replace(minute=10),
+        lead_seconds=90.0,
+        handoff_seconds=900.0,
+        core_capture_seconds=180.0,
+        extended_capture_enabled=capture_enabled,
+    )
+
+    assert captured is None
+    assert collector.required == ()
+
+    capture_enabled.set()
+    captured = _refresh_required_clob_feeds(
+        window,
+        now=t0.replace(minute=10),
+        lead_seconds=90.0,
+        handoff_seconds=900.0,
+        core_capture_seconds=180.0,
+        extended_capture_enabled=capture_enabled,
+    )
+
+    assert captured is current
+    assert collector.required == ("current-up", "current-down")
 
 
 def test_dashboard_cli_defaults_to_loopback_only() -> None:

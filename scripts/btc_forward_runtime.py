@@ -44,6 +44,7 @@ from scripts.btc_forward_collector import (  # noqa: E402
     _readiness_protocol,
     collect_current_market_windows,
     current_market_slug,
+    effective_polymarket_capture_seconds,
 )
 
 
@@ -85,12 +86,19 @@ def _refresh_required_clob_feeds(
     now: datetime,
     lead_seconds: float,
     handoff_seconds: float,
+    core_capture_seconds: float,
+    extended_capture_enabled: asyncio.Event | None,
 ) -> MarketWindow | None:
+    effective_handoff_seconds = effective_polymarket_capture_seconds(
+        opening_handoff_delay_seconds=handoff_seconds,
+        core_capture_seconds=core_capture_seconds,
+        extended_capture_enabled=extended_capture_enabled,
+    )
     market = _captured_market(
         window,
         now=now,
         lead_seconds=lead_seconds,
-        handoff_seconds=handoff_seconds,
+        handoff_seconds=effective_handoff_seconds,
     )
     tokens = () if market is None else (market.up_token_id, market.down_token_id)
     window.collector.configure_required_polymarket_tokens(tokens)
@@ -276,6 +284,10 @@ async def run_async(args: argparse.Namespace) -> None:
             break
         else:
             registered_signals.append(item)
+    optional_feeds_enabled = asyncio.Event()
+    optional_feeds_enabled.set()
+    extended_capture_enabled = asyncio.Event()
+    extended_capture_enabled.set()
 
     def on_market_active(
         market: MarketWindow,
@@ -300,6 +312,8 @@ async def run_async(args: argparse.Namespace) -> None:
             now=datetime.now(UTC),
             lead_seconds=polymarket_capture_lead_seconds,
             handoff_seconds=opening_handoff_delay_seconds,
+            core_capture_seconds=project.research_timing.entry_end_seconds,
+            extended_capture_enabled=extended_capture_enabled,
         )
 
     def feed_health() -> tuple[bool, str]:
@@ -313,6 +327,8 @@ async def run_async(args: argparse.Namespace) -> None:
             now=datetime.now(UTC),
             lead_seconds=polymarket_capture_lead_seconds,
             handoff_seconds=opening_handoff_delay_seconds,
+            core_capture_seconds=project.research_timing.entry_end_seconds,
+            extended_capture_enabled=extended_capture_enabled,
         )
         health = active.collector.feed_health(
             now=datetime.now(UTC),
@@ -356,6 +372,8 @@ async def run_async(args: argparse.Namespace) -> None:
             now=status_now,
             lead_seconds=polymarket_capture_lead_seconds,
             handoff_seconds=opening_handoff_delay_seconds,
+            core_capture_seconds=project.research_timing.entry_end_seconds,
+            extended_capture_enabled=extended_capture_enabled,
         )
         health = active.collector.feed_health(
             now=datetime.now(UTC),
@@ -370,6 +388,9 @@ async def run_async(args: argparse.Namespace) -> None:
                 "lookahead_market": (None if active.lookahead is None else active.lookahead.slug),
                 "clob_capture_active": captured_market is not None,
                 "clob_capture_market": (None if captured_market is None else captured_market.slug),
+                "clob_capture_policy": (
+                    "extended" if extended_capture_enabled.is_set() else "core"
+                ),
                 "collector_session_id": active.collector.collector_session_id,
                 "pending_events": buffer.pending_events,
                 "pending_bytes": buffer.pending_bytes,
@@ -434,10 +455,6 @@ async def run_async(args: argparse.Namespace) -> None:
             )
         )
         try:
-            optional_feeds_enabled = asyncio.Event()
-            optional_feeds_enabled.set()
-            extended_capture_enabled = asyncio.Event()
-            extended_capture_enabled.set()
             disk_supervisor = DiskFeedSupervisor(project.collection.disk_protection)
 
             async def supervise_disk_feeds() -> None:

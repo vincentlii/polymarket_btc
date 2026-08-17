@@ -418,10 +418,10 @@ async def collect_current_market_windows(
                     (lookahead.up_token_id, lookahead.down_token_id),
                 )
             markets = (market,) if lookahead is None else (market, lookahead)
-            capture_seconds = (
-                opening_handoff_delay_seconds
-                if extended_capture_enabled is None or extended_capture_enabled.is_set()
-                else min(opening_handoff_delay_seconds, 180.0)
+            capture_seconds = effective_polymarket_capture_seconds(
+                opening_handoff_delay_seconds=opening_handoff_delay_seconds,
+                core_capture_seconds=float(readiness_decision_offsets_seconds[-1]),
+                extended_capture_enabled=extended_capture_enabled,
             )
             subscription_windows = tuple(
                 PolymarketSubscriptionWindow(
@@ -703,6 +703,23 @@ def _build_window_collector(
         ),
         rule_contract_sha256=settings.rule_contract_sha256,
     )
+
+
+def effective_polymarket_capture_seconds(
+    *,
+    opening_handoff_delay_seconds: float,
+    core_capture_seconds: float,
+    extended_capture_enabled: asyncio.Event | None,
+) -> float:
+    """Return the CLOB lifetime shared by capture and health projection."""
+
+    if not isfinite(opening_handoff_delay_seconds) or opening_handoff_delay_seconds <= 0.0:
+        raise ValueError("opening_handoff_delay_seconds must be finite and > 0")
+    if not isfinite(core_capture_seconds) or core_capture_seconds <= 0.0:
+        raise ValueError("core_capture_seconds must be finite and > 0")
+    if extended_capture_enabled is None or extended_capture_enabled.is_set():
+        return opening_handoff_delay_seconds
+    return min(opening_handoff_delay_seconds, core_capture_seconds)
 
 
 async def _wait_or_stop(stop_event: asyncio.Event, seconds: float) -> None:
