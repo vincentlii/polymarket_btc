@@ -49,6 +49,8 @@ _POLYMARKET_SOURCE_REGRESSION_REQUIRED_INGEST_VERSIONS = {
     "btc-short-horizon-v17",
 }
 _RAW_SCAN_BATCH_SIZE = 64
+_RAW_LOOKUP_BATCH_SIZE = 64
+_RAW_LOOKUP_CACHE_BATCHES = 16
 _DEFAULT_DUCKDB_MEMORY_LIMIT = "64MB"
 _MIN_DUCKDB_MEMORY_MB = 32
 _MAX_DUCKDB_MEMORY_MB = 256
@@ -1378,14 +1380,21 @@ def _duckdb_sorted_raw_rows(
 
 
 class _RawParquetRowLookup:
-    """Fetch sorted raw rows without sorting or retaining their payloads."""
+    """Fetch sorted raw rows with a bounded payload batch cache.
 
-    _CACHE_GROUPS = 8
+    A whole Parquet row group can contain thousands of large CLOB payloads.
+    Reading it with ``read_row_group(...).to_pylist()`` recreates the memory
+    spike that the external sort is intended to remove.  The lookup therefore
+    reads only a small batch from the target row group and keeps a bounded LRU
+    of batches.  Manifest, hash, identity, and payload validation still happen
+    in the downstream stream verifier; this changes only physical read
+    granularity.
+    """
 
     def __init__(self, parts: Sequence[tuple[Path, DataPartitionManifest]]) -> None:
         self._files = {path: pq.ParquetFile(path) for path, _manifest in parts}
         self._offsets: dict[Path, tuple[int, ...]] = {}
-        self._cache: OrderedDict[tuple[Path, int], list[dict[str, object]]] = OrderedDict()
+        self._cache: OrderedDict[tuple[Path, int, int], list[dict[str, object]]] = OrderedDict()
         for path, parquet in self._files.items():
             offsets = [0]
             for index in range(parquet.num_row_groups):
@@ -1401,14 +1410,51 @@ class _RawParquetRowLookup:
         if row_index < 0 or row_index >= offsets[-1]:
             raise RawPayloadError(f"sorted row index is outside raw part bounds: {path}:{row_index}")
         group = bisect_right(offsets, row_index) - 1
-        key = (path, group)
+        local_index = row_index - offsets[group]
+        batch_index = local_index // _RAW_LOOKUP_BATCH_SIZE
+        key = (path, group, batch_index)
         rows = self._cache.pop(key, None)
         if rows is None:
-            rows = [dict(row) for row in parquet.read_row_group(group, columns=list(_RAW_COLUMNS)).to_pylist()]
+            rows = self._read_batch(
+                parquet=parquet,
+                path=path,
+                group=group,
+                batch_index=batch_index,
+            )
         self._cache[key] = rows
-        while len(self._cache) > self._CACHE_GROUPS:
+        while len(self._cache) > _RAW_LOOKUP_CACHE_BATCHES:
             self._cache.popitem(last=False)
-        return rows[row_index - offsets[group]]
+        batch_offset = local_index % _RAW_LOOKUP_BATCH_SIZE
+        if batch_offset >= len(rows):
+            raise RawPayloadError(f"raw row lookup failed: {path}:{row_index}")
+        return rows[batch_offset]
+
+    @staticmethod
+    def _read_batch(
+        *,
+        parquet: pq.ParquetFile,
+        path: Path,
+        group: int,
+        batch_index: int,
+    ) -> list[dict[str, object]]:
+        try:
+            for index, batch in enumerate(
+                parquet.iter_batches(
+                    batch_size=_RAW_LOOKUP_BATCH_SIZE,
+                    row_groups=[group],
+                    columns=list(_RAW_COLUMNS),
+                    use_threads=False,
+                )
+            ):
+                if index == batch_index:
+                    return [dict(row) for row in batch.to_pylist()]
+        except (OSError, ValueError, pa.ArrowException) as exc:
+            raise RawPayloadError(
+                f"cannot read raw row batch {path}:{group}:{batch_index}"
+            ) from exc
+        raise RawPayloadError(
+            f"raw row batch is outside row-group bounds: {path}:{group}:{batch_index}"
+        )
 
 
 def _duckdb_memory_limit() -> str:
