@@ -148,7 +148,7 @@ services:
     healthcheck:
       test: ["CMD", "python", "scripts/btc_runtime_healthcheck.py", "--runtime-root", "/app/output/btc_short_horizon/runtime", "--service", "training_readiness", "--max-age-seconds", "150"]
       interval: 30s
-      timeout: 20s
+      timeout: 60s
       retries: 3
       start_period: 90s
 
