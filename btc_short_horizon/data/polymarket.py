@@ -44,6 +44,7 @@ class PolymarketL2Normalizer:
         token_id: str,
         source: str = "polymarket_clob",
         source_timestamp_regression_tolerance: timedelta = timedelta(seconds=1),
+        in_place_updates: bool = False,
     ) -> None:
         if not token_id:
             raise ValueError("token_id is required")
@@ -52,6 +53,7 @@ class PolymarketL2Normalizer:
         self.token_id = token_id
         self.source = source
         self.source_timestamp_regression_tolerance = source_timestamp_regression_tolerance
+        self.in_place_updates = in_place_updates
         self._bids: dict[float, float] = {}
         self._asks: dict[float, float] = {}
         self._has_snapshot = False
@@ -84,9 +86,10 @@ class PolymarketL2Normalizer:
             token_id=self.token_id,
             source=self.source,
             source_timestamp_regression_tolerance=self.source_timestamp_regression_tolerance,
+            in_place_updates=self.in_place_updates,
         )
-        candidate._bids = self._bids
-        candidate._asks = self._asks
+        candidate._bids = self._bids if not self.in_place_updates else self._bids.copy()
+        candidate._asks = self._asks if not self.in_place_updates else self._asks.copy()
         candidate._has_snapshot = self._has_snapshot
         candidate._tick_size = self._tick_size
         candidate._last_available_ts = self._last_available_ts
@@ -209,8 +212,8 @@ class PolymarketL2Normalizer:
                 starts_new_epoch=True,
                 requires_resubscribe=True,
             )
-        bids = self._bids.copy()
-        asks = self._asks.copy()
+        bids = self._bids if self.in_place_updates else self._bids.copy()
+        asks = self._asks if self.in_place_updates else self._asks.copy()
         for change in matched_changes:
             side = _text(change.get("side"), "side").upper()
             if side not in {"BUY", "SELL"}:
@@ -234,9 +237,19 @@ class PolymarketL2Normalizer:
             else _book_boundary_probability(reported.get("best_ask"), "best_ask")
         )
         if reported_bid is not None:
-            bids = {price: size for price, size in bids.items() if price <= reported_bid}
+            if self.in_place_updates:
+                for price in tuple(bids):
+                    if price > reported_bid:
+                        del bids[price]
+            else:
+                bids = {price: size for price, size in bids.items() if price <= reported_bid}
         if reported_ask is not None:
-            asks = {price: size for price, size in asks.items() if price >= reported_ask}
+            if self.in_place_updates:
+                for price in tuple(asks):
+                    if price < reported_ask:
+                        del asks[price]
+            else:
+                asks = {price: size for price, size in asks.items() if price >= reported_ask}
         top = self._book_top(timing, bids=bids, asks=asks)
         if (
             reported_bid is not None and reported_ask is not None and reported_bid >= reported_ask

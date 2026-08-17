@@ -2,19 +2,19 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 import json
 from math import isfinite
+import os
 from pathlib import Path
+import tempfile
+from typing import TYPE_CHECKING
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-from nautilus_trader.model.book import OrderBook
-from nautilus_trader.model.data import OrderBookDeltas
-from nautilus_trader.model.enums import BookType
 
 from btc_short_horizon.data import MarketWindow
 from btc_short_horizon.data.polymarket import PolymarketL2Normalizer, PolymarketL2Status
@@ -28,6 +28,9 @@ from btc_short_horizon.data.storage import DataPartitionManifest, instrument_dir
 from btc_short_horizon.data.storage import sha256_file as _inventory_sha256_file
 from btc_short_horizon.features.events import BtcBookTop
 
+if TYPE_CHECKING:
+    from nautilus_trader.model.data import OrderBookDeltas
+
 
 _NANOS_PER_SECOND = 1_000_000_000
 _POLYMARKET_SOURCE_REGRESSION_ATTRIBUTE = "polymarket_source_timestamp_regression_tolerance_seconds"
@@ -36,7 +39,14 @@ _POLYMARKET_SOURCE_REGRESSION_REQUIRED_INGEST_VERSIONS = {
     "btc-short-horizon-v9",
     "btc-short-horizon-v10",
     "btc-short-horizon-v11",
+    "btc-short-horizon-v12",
+    "btc-short-horizon-v13",
+    "btc-short-horizon-v14",
+    "btc-short-horizon-v15",
+    "btc-short-horizon-v16",
+    "btc-short-horizon-v17",
 }
+_RAW_SCAN_BATCH_SIZE = 64
 _RAW_COLUMNS = (
     "source_ts_ns",
     "collector_receive_ts_ns",
@@ -109,6 +119,7 @@ class ForwardBookEventLoad:
     duplicate_row_count: int
     awaiting_snapshot_count: int
     polymarket_source_timestamp_regression_tolerance_seconds: float | None = None
+    state_event_count: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,6 +195,275 @@ class ForwardRawEventLoad:
     raw_part_count: int
     raw_row_count: int
     polymarket_source_timestamp_regression_tolerance_seconds: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ForwardRawEventTypeSummary:
+    """Bounded metadata accumulated for one raw event type."""
+
+    event_type: str
+    row_count: int
+    min_available_ts_ns: int
+    max_available_ts_ns: int
+
+
+@dataclass(frozen=True, slots=True)
+class ForwardRawEventScan:
+    """Validated raw-stream metadata without retaining event payloads."""
+
+    source: str
+    instrument: str
+    ingest_version: str | None
+    raw_part_count: int
+    raw_row_count: int
+    event_types: tuple[ForwardRawEventTypeSummary, ...]
+
+    def event_type(self, name: str) -> ForwardRawEventTypeSummary | None:
+        return next((item for item in self.event_types if item.event_type == name), None)
+
+
+@dataclass(frozen=True, slots=True)
+class ForwardRawEventStream:
+    """Verified bounded raw iterator produced by a bounded external sort."""
+
+    source: str
+    instrument: str
+    ingest_version: str | None
+    raw_part_count: int
+    events: Iterator[ForwardRawEvent]
+    polymarket_source_timestamp_regression_tolerance_seconds: float | None = None
+
+
+def stream_forward_raw_events(
+    *,
+    raw_data_root: Path,
+    source: str,
+    instrument: str,
+    start_time: datetime,
+    end_time: datetime,
+    ingest_version: str | None = None,
+    expected_polymarket_source_timestamp_regression_tolerance_seconds: float | None = None,
+) -> ForwardRawEventStream:
+    """Stream a verified raw source when its persisted order proves the causal sort order."""
+
+    if not source or not instrument:
+        raise ValueError("source and instrument are required")
+    start_ns, end_ns = _window_ns(start_time=start_time, end_time=end_time)
+    expected_ingest_version = ingest_version.strip() if ingest_version is not None else None
+    if expected_ingest_version == "":
+        raise ValueError("ingest_version must be non-empty when provided")
+    if expected_polymarket_source_timestamp_regression_tolerance_seconds is not None and (
+        not isfinite(expected_polymarket_source_timestamp_regression_tolerance_seconds)
+        or expected_polymarket_source_timestamp_regression_tolerance_seconds < 0.0
+    ):
+        raise ValueError(
+            "expected Polymarket source timestamp regression tolerance must be finite and >= 0"
+        )
+    parts: list[tuple[Path, DataPartitionManifest]] = []
+    selected_ingest_versions: set[str] = set()
+    tolerances: set[float] = set()
+    for path, manifest in _raw_manifest_parts(
+        raw_data_root=raw_data_root,
+        source=source,
+        instrument=instrument,
+        start_time=start_time,
+        end_time=end_time,
+    ):
+        if (
+            expected_ingest_version is not None
+            and manifest.ingest_version != expected_ingest_version
+        ):
+            continue
+        selected_ingest_versions.add(manifest.ingest_version)
+        tolerance_text = manifest.attributes.get(_POLYMARKET_SOURCE_REGRESSION_ATTRIBUTE)
+        if (
+            source == "polymarket_clob"
+            and manifest.ingest_version in _POLYMARKET_SOURCE_REGRESSION_REQUIRED_INGEST_VERSIONS
+            and tolerance_text is None
+        ):
+            raise RawPayloadError(f"raw manifest has no Polymarket timestamp tolerance: {path}")
+        if tolerance_text is not None:
+            try:
+                tolerance = float(tolerance_text)
+            except ValueError as exc:
+                raise RawPayloadError(
+                    f"raw manifest has an invalid Polymarket timestamp tolerance: {path}"
+                ) from exc
+            if not isfinite(tolerance) or tolerance < 0.0:
+                raise RawPayloadError(
+                    f"raw manifest has an invalid Polymarket timestamp tolerance: {path}"
+                )
+            tolerances.add(tolerance)
+        parts.append((path, manifest))
+    if len(selected_ingest_versions) > 1:
+        raise RawPayloadError("raw manifests mix ingest versions")
+    if len(tolerances) > 1:
+        raise RawPayloadError("raw manifests mix Polymarket source timestamp regression tolerances")
+    resolved_tolerance = next(iter(tolerances), None)
+    if (
+        expected_polymarket_source_timestamp_regression_tolerance_seconds is not None
+        and resolved_tolerance is not None
+        and resolved_tolerance != expected_polymarket_source_timestamp_regression_tolerance_seconds
+    ):
+        raise RawPayloadError(
+            "raw Polymarket source timestamp regression tolerance "
+            "does not match the expected collector configuration"
+        )
+    ordered_parts = tuple(
+        sorted(
+            parts,
+            key=lambda item: (
+                item[1].min_available_ts_ns,
+                item[1].created_at,
+                item[1].data_path,
+            ),
+        )
+    )
+    return ForwardRawEventStream(
+        source=source,
+        instrument=instrument,
+        ingest_version=(
+            expected_ingest_version
+            if expected_ingest_version is not None
+            else next(iter(selected_ingest_versions), None)
+        ),
+        raw_part_count=len(ordered_parts),
+        events=_stream_verified_raw_rows(
+            rows=_duckdb_sorted_raw_rows(
+                parts=ordered_parts,
+                start_ns=start_ns,
+                end_ns=end_ns,
+            ),
+            source=source,
+            instrument=instrument,
+            expected_ingest_version=expected_ingest_version,
+        ),
+        polymarket_source_timestamp_regression_tolerance_seconds=resolved_tolerance,
+    )
+
+
+def scan_forward_raw_event_metadata(
+    *,
+    raw_data_root: Path,
+    source: str,
+    instrument: str,
+    start_time: datetime,
+    end_time: datetime,
+    ingest_version: str | None = None,
+) -> ForwardRawEventScan:
+    """Validate one raw stream while retaining only fixed-size event-type metadata."""
+
+    if not source or not instrument:
+        raise ValueError("source and instrument are required")
+    start_ns, end_ns = _window_ns(start_time=start_time, end_time=end_time)
+    expected_ingest_version = ingest_version.strip() if ingest_version is not None else None
+    if expected_ingest_version == "":
+        raise ValueError("ingest_version must be non-empty when provided")
+    raw_part_count = 0
+    raw_row_count = 0
+    selected_ingest_versions: set[str] = set()
+    polymarket_regression_tolerances: set[float] = set()
+    event_types: dict[str, list[int]] = {}
+    seen_admission_sequences: set[tuple[str, int]] = set()
+    parts = sorted(
+        _raw_manifest_parts(
+            raw_data_root=raw_data_root,
+            source=source,
+            instrument=instrument,
+            start_time=start_time,
+            end_time=end_time,
+        ),
+        key=lambda item: (item[1].min_available_ts_ns, item[1].created_at, item[1].data_path),
+    )
+    for path, manifest in parts:
+        if (
+            expected_ingest_version is not None
+            and manifest.ingest_version != expected_ingest_version
+        ):
+            continue
+        selected_ingest_versions.add(manifest.ingest_version)
+        tolerance_text = manifest.attributes.get(_POLYMARKET_SOURCE_REGRESSION_ATTRIBUTE)
+        if (
+            source == "polymarket_clob"
+            and manifest.ingest_version in _POLYMARKET_SOURCE_REGRESSION_REQUIRED_INGEST_VERSIONS
+            and tolerance_text is None
+        ):
+            raise RawPayloadError(f"raw manifest has no Polymarket timestamp tolerance: {path}")
+        if tolerance_text is not None:
+            try:
+                tolerance = float(tolerance_text)
+            except ValueError as exc:
+                raise RawPayloadError(
+                    f"raw manifest has an invalid Polymarket timestamp tolerance: {path}"
+                ) from exc
+            if not isfinite(tolerance) or tolerance < 0.0:
+                raise RawPayloadError(
+                    f"raw manifest has an invalid Polymarket timestamp tolerance: {path}"
+                )
+            polymarket_regression_tolerances.add(tolerance)
+        raw_part_count += 1
+        for row_index, row in _raw_rows(path, manifest=manifest):
+            available_ts_ns = _required_int(row, "available_ts_ns", path, row_index)
+            if not start_ns <= available_ts_ns <= end_ns:
+                continue
+            _validate_raw_identity(
+                row,
+                expected_source=source,
+                expected_instrument=instrument,
+                path=path,
+                row_index=row_index,
+            )
+            row_ingest_version = _required_text(row, "ingest_version", path, row_index)
+            if (
+                expected_ingest_version is not None
+                and row_ingest_version != expected_ingest_version
+            ):
+                continue
+            _payload_mapping(row, path=path, row_index=row_index)
+            session_id = _required_text(row, "collector_session_id", path, row_index)
+            admission_sequence = _required_int(row, "admission_sequence", path, row_index)
+            if row_ingest_version in _POLYMARKET_SOURCE_REGRESSION_REQUIRED_INGEST_VERSIONS:
+                admission_identity = (session_id, admission_sequence)
+                if admission_identity in seen_admission_sequences:
+                    raise RawPayloadError(
+                        "raw events repeat a collector-session admission_sequence "
+                        f"at {path}:{row_index}"
+                    )
+                seen_admission_sequences.add(admission_identity)
+            event_type = _required_text(row, "event_type", path, row_index)
+            summary = event_types.setdefault(
+                event_type,
+                [0, available_ts_ns, available_ts_ns],
+            )
+            summary[0] += 1
+            summary[1] = min(summary[1], available_ts_ns)
+            summary[2] = max(summary[2], available_ts_ns)
+            raw_row_count += 1
+    if len(selected_ingest_versions) > 1:
+        raise RawPayloadError("raw manifests mix ingest versions")
+    if len(polymarket_regression_tolerances) > 1:
+        raise RawPayloadError("raw manifests mix Polymarket source timestamp regression tolerances")
+    resolved_ingest_version = (
+        expected_ingest_version
+        if expected_ingest_version is not None
+        else next(iter(selected_ingest_versions), None)
+    )
+    return ForwardRawEventScan(
+        source=source,
+        instrument=instrument,
+        ingest_version=resolved_ingest_version,
+        raw_part_count=raw_part_count,
+        raw_row_count=raw_row_count,
+        event_types=tuple(
+            ForwardRawEventTypeSummary(
+                event_type=name,
+                row_count=values[0],
+                min_available_ts_ns=values[1],
+                max_available_ts_ns=values[2],
+            )
+            for name, values in sorted(event_types.items())
+        ),
+    )
 
 
 def load_forward_raw_events(
@@ -363,31 +643,138 @@ def load_forward_polymarket_book_events(
             expected_source_timestamp_regression_tolerance_seconds
         ),
     )
+    events: list[TokenBookStateEvent] = []
+    counts = _fold_polymarket_raw_load(raw_load, token_id=token_id, on_event=events.append)
+    return ForwardBookEventLoad(
+        token_id=token_id,
+        events=tuple(sorted(events, key=_state_event_sort_key)),
+        raw_part_count=raw_load.raw_part_count,
+        raw_row_count=raw_load.raw_row_count,
+        duplicate_row_count=counts.duplicate_row_count,
+        awaiting_snapshot_count=counts.awaiting_snapshot_count,
+        polymarket_source_timestamp_regression_tolerance_seconds=(
+            raw_load.polymarket_source_timestamp_regression_tolerance_seconds
+        ),
+        state_event_count=counts.state_event_count,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _PolymarketBookFoldCounts:
+    raw_row_count: int
+    state_event_count: int
+    duplicate_row_count: int
+    awaiting_snapshot_count: int
+
+
+def fold_forward_polymarket_book_events(
+    *,
+    raw_data_root: Path,
+    token_id: str,
+    start_time: datetime,
+    end_time: datetime,
+    on_event: Callable[[TokenBookStateEvent], None],
+    ingest_version: str | None = None,
+    expected_source_timestamp_regression_tolerance_seconds: float | None = None,
+) -> ForwardBookEventLoad:
+    """Rebuild one token while emitting state transitions without retaining them."""
+
+    raw_stream = stream_forward_raw_events(
+        raw_data_root=raw_data_root,
+        source="polymarket_clob",
+        instrument=token_id,
+        start_time=start_time,
+        end_time=end_time,
+        ingest_version=ingest_version,
+        expected_polymarket_source_timestamp_regression_tolerance_seconds=(
+            expected_source_timestamp_regression_tolerance_seconds
+        ),
+    )
+    counts = _fold_polymarket_events(
+        raw_stream.events,
+        token_id=token_id,
+        source_timestamp_regression_tolerance_seconds=(
+            raw_stream.polymarket_source_timestamp_regression_tolerance_seconds
+        ),
+        on_event=on_event,
+        # Current forward collection rejects duplicate sequence identities before
+        # persistence; the bounded stream independently proves strictly increasing
+        # admission_sequence, so an unbounded replay-time sequence set is redundant.
+        deduplicate_sequence=False,
+    )
+    return ForwardBookEventLoad(
+        token_id=token_id,
+        events=(),
+        raw_part_count=raw_stream.raw_part_count,
+        raw_row_count=counts.raw_row_count,
+        duplicate_row_count=counts.duplicate_row_count,
+        awaiting_snapshot_count=counts.awaiting_snapshot_count,
+        polymarket_source_timestamp_regression_tolerance_seconds=(
+            raw_stream.polymarket_source_timestamp_regression_tolerance_seconds
+        ),
+        state_event_count=counts.state_event_count,
+    )
+
+
+def _fold_polymarket_raw_load(
+    raw_load: ForwardRawEventLoad,
+    *,
+    token_id: str,
+    on_event: Callable[[TokenBookStateEvent], None],
+) -> _PolymarketBookFoldCounts:
+    return _fold_polymarket_events(
+        raw_load.events,
+        token_id=token_id,
+        source_timestamp_regression_tolerance_seconds=(
+            raw_load.polymarket_source_timestamp_regression_tolerance_seconds
+        ),
+        on_event=on_event,
+    )
+
+
+def _fold_polymarket_events(
+    raw_events: Iterable[ForwardRawEvent],
+    *,
+    token_id: str,
+    source_timestamp_regression_tolerance_seconds: float | None,
+    on_event: Callable[[TokenBookStateEvent], None],
+    deduplicate_sequence: bool = True,
+) -> _PolymarketBookFoldCounts:
     normalizer = PolymarketL2Normalizer(
         token_id=token_id,
         source_timestamp_regression_tolerance=timedelta(
             seconds=(
-                raw_load.polymarket_source_timestamp_regression_tolerance_seconds
-                if raw_load.polymarket_source_timestamp_regression_tolerance_seconds is not None
+                source_timestamp_regression_tolerance_seconds
+                if source_timestamp_regression_tolerance_seconds is not None
                 else 1.0
             )
         ),
+        in_place_updates=not deduplicate_sequence,
     )
-    events: list[TokenBookStateEvent] = []
     seen_sequences: set[tuple[str, int, str]] = set()
     completed_epochs: set[tuple[str, int]] = set()
     current_epoch: tuple[str, int] | None = None
     duplicate_row_count = 0
     awaiting_snapshot_count = 0
-    for raw in raw_load.events:
+    state_event_count = 0
+    raw_row_count = 0
+
+    def emit(event: TokenBookStateEvent) -> None:
+        nonlocal state_event_count
+        state_event_count += 1
+        on_event(event)
+
+    for raw in raw_events:
+        raw_row_count += 1
         if raw.payload.get("event_type") != raw.event_type:
             raise RawPayloadError(f"raw payload event_type mismatch at {raw.path}:{raw.row_index}")
         epoch_identity = (raw.collector_session_id, raw.epoch_id)
         sequence_key = (*epoch_identity, raw.sequence_or_hash)
-        if sequence_key in seen_sequences:
+        if deduplicate_sequence and sequence_key in seen_sequences:
             duplicate_row_count += 1
             continue
-        seen_sequences.add(sequence_key)
+        if deduplicate_sequence:
+            seen_sequences.add(sequence_key)
         reset_book = current_epoch is not None and epoch_identity != current_epoch
         if reset_book:
             completed_epochs.add(current_epoch)
@@ -405,7 +792,7 @@ def load_forward_polymarket_book_events(
             if not isinstance(reason, str) or not reason.strip():
                 raise RawPayloadError(f"invalid CLOB continuity gap at {raw.path}:{raw.row_index}")
             normalizer.reset()
-            events.append(
+            emit(
                 TokenBookStateEvent(
                     token_id=token_id,
                     source_ts_ns=raw.source_ts_ns,
@@ -436,7 +823,7 @@ def load_forward_polymarket_book_events(
             reset_book = True
         if result.book_top is not None:
             top = result.book_top
-            events.append(
+            emit(
                 TokenBookStateEvent(
                     token_id=token_id,
                     source_ts_ns=raw.source_ts_ns,
@@ -460,7 +847,7 @@ def load_forward_polymarket_book_events(
                 )
             )
         elif reset_book or result.tick_size_changed:
-            events.append(
+            emit(
                 TokenBookStateEvent(
                     token_id=token_id,
                     source_ts_ns=raw.source_ts_ns,
@@ -473,17 +860,11 @@ def load_forward_polymarket_book_events(
                     tick_size_changed=result.tick_size_changed,
                 )
             )
-
-    return ForwardBookEventLoad(
-        token_id=token_id,
-        events=tuple(sorted(events, key=_state_event_sort_key)),
-        raw_part_count=raw_load.raw_part_count,
-        raw_row_count=raw_load.raw_row_count,
+    return _PolymarketBookFoldCounts(
+        raw_row_count=raw_row_count,
+        state_event_count=state_event_count,
         duplicate_row_count=duplicate_row_count,
         awaiting_snapshot_count=awaiting_snapshot_count,
-        polymarket_source_timestamp_regression_tolerance_seconds=(
-            raw_load.polymarket_source_timestamp_regression_tolerance_seconds
-        ),
     )
 
 
@@ -575,6 +956,9 @@ def pmxt_order_book_state_events(
     gap_hours: Sequence[object] = (),
 ) -> PmxtBookEventLoad:
     """Derive causal L1 observations by replaying PMXT L2 deltas through Nautilus."""
+
+    from nautilus_trader.model.book import OrderBook
+    from nautilus_trader.model.enums import BookType
 
     book: OrderBook | None = None
     events: list[TokenBookStateEvent] = []
@@ -811,19 +1195,44 @@ def _validate_raw_part_statistics(path: Path, *, manifest: DataPartitionManifest
             raise RawPayloadError(f"raw part has no timestamp columns: {path}")
         if parquet.metadata.num_rows != manifest.row_count:
             raise RawPayloadError(f"raw part row_count does not match manifest: {path}")
-        source_timestamps: list[int] = []
-        available_timestamps: list[int] = []
+        min_source_ts_ns: int | None = None
+        max_source_ts_ns: int | None = None
+        min_available_ts_ns: int | None = None
+        max_available_ts_ns: int | None = None
         row_index = 0
-        for batch in parquet.iter_batches(columns=list(timestamp_columns)):
+        for batch in parquet.iter_batches(
+            batch_size=_RAW_SCAN_BATCH_SIZE,
+            columns=list(timestamp_columns),
+        ):
             for row in batch.to_pylist():
-                source_timestamps.append(_required_int(row, "source_ts_ns", path, row_index))
-                available_timestamps.append(_required_int(row, "available_ts_ns", path, row_index))
+                source_ts_ns = _required_int(row, "source_ts_ns", path, row_index)
+                available_ts_ns = _required_int(row, "available_ts_ns", path, row_index)
+                min_source_ts_ns = (
+                    source_ts_ns
+                    if min_source_ts_ns is None
+                    else min(min_source_ts_ns, source_ts_ns)
+                )
+                max_source_ts_ns = (
+                    source_ts_ns
+                    if max_source_ts_ns is None
+                    else max(max_source_ts_ns, source_ts_ns)
+                )
+                min_available_ts_ns = (
+                    available_ts_ns
+                    if min_available_ts_ns is None
+                    else min(min_available_ts_ns, available_ts_ns)
+                )
+                max_available_ts_ns = (
+                    available_ts_ns
+                    if max_available_ts_ns is None
+                    else max(max_available_ts_ns, available_ts_ns)
+                )
                 row_index += 1
         actual_bounds = (
-            min(source_timestamps),
-            max(source_timestamps),
-            min(available_timestamps),
-            max(available_timestamps),
+            min_source_ts_ns,
+            max_source_ts_ns,
+            min_available_ts_ns,
+            max_available_ts_ns,
         )
         manifest_bounds = (
             manifest.min_source_ts_ns,
@@ -850,7 +1259,10 @@ def _raw_rows(
             raise RawPayloadError(f"raw part has no supported event schema: {path}")
         row_index = 0
         collector_session_id = manifest.attributes["collector_session_id"]
-        for batch in parquet.iter_batches(columns=list(_RAW_COLUMNS)):
+        for batch in parquet.iter_batches(
+            batch_size=_RAW_SCAN_BATCH_SIZE,
+            columns=list(_RAW_COLUMNS),
+        ):
             for row in batch.to_pylist():
                 expected_identity = {
                     "source": manifest.source,
@@ -870,6 +1282,132 @@ def _raw_rows(
         raise
     except (OSError, ValueError, pa.ArrowException) as exc:
         raise RawPayloadError(f"cannot read raw part {path}: {exc}") from exc
+
+
+def _duckdb_sorted_raw_rows(
+    *,
+    parts: Sequence[tuple[Path, DataPartitionManifest]],
+    start_ns: int,
+    end_ns: int,
+) -> Iterator[tuple[Path, int, Mapping[str, object]]]:
+    """Read verified parts through DuckDB's bounded external sort.
+
+    The collector writes append-only partitions, not globally sorted runs.
+    Sorting in Python would recreate the unbounded payload list that caused
+    the readiness worker OOM.  DuckDB spills its ORDER BY to a short-lived
+    scratch directory while fetching small Arrow batches.
+    """
+
+    if not parts:
+        return
+    try:
+        import duckdb
+    except ImportError as exc:  # pragma: no cover - dependency is pinned in the project
+        raise RawPayloadError("duckdb is required for bounded raw streaming") from exc
+
+    scratch_root = os.environ.get("BTC_READINESS_TEMP_DIRECTORY")
+    scratch_parent = Path(scratch_root) if scratch_root else None
+    if scratch_parent is not None:
+        scratch_parent.mkdir(parents=True, exist_ok=True)
+    connection = duckdb.connect(database=":memory:")
+    temp_directory: tempfile.TemporaryDirectory[str] | None = None
+    try:
+        if scratch_parent is None:
+            temp_directory = tempfile.TemporaryDirectory(prefix="btc-readiness-sort-")
+            scratch_path = temp_directory.name
+        else:
+            scratch_path = str(scratch_parent)
+        connection.execute("SET memory_limit='256MB'")
+        connection.execute("SET temp_directory=?", [scratch_path])
+        columns = ", ".join(f'"{name}"' for name in _RAW_COLUMNS)
+        query = f"""
+            SELECT {columns}, filename AS __raw_path, file_row_number AS __raw_row_index
+            FROM read_parquet(?, filename=true, file_row_number=true, union_by_name=true)
+            WHERE available_ts_ns BETWEEN ? AND ?
+            ORDER BY
+                available_ts_ns,
+                coalesce(collector_receive_ts_ns, available_ts_ns),
+                collector_session_id,
+                admission_sequence,
+                CASE WHEN event_type = 'continuity_gap' THEN 0 ELSE 1 END,
+                source_ts_ns,
+                sequence_or_hash,
+                __raw_path,
+                __raw_row_index
+        """
+        reader = connection.execute(
+            query,
+            [[str(path) for path, _manifest in parts], start_ns, end_ns],
+        ).to_arrow_reader(batch_size=_RAW_SCAN_BATCH_SIZE)
+        for batch in reader:
+            for row in batch.to_pylist():
+                path = Path(str(row.pop("__raw_path")))
+                row_index = int(row.pop("__raw_row_index"))
+                yield path, row_index, row
+    except RawPayloadError:
+        raise
+    except Exception as exc:
+        raise RawPayloadError(f"bounded raw external sort failed: {exc}") from exc
+    finally:
+        connection.close()
+        if temp_directory is not None:
+            temp_directory.cleanup()
+
+
+def _stream_verified_raw_rows(
+    *,
+    rows: Iterable[tuple[Path, int, Mapping[str, object]]],
+    source: str,
+    instrument: str,
+    expected_ingest_version: str | None,
+) -> Iterator[ForwardRawEvent]:
+    previous_key: tuple[int, int, str, int, int, int, str, str, int] | None = None
+    seen_admission_sequences: set[tuple[str, int]] = set()
+    for path, row_index, row in rows:
+        available_ts_ns = _required_int(row, "available_ts_ns", path, row_index)
+        _validate_raw_identity(
+            row,
+            expected_source=source,
+            expected_instrument=instrument,
+            path=path,
+            row_index=row_index,
+        )
+        row_ingest_version = _required_text(row, "ingest_version", path, row_index)
+        if expected_ingest_version is not None and row_ingest_version != expected_ingest_version:
+            continue
+        event = ForwardRawEvent(
+            path=path,
+            row_index=row_index,
+            source_ts_ns=_required_int(row, "source_ts_ns", path, row_index),
+            collector_receive_ts_ns=_optional_int(row, "collector_receive_ts_ns", path, row_index),
+            available_ts_ns=available_ts_ns,
+            sequence_or_hash=_required_text(row, "sequence_or_hash", path, row_index),
+            source=source,
+            instrument=instrument,
+            schema_version=_required_text(row, "schema_version", path, row_index),
+            ingest_version=row_ingest_version,
+            event_type=_required_text(row, "event_type", path, row_index),
+            collector_session_id=_required_text(row, "collector_session_id", path, row_index),
+            epoch_id=_required_int(row, "epoch_id", path, row_index),
+            admission_sequence=_required_int(row, "admission_sequence", path, row_index),
+            payload=_payload_mapping(row, path=path, row_index=row_index),
+        )
+        key = _raw_payload_sort_key(event)
+        if previous_key is not None and key < previous_key:
+            raise RawPayloadError(
+                "externally sorted raw events are not in causal order at "
+                f"{path}:{row_index}"
+            )
+        previous_key = key
+        if row_ingest_version in _POLYMARKET_SOURCE_REGRESSION_REQUIRED_INGEST_VERSIONS:
+            admission_identity = (event.collector_session_id, event.admission_sequence)
+            if admission_identity in seen_admission_sequences:
+                raise RawPayloadError(
+                    "raw events repeat a collector-session admission_sequence "
+                    f"admission_sequence at {path}:{row_index}"
+                )
+            seen_admission_sequences.add(admission_identity)
+        yield event
 
 
 def _sha256_path(path: Path) -> str:

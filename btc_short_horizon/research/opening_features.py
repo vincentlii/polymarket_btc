@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from bisect import bisect_left
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+import gc
 from pathlib import Path
+
+import pyarrow as pa
 
 from btc_short_horizon.data import MarketWindow
 from btc_short_horizon.data.binance import (
@@ -24,8 +28,11 @@ from btc_short_horizon.features import (
 from btc_short_horizon.research.opening_evidence import (
     ForwardRawEvent,
     RawPayloadError,
+    TokenBookStateEvent,
+    fold_forward_polymarket_book_events,
     load_forward_polymarket_book_events,
     load_forward_raw_events,
+    stream_forward_raw_events,
 )
 
 
@@ -99,6 +106,27 @@ class ForwardOpeningFeatureBuild:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class ForwardOpeningReadinessBuild:
+    """Bounded readiness result with no retained raw-derived event list.
+
+    This is intentionally a separate result type.  The general feature build
+    exposes ``input_events`` for downstream research materializers; returning
+    an empty tuple from that API would make memory reduction indistinguishable
+    from a valid empty dataset and could silently corrupt callers.
+    """
+
+    observations: tuple[OpeningFeatureObservation, ...]
+    source_summaries: tuple[ForwardFeatureSourceSummary, ...]
+
+    def source_event_count(self, raw_source: str) -> int:
+        return sum(
+            summary.state_event_count
+            for summary in self.source_summaries
+            if summary.raw_source == raw_source
+        )
+
+
 def build_forward_opening_feature_observations(
     *,
     raw_data_root: Path,
@@ -112,23 +140,12 @@ def build_forward_opening_feature_observations(
 ) -> ForwardOpeningFeatureBuild:
     """Build causal opening features from CLOB, Chainlink, and core Binance evidence."""
 
-    if market.family.is_collection_only:
-        raise ValueError("collection-only markets cannot build 15m opening features")
-    if not ingest_version or not ingest_version.strip():
-        raise ValueError("ingest_version is required")
-    if not required_venue_sources or len(set(required_venue_sources)) != len(
-        required_venue_sources
-    ):
-        raise ValueError("required_venue_sources must be non-empty and unique")
-    if any(source not in _SUPPORTED_VENUE_SOURCES for source in required_venue_sources):
-        raise ValueError("required_venue_sources contains an unsupported forward source")
-    decisions = tuple(sorted(set(int(value) for value in decision_ts_ns)))
-    if not decisions:
-        raise ValueError("decision_ts_ns must not be empty")
-    market_start_ns = _datetime_to_ns(market.t0)
-    market_end_ns = _datetime_to_ns(market.t1)
-    if any(value < market_start_ns or value > market_end_ns for value in decisions):
-        raise ValueError("decision timestamps must lie within the market window")
+    decisions, market_start_ns = _validate_opening_feature_request(
+        market=market,
+        decision_ts_ns=decision_ts_ns,
+        ingest_version=ingest_version,
+        required_venue_sources=required_venue_sources,
+    )
 
     clob_events, clob_summary = _load_clob_feature_events(
         raw_data_root=raw_data_root,
@@ -205,6 +222,233 @@ def build_forward_opening_feature_observations(
             *(summary for _, summary in venue_results),
         ),
     )
+
+
+def build_forward_opening_readiness_observations(
+    *,
+    raw_data_root: Path,
+    market: MarketWindow,
+    start_time: datetime,
+    end_time: datetime,
+    decision_ts_ns: Sequence[int],
+    ingest_version: str,
+    polymarket_source_timestamp_regression_tolerance_seconds: float | None = None,
+    required_venue_sources: tuple[str, ...] = _SUPPORTED_VENUE_SOURCES,
+) -> ForwardOpeningReadinessBuild:
+    """Build readiness observations while keeping only one source in memory."""
+
+    decisions, _market_start_ns = _validate_opening_feature_request(
+        market=market,
+        decision_ts_ns=decision_ts_ns,
+        ingest_version=ingest_version,
+        required_venue_sources=required_venue_sources,
+    )
+    return _build_bounded_forward_opening_feature_observations(
+        raw_data_root=raw_data_root,
+        market=market,
+        start_time=start_time,
+        end_time=end_time,
+        decisions=decisions,
+        ingest_version=ingest_version,
+        polymarket_source_timestamp_regression_tolerance_seconds=(
+            polymarket_source_timestamp_regression_tolerance_seconds
+        ),
+        required_venue_sources=required_venue_sources,
+    )
+
+
+def _build_bounded_forward_opening_feature_observations(
+    *,
+    raw_data_root: Path,
+    market: MarketWindow,
+    start_time: datetime,
+    end_time: datetime,
+    decisions: tuple[int, ...],
+    ingest_version: str,
+    polymarket_source_timestamp_regression_tolerance_seconds: float | None,
+    required_venue_sources: tuple[str, ...],
+) -> ForwardOpeningReadinessBuild:
+    """Build identical decision snapshots while retaining one raw source at a time."""
+
+    states = tuple(
+        OpeningFeatureState(
+            up_token_id=market.up_token_id,
+            down_token_id=market.down_token_id,
+            required_venue_sources=required_venue_sources,
+        )
+        for _ in decisions
+    )
+    tick_size_changed = [False] * len(decisions)
+    summaries: list[ForwardFeatureSourceSummary] = []
+
+    def apply_event(event: ForwardFeatureStateEvent) -> None:
+        first_decision = bisect_left(decisions, event.available_ts_ns)
+        for index in range(first_decision, len(decisions)):
+            state = states[index]
+            if event.gap_before:
+                state.mark_gap(
+                    source=event.state_source,
+                    instrument=event.state_instrument,
+                )
+            if event.value is not None:
+                state.update(event.value)
+            tick_size_changed[index] = tick_size_changed[index] or event.tick_size_changed
+
+    def apply_source(
+        result: tuple[tuple[ForwardFeatureStateEvent, ...], ForwardFeatureSourceSummary],
+    ) -> None:
+        events, summary = result
+        summaries.append(summary)
+        for event in sorted(events, key=_feature_event_sort_key):
+            apply_event(event)
+
+    def apply_stream(
+        *,
+        source: str,
+        instrument: str,
+        decoder: Callable[..., tuple[tuple[ForwardFeatureStateEvent, ...], int]],
+    ) -> None:
+        stream = stream_forward_raw_events(
+            raw_data_root=raw_data_root,
+            source=source,
+            instrument=instrument,
+            start_time=start_time,
+            end_time=end_time,
+            ingest_version=ingest_version,
+        )
+        raw_row_count = 0
+
+        def raw_events() -> Iterable[ForwardRawEvent]:
+            nonlocal raw_row_count
+            for raw in stream.events:
+                raw_row_count += 1
+                yield raw
+
+        state_event_count = 0
+
+        def consume(event: ForwardFeatureStateEvent) -> None:
+            nonlocal state_event_count
+            state_event_count += 1
+            apply_event(event)
+
+        _unused_events, gap_count = decoder(raw_events(), on_event=consume)
+        summaries.append(
+            ForwardFeatureSourceSummary(
+                raw_source=source,
+                raw_part_count=stream.raw_part_count,
+                raw_row_count=raw_row_count,
+                state_event_count=state_event_count,
+                gap_event_count=gap_count,
+            )
+        )
+
+    clob_gap_count = 0
+
+    def consume_clob(state_event: TokenBookStateEvent) -> None:
+        nonlocal clob_gap_count
+        event = ForwardFeatureStateEvent(
+            raw_source="polymarket_clob",
+            state_source="polymarket_clob",
+            state_instrument=state_event.token_id,
+            source_ts_ns=state_event.source_ts_ns,
+            collector_receive_ts_ns=state_event.collector_receive_ts_ns,
+            available_ts_ns=state_event.available_ts_ns,
+            sequence_or_hash=(
+                f"{state_event.token_id}:{state_event.collector_session_id}:"
+                f"{state_event.epoch_id}:{state_event.source_ts_ns}"
+            ),
+            collector_session_id=state_event.collector_session_id,
+            epoch_id=state_event.epoch_id,
+            admission_sequence=state_event.admission_sequence,
+            value=state_event.book,
+            gap_before=state_event.reset_book,
+            tick_size_changed=state_event.tick_size_changed,
+        )
+        clob_gap_count += event.gap_before
+        apply_event(event)
+
+    clob_loads_list = []
+    for token_id in (market.up_token_id, market.down_token_id):
+        clob_loads_list.append(
+            fold_forward_polymarket_book_events(
+                raw_data_root=raw_data_root,
+                token_id=token_id,
+                start_time=start_time,
+                end_time=end_time,
+                ingest_version=ingest_version,
+                expected_source_timestamp_regression_tolerance_seconds=(
+                    polymarket_source_timestamp_regression_tolerance_seconds
+                ),
+                on_event=consume_clob,
+            )
+        )
+        _release_source_memory()
+    clob_loads = tuple(clob_loads_list)
+    if (
+        clob_loads[0].polymarket_source_timestamp_regression_tolerance_seconds
+        != clob_loads[1].polymarket_source_timestamp_regression_tolerance_seconds
+    ):
+        raise RawPayloadError("Up/Down raw manifests use different Polymarket timestamp tolerances")
+    summaries.append(
+        ForwardFeatureSourceSummary(
+            raw_source="polymarket_clob",
+            raw_part_count=sum(item.raw_part_count for item in clob_loads),
+            raw_row_count=sum(item.raw_row_count for item in clob_loads),
+            state_event_count=sum(item.state_event_count or 0 for item in clob_loads),
+            gap_event_count=clob_gap_count,
+        )
+    )
+    apply_stream(
+        source=_CHAINLINK_RAW_SOURCE,
+        instrument=_CHAINLINK_INSTRUMENT,
+        decoder=_chainlink_state_events,
+    )
+    _release_source_memory()
+    for source in required_venue_sources:
+        instrument = "BTC-USDT" if source == "okx_spot" else (
+            "BTC-USDT-SWAP" if source == "okx_swap" else _BTCUSDT
+        )
+        decoder = (
+            (lambda events, on_event=None, _source=source: _okx_state_events(
+                events,
+                source=_source,
+                instrument=instrument,
+                on_event=on_event,
+            ))
+            if source.startswith("okx_")
+            else (lambda events, on_event=None, _source=source: _binance_state_events(
+                events,
+                source=_source,
+                on_event=on_event,
+            ))
+        )
+        apply_stream(source=source, instrument=instrument, decoder=decoder)
+        _release_source_memory()
+
+    observations: list[OpeningFeatureObservation] = []
+    market_start_ns = _datetime_to_ns(market.t0)
+    for index, (decision, state) in enumerate(zip(decisions, states, strict=True)):
+        observation = state.snapshot(
+            decision_ts_ns=decision,
+            market_window_start_ns=market_start_ns,
+        )
+        if tick_size_changed[index]:
+            observation = replace(
+                observation,
+                quality_flags=frozenset((*observation.quality_flags, "tick_changed")),
+            )
+        observations.append(observation)
+    return ForwardOpeningReadinessBuild(
+        observations=tuple(observations),
+        source_summaries=tuple(summaries),
+    )
+
+
+def _release_source_memory() -> None:
+    """Return temporary Arrow buffers between isolated readiness source folds."""
+
+    gc.collect()
+    pa.default_memory_pool().release_unused()
 
 
 def _load_clob_feature_events(
@@ -362,9 +606,12 @@ def _load_okx_feature_events(
 
 
 def _chainlink_state_events(
-    raw_events: Sequence[ForwardRawEvent],
+    raw_events: Iterable[ForwardRawEvent],
+    *,
+    on_event: Callable[[ForwardFeatureStateEvent], None] | None = None,
 ) -> tuple[tuple[ForwardFeatureStateEvent, ...], int]:
     events: list[ForwardFeatureStateEvent] = []
+    emit = events.append if on_event is None else on_event
     current_epoch: tuple[str, int] | None = None
     completed_epochs: set[tuple[str, int]] = set()
     gap_count = 0
@@ -378,7 +625,7 @@ def _chainlink_state_events(
                 completed_epochs=completed_epochs,
             )
             gap_count += 1
-            events.append(
+            emit(
                 _gap_event(
                     raw,
                     state_source=_CHAINLINK_STATE_SOURCE,
@@ -393,7 +640,7 @@ def _chainlink_state_events(
         )
         if gap_before:
             gap_count += 1
-            events.append(
+            emit(
                 _gap_event(
                     raw,
                     state_source=_CHAINLINK_STATE_SOURCE,
@@ -414,7 +661,7 @@ def _chainlink_state_events(
             source_ts_ns=raw.source_ts_ns,
             available_ts_ns=raw.available_ts_ns,
         )
-        events.append(
+        emit(
             _value_event(
                 raw,
                 state_source=_CHAINLINK_STATE_SOURCE,
@@ -422,13 +669,17 @@ def _chainlink_state_events(
                 value=reference,
             )
         )
-    return tuple(events), gap_count
+    return (() if on_event is not None else tuple(events)), gap_count
 
 
 def _binance_state_events(
-    raw_events: Sequence[ForwardRawEvent], *, source: str
+    raw_events: Iterable[ForwardRawEvent],
+    *,
+    source: str,
+    on_event: Callable[[ForwardFeatureStateEvent], None] | None = None,
 ) -> tuple[tuple[ForwardFeatureStateEvent, ...], int]:
     events: list[ForwardFeatureStateEvent] = []
+    emit = events.append if on_event is None else on_event
     current_epochs: dict[str, tuple[str, int]] = {}
     completed_epochs: dict[str, set[tuple[str, int]]] = {}
     gap_count = 0
@@ -444,7 +695,7 @@ def _binance_state_events(
             )
             current_epochs[stream_id] = current_epoch
             gap_count += 1
-            events.append(_gap_event(raw, state_source=source, state_instrument=_BTCUSDT))
+            emit(_gap_event(raw, state_source=source, state_instrument=_BTCUSDT))
             continue
         stream_id = _binance_feature_stream_id(raw.event_type)
         if stream_id is None:
@@ -456,7 +707,7 @@ def _binance_state_events(
         )
         if gap_before:
             gap_count += 1
-            events.append(_gap_event(raw, state_source=source, state_instrument=_BTCUSDT))
+            emit(_gap_event(raw, state_source=source, state_instrument=_BTCUSDT))
         current_epochs[stream_id] = current_epoch
         message = _binance_message(raw)
         if raw.event_type in {"trade", "aggtrade"}:
@@ -473,7 +724,7 @@ def _binance_state_events(
                 source_ts_ns=raw.source_ts_ns,
                 available_ts_ns=raw.available_ts_ns,
             )
-            events.append(
+            emit(
                 _value_event(
                     raw,
                     state_source=source,
@@ -506,7 +757,7 @@ def _binance_state_events(
                 )
             except (KeyError, TypeError, ValueError) as exc:
                 raise _raw_normalization_error(raw, exc) from exc
-            events.append(
+            emit(
                 _value_event(
                     raw,
                     state_source=source,
@@ -541,7 +792,7 @@ def _binance_state_events(
                 )
             except (TypeError, ValueError) as exc:
                 raise _raw_normalization_error(raw, exc) from exc
-            events.append(
+            emit(
                 _value_event(
                     raw,
                     state_source=source,
@@ -549,13 +800,18 @@ def _binance_state_events(
                     value=book,
                 )
             )
-    return tuple(events), gap_count
+    return (() if on_event is not None else tuple(events)), gap_count
 
 
 def _okx_state_events(
-    raw_events: Sequence[ForwardRawEvent], *, source: str, instrument: str
+    raw_events: Iterable[ForwardRawEvent],
+    *,
+    source: str,
+    instrument: str,
+    on_event: Callable[[ForwardFeatureStateEvent], None] | None = None,
 ) -> tuple[tuple[ForwardFeatureStateEvent, ...], int]:
     events: list[ForwardFeatureStateEvent] = []
+    emit = events.append if on_event is None else on_event
     synchronizer = OkxBookSynchronizer(instrument=instrument, source=source)
     current_epochs: dict[str, tuple[str, int]] = {}
     completed_epochs: dict[str, set[tuple[str, int]]] = {}
@@ -567,7 +823,7 @@ def _okx_state_events(
                 continue
             synchronizer.reset()
             gap_count += 1
-            events.append(_gap_event(raw, state_source=source, state_instrument=instrument))
+            emit(_gap_event(raw, state_source=source, state_instrument=instrument))
             continue
         stream = (
             "trade"
@@ -587,7 +843,7 @@ def _okx_state_events(
         if gap_before:
             synchronizer.reset()
             gap_count += 1
-            events.append(_gap_event(raw, state_source=source, state_instrument=instrument))
+            emit(_gap_event(raw, state_source=source, state_instrument=instrument))
         data = raw.payload.get("data")
         if not isinstance(data, list) or len(data) != 1 or not isinstance(data[0], dict):
             raise RawPayloadError(f"invalid OKX envelope at {raw.path}:{raw.row_index}")
@@ -601,7 +857,7 @@ def _okx_state_events(
                 ).trade
             except ValueError as exc:
                 raise _raw_normalization_error(raw, exc) from exc
-            events.append(
+            emit(
                 _value_event(
                     raw,
                     state_source=source,
@@ -628,9 +884,9 @@ def _okx_state_events(
             raise _raw_normalization_error(raw, exc) from exc
         if applied.status.value == "gap":
             gap_count += 1
-            events.append(_gap_event(raw, state_source=source, state_instrument=instrument))
+            emit(_gap_event(raw, state_source=source, state_instrument=instrument))
         elif applied.book_top is not None:
-            events.append(
+            emit(
                 _value_event(
                     raw,
                     state_source=source,
@@ -642,7 +898,7 @@ def _okx_state_events(
                     ),
                 )
             )
-    return tuple(events), gap_count
+    return (() if on_event is not None else tuple(events)), gap_count
 
 
 def _binance_feature_stream_id(event_type: str) -> str | None:
@@ -757,6 +1013,33 @@ def _feature_event_sort_key(
     )
 
 
+def _validate_opening_feature_request(
+    *,
+    market: MarketWindow,
+    decision_ts_ns: Sequence[int],
+    ingest_version: str,
+    required_venue_sources: tuple[str, ...],
+) -> tuple[tuple[int, ...], int]:
+    if market.family.is_collection_only:
+        raise ValueError("collection-only markets cannot build 15m opening features")
+    if not ingest_version or not ingest_version.strip():
+        raise ValueError("ingest_version is required")
+    if not required_venue_sources or len(set(required_venue_sources)) != len(
+        required_venue_sources
+    ):
+        raise ValueError("required_venue_sources must be non-empty and unique")
+    if any(source not in _SUPPORTED_VENUE_SOURCES for source in required_venue_sources):
+        raise ValueError("required_venue_sources contains an unsupported forward source")
+    decisions = tuple(sorted(set(int(value) for value in decision_ts_ns)))
+    if not decisions:
+        raise ValueError("decision_ts_ns must not be empty")
+    market_start_ns = _datetime_to_ns(market.t0)
+    market_end_ns = _datetime_to_ns(market.t1)
+    if any(value < market_start_ns or value > market_end_ns for value in decisions):
+        raise ValueError("decision timestamps must lie within the market window")
+    return decisions, market_start_ns
+
+
 def _datetime_to_ns(value: datetime) -> int:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("datetime must be timezone-aware")
@@ -771,5 +1054,7 @@ __all__ = [
     "ForwardFeatureSourceSummary",
     "ForwardFeatureStateEvent",
     "ForwardOpeningFeatureBuild",
+    "ForwardOpeningReadinessBuild",
     "build_forward_opening_feature_observations",
+    "build_forward_opening_readiness_observations",
 ]

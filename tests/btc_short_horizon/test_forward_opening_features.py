@@ -12,6 +12,7 @@ from btc_short_horizon.research.opening_features import (
     ForwardFeatureStateEvent,
     _feature_event_sort_key,
     build_forward_opening_feature_observations,
+    build_forward_opening_readiness_observations,
     _okx_state_events,
 )
 from btc_short_horizon.research.opening_evidence import ForwardRawEvent, RawPayloadError
@@ -355,6 +356,30 @@ def test_forward_raw_builds_an_eligible_causal_opening_feature_observation(tmp_p
     assert observation.p_market_mid_up == pytest.approx(0.605)
     assert values["binance_spot_return_5s"] > 0.0
     assert result.source_event_count("polymarket_clob") == 2
+
+
+def test_bounded_forward_build_matches_retained_event_build(tmp_path: Path) -> None:
+    PartitionedRawEventWriter(tmp_path).write(_events())
+    decisions = tuple(
+        int((T0 + timedelta(seconds=offset)).timestamp() * 1_000_000_000) for offset in (1, 2, 3)
+    )
+    arguments = {
+        "raw_data_root": tmp_path,
+        "market": _market(),
+        "start_time": T0 - timedelta(minutes=5),
+        "end_time": T0 + timedelta(seconds=3),
+        "decision_ts_ns": decisions,
+        "ingest_version": INGEST_VERSION,
+        "required_venue_sources": ("binance_spot", "binance_perp"),
+    }
+
+    retained = build_forward_opening_feature_observations(**arguments)
+    bounded = build_forward_opening_readiness_observations(
+        **arguments,
+    )
+
+    assert bounded.observations == retained.observations
+    assert bounded.source_summaries == retained.source_summaries
 
 
 def test_forward_raw_epoch_change_marks_opening_feature_observation_ineligible(

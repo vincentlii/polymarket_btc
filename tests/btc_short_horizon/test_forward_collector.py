@@ -801,6 +801,24 @@ def test_forward_collector_rotates_required_clob_tokens_without_old_market_stale
     )
 
 
+def test_forward_collector_fails_closed_when_handoff_token_is_not_registered(tmp_path) -> None:
+    collector = BtcForwardCollector(
+        raw_data_root=tmp_path,
+        polymarket_token_ids=("current-up", "current-down"),
+    )
+    collector.configure_required_polymarket_tokens(("next-up", "next-down"))
+
+    health = collector.feed_health(now=SOURCE_TIME, stale_after_seconds=30.0)
+
+    assert not health.healthy
+    assert health.reason == "required_feed_token_not_registered"
+    assert {
+        item["state"]
+        for item in health.feeds
+        if item["source"] == "polymarket_clob"
+    } == {"gap"}
+
+
 def test_forward_collector_persists_unique_clob_and_binance_events_by_epoch(tmp_path) -> None:  # type: ignore[no-untyped-def]
     collector = BtcForwardCollector(
         raw_data_root=tmp_path,

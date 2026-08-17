@@ -38,9 +38,11 @@ from btc_short_horizon.data.session_inventory import (  # noqa: E402
 from btc_short_horizon.data.storage import write_atomic_json  # noqa: E402
 from btc_short_horizon.live.runtime import RuntimeStatus, RuntimeStatusStore  # noqa: E402
 from btc_short_horizon.research.opening_features import (  # noqa: E402
-    build_forward_opening_feature_observations,
+    build_forward_opening_readiness_observations,
 )
-from btc_short_horizon.research.opening_evidence import load_forward_raw_events  # noqa: E402
+from btc_short_horizon.research.opening_evidence import (  # noqa: E402
+    scan_forward_raw_event_metadata,
+)
 from scripts.btc_forward_collector import _readiness_protocol  # noqa: E402
 
 _EXIT_TERMINAL_MAX_AGE_SECONDS = 15
@@ -210,7 +212,7 @@ def audit_candidate(
         int(market.t0.timestamp() * 1e9) + seconds * 1_000_000_000
         for seconds in candidate["decision_offsets_seconds"]
     )
-    build = build_forward_opening_feature_observations(
+    build = build_forward_opening_readiness_observations(
         raw_data_root=raw_data_root,
         market=market,
         start_time=market.t0
@@ -285,7 +287,7 @@ def _audit_raw_exit_evidence(
     errors: list[str] = []
     t0_ns = int(market.t0.timestamp() * 1e9)  # type: ignore[attr-defined]
     for token_id in (market.up_token_id, market.down_token_id):  # type: ignore[attr-defined]
-        raw = load_forward_raw_events(
+        scan = scan_forward_raw_event_metadata(
             raw_data_root=raw_data_root,
             source="polymarket_clob",
             instrument=token_id,
@@ -293,21 +295,18 @@ def _audit_raw_exit_evidence(
             end_time=market.t1,  # type: ignore[attr-defined]
             ingest_version=ingest_version,
         )
-        if not any(
-            item.event_type == "book" and item.available_ts_ns <= t0_ns for item in raw.events
-        ):
+        book = scan.event_type("book")
+        if book is None or book.min_available_ts_ns > t0_ns:
             errors.append(f"missing_t0_book:{token_id}")
-        if any(
-            item.event_type == "continuity_gap" and item.available_ts_ns >= t0_ns
-            for item in raw.events
-        ):
+        gap = scan.event_type("continuity_gap")
+        if gap is not None and gap.max_available_ts_ns >= t0_ns:
             errors.append(f"clob_gap:{token_id}")
         terminal_ns = int(market.t1.timestamp() * 1e9)  # type: ignore[attr-defined]
         latest = max(
             (
-                item.available_ts_ns
-                for item in raw.events
-                if item.event_type in {"book", "price_change", "last_trade_price"}
+                item.max_available_ts_ns
+                for event_type in ("book", "price_change", "last_trade_price")
+                if (item := scan.event_type(event_type)) is not None
             ),
             default=0,
         )

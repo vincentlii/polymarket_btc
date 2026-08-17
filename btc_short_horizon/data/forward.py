@@ -680,9 +680,8 @@ class BtcForwardCollector:
             self._required_feed_keys.update(keys)
 
     def configure_required_polymarket_tokens(self, token_ids: Sequence[str]) -> None:
+        """Set required CLOB tokens without crashing during a handoff race."""
         required = {token_id.strip() for token_id in token_ids if token_id.strip()}
-        if not required.issubset(self._polymarket_normalizers):
-            raise ValueError("required Polymarket tokens must belong to this collector")
         with self._lock:
             self._required_feed_keys = {
                 key for key in self._required_feed_keys if key[0] != "polymarket_clob"
@@ -765,7 +764,9 @@ class BtcForwardCollector:
             )
             validator = self._validators.get(key)
             gap_count = 0 if validator is None else validator.stats.gap_events
-            if last_event is None:
+            if source == "polymarket_clob" and instrument not in self._polymarket_normalizers:
+                state, reason = "gap", "required_feed_token_not_registered"
+            elif last_event is None:
                 state, reason = "silent", "required_feed_silent"
             elif unresolved_gaps.get(key, 0):
                 state, reason = "gap", "required_feed_gap"
@@ -787,11 +788,7 @@ class BtcForwardCollector:
                 )
             ):
                 state, reason = "gap", "required_feed_snapshot_missing"
-            elif (
-                source == "polymarket_clob"
-                and instrument in self._polymarket_normalizers
-                and not self._polymarket_normalizers[instrument].has_snapshot
-            ):
+            elif source == "polymarket_clob" and not self._polymarket_normalizers[instrument].has_snapshot:
                 state, reason = "gap", "required_feed_snapshot_missing"
             elif age_seconds is not None and age_seconds < -5.0:
                 state, reason = "future", "required_feed_timestamp_in_future"

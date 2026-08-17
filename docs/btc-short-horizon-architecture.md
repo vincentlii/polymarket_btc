@@ -174,6 +174,10 @@ socket; the venue does not document cross-event timestamp monotonicity. Local
 receive time and admission sequence remain the causal order, and a material
 regression inside the book-state lane, explicit disconnect, malformed state, or
 backpressure loss still creates a fail-closed continuity gap.
+Offline readiness audits keep the same manifest, inventory, payload, epoch, and
+gap checks, but terminal CLOB evidence is folded from fixed-size Parquet batches.
+The worker retains only per-event-type counts and timestamp bounds; it must not
+materialize an entire Up/Down lifecycle beside the six-source feature build.
 Every bounded connection still starts from the venue's
 official initial full-book dump; window-external deltas are neither required
 nor silently treated as collected evidence. A collector restart after a capture
@@ -1106,6 +1110,15 @@ markets without scanning the whole archive or sharing the collector process.
 It reports model-feature readiness through the configured entry horizon and
 exit-replay readiness through the full capture horizon separately. Failed or
 missing evidence is a machine-readable No-Go, never silently repaired.
+The six required evidence families are Polymarket Up/Down CLOB, Chainlink
+RTDS, Binance Spot, Binance Perpetual, OKX Spot and OKX Swap. The two CLOB
+tokens are one execution family and cannot be removed from exit validation;
+optional venue families may be disabled only by an explicit research profile.
+Readiness folds one source at a time and uses DuckDB's bounded external sort
+for append-only Parquet partitions, spilling to a short-lived directory rather
+than retaining a one-hour payload list in Python memory. The spill directory
+is controlled by `BTC_READINESS_TEMP_DIRECTORY`; missing or unwritable spill
+storage fails closed.
 Coverage is source-specific: continuous BTC/reference feeds cover their feature
 lookback, the current market's CLOB covers `t0-90s` through `t0+180s`, and exit
 evidence covers CLOB from `t0` through `t1`. Storage-session continuity is

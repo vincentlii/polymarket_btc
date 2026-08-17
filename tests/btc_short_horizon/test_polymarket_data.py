@@ -70,6 +70,42 @@ def test_polymarket_book_price_change_trade_and_tick_events_are_causal() -> None
     assert not tick.tick_size_changed
 
 
+def test_polymarket_in_place_updates_match_atomic_copy_updates() -> None:
+    events = (
+        {
+            "event_type": "book",
+            "asset_id": TOKEN,
+            "bids": [{"price": "0.50", "size": "10"}],
+            "asks": [{"price": "0.52", "size": "20"}],
+            "timestamp": "1776038400000",
+        },
+        {
+            "event_type": "price_change",
+            "timestamp": "1776038400100",
+            "price_changes": [
+                {"asset_id": TOKEN, "price": "0.51", "size": "5", "side": "BUY"},
+                {"asset_id": TOKEN, "price": "0.52", "size": "0", "side": "SELL"},
+            ],
+        },
+        {
+            "event_type": "book",
+            "asset_id": TOKEN,
+            "bids": [{"price": "0.49", "size": "8"}],
+            "asks": [{"price": "0.53", "size": "12"}],
+            "timestamp": "1776038400200",
+        },
+    )
+    atomic = PolymarketL2Normalizer(token_id=TOKEN)
+    bounded = PolymarketL2Normalizer(token_id=TOKEN, in_place_updates=True)
+
+    for payload in events:
+        atomic_result = atomic.apply(payload, collector_receive_ts=RECEIVE)
+        bounded_result = bounded.apply(payload, collector_receive_ts=RECEIVE)
+        assert bounded_result.status is atomic_result.status
+        assert bounded_result.reason == atomic_result.reason
+        assert bounded.book_levels() == atomic.book_levels()
+
+
 def test_polymarket_availability_remains_monotonic_when_source_clock_jitters() -> None:
     normalizer = PolymarketL2Normalizer(token_id=TOKEN)
     source_start = datetime(2026, 4, 13, tzinfo=UTC)

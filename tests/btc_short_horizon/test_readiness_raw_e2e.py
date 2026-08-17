@@ -1,11 +1,23 @@
 from datetime import UTC, datetime, timedelta
+import gc
+import tracemalloc
+
+import pytest
 
 from btc_short_horizon.data import BTC_15M_MARKET_FAMILY, MarketWindow, TimedMarketEvent
 from btc_short_horizon.data.collector import PartitionedRawEventWriter, RawCollectorEvent
+from btc_short_horizon.research.opening_evidence import RawPayloadError
 from scripts.btc_training_readiness_worker import _audit_raw_exit_evidence
 
 
-def _event(token: str, at: datetime, event_type: str) -> RawCollectorEvent:
+def _event(
+    token: str,
+    at: datetime,
+    event_type: str,
+    *,
+    ingest_version: str = "v16",
+    admission_sequence: int = 0,
+) -> RawCollectorEvent:
     payload = {"event_type": event_type, "asset_id": token}
     if event_type == "book":
         payload.update(
@@ -26,12 +38,13 @@ def _event(token: str, at: datetime, event_type: str) -> RawCollectorEvent:
             "polymarket_clob",
             token,
             "test-v1",
-            "v16",
+            ingest_version,
         ),
         event_type=event_type,
         payload=payload,
         collector_session_id="session",
         epoch_id=0,
+        admission_sequence=admission_sequence,
     )
 
 
@@ -106,3 +119,86 @@ def test_raw_exit_readiness_rejects_silent_single_token_loss(tmp_path) -> None:
         collection_policy="extended_t0_plus_900",
         coverage_error=None,
     ) == ["missing_terminal_clob_evidence:down"]
+
+
+def test_raw_exit_readiness_memory_is_bounded_by_scan_batch(tmp_path) -> None:
+    t0 = datetime(2026, 8, 13, tzinfo=UTC)
+    market = MarketWindow(
+        BTC_15M_MARKET_FAMILY,
+        BTC_15M_MARKET_FAMILY.slug_for(t0),
+        "c",
+        "up",
+        "down",
+        t0,
+        t0 + timedelta(minutes=15),
+        "chainlink-btc-usd-twap-60s-v1",
+        "a" * 64,
+    )
+    events = []
+    for index in range(12_000):
+        at = t0 + timedelta(milliseconds=75 * index)
+        events.append(_event("up", at, "book"))
+        events.append(_event("down", at, "book"))
+    writer = PartitionedRawEventWriter(tmp_path)
+    writer.write(tuple(events))
+    del events
+    gc.collect()
+
+    tracemalloc.start()
+    errors = _audit_raw_exit_evidence(
+        raw_data_root=tmp_path,
+        market=market,
+        ingest_version="v16",
+        capture_lead_seconds=90,
+        collection_policy="extended_t0_plus_900",
+        coverage_error=None,
+    )
+    _, peak_bytes = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert errors == []
+    assert peak_bytes < 24 * 1024 * 1024
+
+
+def test_raw_exit_readiness_keeps_v17_timestamp_policy_fail_closed(tmp_path) -> None:
+    t0 = datetime(2026, 8, 13, tzinfo=UTC)
+    market = MarketWindow(
+        BTC_15M_MARKET_FAMILY,
+        BTC_15M_MARKET_FAMILY.slug_for(t0),
+        "c",
+        "up",
+        "down",
+        t0,
+        t0 + timedelta(minutes=15),
+        "chainlink-btc-usd-twap-60s-v1",
+        "a" * 64,
+    )
+    writer = PartitionedRawEventWriter(tmp_path)
+    writer.write(
+        (
+            _event(
+                "up",
+                t0 - timedelta(seconds=1),
+                "book",
+                ingest_version="btc-short-horizon-v17",
+                admission_sequence=1,
+            ),
+            _event(
+                "up",
+                market.t1,
+                "book",
+                ingest_version="btc-short-horizon-v17",
+                admission_sequence=2,
+            ),
+        )
+    )
+
+    with pytest.raises(RawPayloadError, match="timestamp tolerance"):
+        _audit_raw_exit_evidence(
+            raw_data_root=tmp_path,
+            market=market,
+            ingest_version="btc-short-horizon-v17",
+            capture_lead_seconds=90,
+            collection_policy="extended_t0_plus_900",
+            coverage_error=None,
+        )

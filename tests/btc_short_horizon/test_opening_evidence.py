@@ -32,6 +32,7 @@ from btc_short_horizon.research.opening_evidence import (
     build_opening_market_observations,
     load_forward_polymarket_book_events,
     pmxt_order_book_state_events,
+    stream_forward_raw_events,
 )
 
 
@@ -112,6 +113,47 @@ def _v8_raw_writer(root: Path, *, tolerance_seconds: str = "1") -> PartitionedRa
             "polymarket_source_timestamp_regression_tolerance_seconds": (tolerance_seconds)
         },
     )
+
+
+def test_v17_stream_checks_admission_uniqueness_not_physical_monotonicity(tmp_path) -> None:
+    """Available-time sorting may reorder writer admissions across overlapping parts."""
+
+    t0 = T0 + timedelta(hours=1)
+    writer = _v8_raw_writer(tmp_path)
+    writer.write(
+        (
+            _raw_book_event(
+                token_id=UP_TOKEN,
+                at=t0 + timedelta(seconds=2),
+                bid="0.49",
+                ask="0.51",
+                ingest_version="btc-short-horizon-v17",
+                admission_sequence=1,
+            ),
+        )
+    )
+    writer.write(
+        (
+            _raw_book_event(
+                token_id=UP_TOKEN,
+                at=t0 + timedelta(seconds=1),
+                bid="0.48",
+                ask="0.52",
+                ingest_version="btc-short-horizon-v17",
+                admission_sequence=2,
+            ),
+        )
+    )
+
+    stream = stream_forward_raw_events(
+        raw_data_root=tmp_path,
+        source="polymarket_clob",
+        instrument=UP_TOKEN,
+        start_time=t0,
+        end_time=t0 + timedelta(seconds=3),
+        ingest_version="btc-short-horizon-v17",
+    )
+    assert [event.admission_sequence for event in stream.events] == [2, 1]
 
 
 def _book_state(
