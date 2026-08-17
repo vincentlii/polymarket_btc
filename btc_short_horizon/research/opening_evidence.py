@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from bisect import bisect_right
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -1327,9 +1329,21 @@ def _duckdb_sorted_raw_rows(
         connection.execute("SET preserve_insertion_order=false")
         connection.execute("SET threads=1")
         connection.execute("SET temp_directory=?", [scratch_path])
-        columns = ", ".join(f'"{name}"' for name in _RAW_COLUMNS)
-        query = f"""
-            SELECT {columns}, filename AS __raw_path, file_row_number AS __raw_row_index
+        # Sort only the causal key and a physical row locator.  Sorting
+        # payload_json here makes DuckDB retain every large CLOB snapshot in
+        # its sort buffers; payloads are fetched from Parquet after the light
+        # row references have been ordered.
+        query = """
+            SELECT
+                available_ts_ns,
+                coalesce(collector_receive_ts_ns, available_ts_ns) AS __receive_ts_ns,
+                collector_session_id,
+                admission_sequence,
+                event_type,
+                source_ts_ns,
+                sequence_or_hash,
+                filename AS __raw_path,
+                file_row_number AS __raw_row_index
             FROM read_parquet(?, filename=true, file_row_number=true, union_by_name=true)
             WHERE available_ts_ns BETWEEN ? AND ?
             ORDER BY
@@ -1343,6 +1357,7 @@ def _duckdb_sorted_raw_rows(
                 __raw_path,
                 __raw_row_index
         """
+        row_lookup = _RawParquetRowLookup(parts)
         reader = connection.execute(
             query,
             [[str(path) for path, _manifest in parts], start_ns, end_ns],
@@ -1351,7 +1366,7 @@ def _duckdb_sorted_raw_rows(
             for row in batch.to_pylist():
                 path = Path(str(row.pop("__raw_path")))
                 row_index = int(row.pop("__raw_row_index"))
-                yield path, row_index, row
+                yield path, row_index, row_lookup.get(path, row_index)
     except RawPayloadError:
         raise
     except Exception as exc:
@@ -1360,6 +1375,40 @@ def _duckdb_sorted_raw_rows(
         connection.close()
         if temp_directory is not None:
             temp_directory.cleanup()
+
+
+class _RawParquetRowLookup:
+    """Fetch sorted raw rows without sorting or retaining their payloads."""
+
+    _CACHE_GROUPS = 8
+
+    def __init__(self, parts: Sequence[tuple[Path, DataPartitionManifest]]) -> None:
+        self._files = {path: pq.ParquetFile(path) for path, _manifest in parts}
+        self._offsets: dict[Path, tuple[int, ...]] = {}
+        self._cache: OrderedDict[tuple[Path, int], list[dict[str, object]]] = OrderedDict()
+        for path, parquet in self._files.items():
+            offsets = [0]
+            for index in range(parquet.num_row_groups):
+                offsets.append(offsets[-1] + parquet.metadata.row_group(index).num_rows)
+            self._offsets[path] = tuple(offsets)
+
+    def get(self, path: Path, row_index: int) -> dict[str, object]:
+        try:
+            parquet = self._files[path]
+            offsets = self._offsets[path]
+        except KeyError as exc:
+            raise RawPayloadError(f"sorted row references an unknown raw part: {path}") from exc
+        if row_index < 0 or row_index >= offsets[-1]:
+            raise RawPayloadError(f"sorted row index is outside raw part bounds: {path}:{row_index}")
+        group = bisect_right(offsets, row_index) - 1
+        key = (path, group)
+        rows = self._cache.pop(key, None)
+        if rows is None:
+            rows = [dict(row) for row in parquet.read_row_group(group, columns=list(_RAW_COLUMNS)).to_pylist()]
+        self._cache[key] = rows
+        while len(self._cache) > self._CACHE_GROUPS:
+            self._cache.popitem(last=False)
+        return rows[row_index - offsets[group]]
 
 
 def _duckdb_memory_limit() -> str:
