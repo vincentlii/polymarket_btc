@@ -26,6 +26,7 @@ from btc_short_horizon.features import (
     OpeningFeatureState,
 )
 from btc_short_horizon.research.opening_evidence import (
+    ForwardBookEventLoad,
     ForwardRawEvent,
     RawPayloadError,
     TokenBookStateEvent,
@@ -118,6 +119,7 @@ class ForwardOpeningReadinessBuild:
 
     observations: tuple[OpeningFeatureObservation, ...]
     source_summaries: tuple[ForwardFeatureSourceSummary, ...]
+    polymarket_exit_evidence: tuple[ForwardBookEventLoad, ...] = ()
 
     def source_event_count(self, raw_source: str) -> int:
         return sum(
@@ -232,6 +234,7 @@ def build_forward_opening_readiness_observations(
     end_time: datetime,
     decision_ts_ns: Sequence[int],
     ingest_version: str,
+    polymarket_terminal_end_time: datetime | None = None,
     polymarket_source_timestamp_regression_tolerance_seconds: float | None = None,
     required_venue_sources: tuple[str, ...] = _SUPPORTED_VENUE_SOURCES,
 ) -> ForwardOpeningReadinessBuild:
@@ -250,6 +253,7 @@ def build_forward_opening_readiness_observations(
         end_time=end_time,
         decisions=decisions,
         ingest_version=ingest_version,
+        polymarket_terminal_end_time=polymarket_terminal_end_time,
         polymarket_source_timestamp_regression_tolerance_seconds=(
             polymarket_source_timestamp_regression_tolerance_seconds
         ),
@@ -265,6 +269,7 @@ def _build_bounded_forward_opening_feature_observations(
     end_time: datetime,
     decisions: tuple[int, ...],
     ingest_version: str,
+    polymarket_terminal_end_time: datetime | None,
     polymarket_source_timestamp_regression_tolerance_seconds: float | None,
     required_venue_sources: tuple[str, ...],
 ) -> ForwardOpeningReadinessBuild:
@@ -278,6 +283,12 @@ def _build_bounded_forward_opening_feature_observations(
         )
         for _ in decisions
     )
+    if polymarket_terminal_end_time is not None:
+        if polymarket_terminal_end_time < end_time:
+            raise ValueError("polymarket_terminal_end_time cannot precede feature end_time")
+        clob_end_time = polymarket_terminal_end_time
+    else:
+        clob_end_time = end_time
     tick_size_changed = [False] * len(decisions)
     summaries: list[ForwardFeatureSourceSummary] = []
 
@@ -374,7 +385,7 @@ def _build_bounded_forward_opening_feature_observations(
                 raw_data_root=raw_data_root,
                 token_id=token_id,
                 start_time=start_time,
-                end_time=end_time,
+                end_time=clob_end_time,
                 ingest_version=ingest_version,
                 expected_source_timestamp_regression_tolerance_seconds=(
                     polymarket_source_timestamp_regression_tolerance_seconds
@@ -441,6 +452,7 @@ def _build_bounded_forward_opening_feature_observations(
     return ForwardOpeningReadinessBuild(
         observations=tuple(observations),
         source_summaries=tuple(summaries),
+        polymarket_exit_evidence=clob_loads,
     )
 
 

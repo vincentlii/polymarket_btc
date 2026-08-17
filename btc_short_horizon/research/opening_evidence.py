@@ -127,6 +127,7 @@ class ForwardBookEventLoad:
     awaiting_snapshot_count: int
     polymarket_source_timestamp_regression_tolerance_seconds: float | None = None
     state_event_count: int | None = None
+    event_type_summaries: tuple[ForwardRawEventTypeSummary, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -663,6 +664,7 @@ def load_forward_polymarket_book_events(
             raw_load.polymarket_source_timestamp_regression_tolerance_seconds
         ),
         state_event_count=counts.state_event_count,
+        event_type_summaries=counts.event_type_summaries,
     )
 
 
@@ -672,6 +674,7 @@ class _PolymarketBookFoldCounts:
     state_event_count: int
     duplicate_row_count: int
     awaiting_snapshot_count: int
+    event_type_summaries: tuple[ForwardRawEventTypeSummary, ...]
 
 
 def fold_forward_polymarket_book_events(
@@ -720,6 +723,7 @@ def fold_forward_polymarket_book_events(
             raw_stream.polymarket_source_timestamp_regression_tolerance_seconds
         ),
         state_event_count=counts.state_event_count,
+        event_type_summaries=counts.event_type_summaries,
     )
 
 
@@ -765,6 +769,7 @@ def _fold_polymarket_events(
     awaiting_snapshot_count = 0
     state_event_count = 0
     raw_row_count = 0
+    event_type_stats: dict[str, list[int]] = {}
 
     def emit(event: TokenBookStateEvent) -> None:
         nonlocal state_event_count
@@ -773,6 +778,13 @@ def _fold_polymarket_events(
 
     for raw in raw_events:
         raw_row_count += 1
+        summary = event_type_stats.setdefault(
+            raw.event_type,
+            [0, raw.available_ts_ns, raw.available_ts_ns],
+        )
+        summary[0] += 1
+        summary[1] = min(summary[1], raw.available_ts_ns)
+        summary[2] = max(summary[2], raw.available_ts_ns)
         if raw.payload.get("event_type") != raw.event_type:
             raise RawPayloadError(f"raw payload event_type mismatch at {raw.path}:{raw.row_index}")
         epoch_identity = (raw.collector_session_id, raw.epoch_id)
@@ -872,6 +884,15 @@ def _fold_polymarket_events(
         state_event_count=state_event_count,
         duplicate_row_count=duplicate_row_count,
         awaiting_snapshot_count=awaiting_snapshot_count,
+        event_type_summaries=tuple(
+            ForwardRawEventTypeSummary(
+                event_type=name,
+                row_count=values[0],
+                min_available_ts_ns=values[1],
+                max_available_ts_ns=values[2],
+            )
+            for name, values in sorted(event_type_stats.items())
+        ),
     )
 
 
