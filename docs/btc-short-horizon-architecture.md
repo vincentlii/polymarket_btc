@@ -180,9 +180,9 @@ They deliberately do not materialize model features on the VPS. Full feature
 reconstruction is an offline research job over the same content-addressed raw
 parts and produces its own eligibility receipt. This boundary prevents every
 15-minute market from re-reading and externally sorting a one-hour six-source
-payload inside the small always-on server. Full-lifecycle exit readiness still
-scans fixed-size Parquet batches for a pre-open book, explicit gaps, and
-terminal activity without rebuilding the L2 book. The readiness container
+payload inside the small always-on server. Full-lifecycle exit readiness uses
+the same sealed, content-addressed per-token manifests to prove pre-open and
+terminal coverage without reopening raw payload files. The readiness container
 publishes a heartbeat before and after each candidate so a long audit is visible
 as processing rather than a stale service; an OOM/restart therefore fails closed
 without making the collector unhealthy. The collector health probe allows the
@@ -1125,11 +1125,16 @@ The six required evidence families are Polymarket Up/Down CLOB, Chainlink
 RTDS, Binance Spot, Binance Perpetual, OKX Spot and OKX Swap. The two CLOB
 tokens are one execution family and cannot be removed from exit validation;
 optional venue families may be disabled only by an explicit research profile.
-Readiness walks only the bounded session inventory and manifest set, verifies
-every referenced part hash, and performs a fixed-batch CLOB lifecycle scan.
-It has no payload sort, spill directory, or feature-state cache. The heavier
-DuckDB/PyArrow materializer remains available to local research commands, where
-its output is explicitly separate from the VPS capture receipt.
+Readiness walks only the bounded session inventory and manifest set. The raw
+writer already hashes each part before atomically committing its manifest; the
+closed-session inventory seals those part hashes, and the candidate seals the
+inventory hash. The per-market worker verifies that immutable lineage and does
+not re-hash or reopen every raw part. Payload replay and a fresh full-file hash
+audit remain mandatory at archival restore and before offline training. The
+worker has no payload sort, spill directory, feature-state cache, or per-row
+admission set. The heavier DuckDB/PyArrow materializer remains available to
+local research commands, where its output is explicitly separate from the VPS
+capture receipt.
 Coverage is source-specific: continuous BTC/reference feeds cover their feature
 lookback, the current market's CLOB covers `t0-90s` through `t0+180s`, and exit
 evidence covers CLOB from `t0` through `t1`. Storage-session continuity is

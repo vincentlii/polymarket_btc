@@ -1,7 +1,7 @@
 # Codebase UML Inventory
 
 This file is generated from Python AST metadata and excludes `tests/` plus git-ignored private strategy/research directories.
-Generated: 2026-08-18T05:45:34+00:00
+Generated: 2026-08-18T05:55:34+00:00
 Modules: 258 | Classes: 539 | Functions/methods: 3530
 
 ## Backtesting Data Flow
@@ -4500,13 +4500,13 @@ flowchart TD
 
 ### `scripts/btc_training_readiness_worker.py`
 - Imports: `__future__, argparse, btc_short_horizon, datetime, hashlib, json, os, pathlib, scripts, time`
-- Function L49: `_raw_capture_source_summaries(*, evidence_sessions: tuple[object, ...], market: object, ingest_version: str, source_windows_seconds: dict[str, tuple[float, float]]) -> tuple[list[dict[str, object]], list[str]]`
-- Function L128: `_readiness_runtime_status(*, started_at: datetime, updated_at: datetime, backlog: int, last_candidate: str | None, last_receipt: str | None, last_error: str | None, code_revision: str | None, processing_candidate: str | None = None, process_id: int | None = None) -> RuntimeStatus`
-- Function L161: `_expected_coverage_evidence(*, index: SessionCoverageIndex, evidence_payload: tuple[dict[str, object], ...], coverage_error: object, source_windows_ns: dict[str, tuple[int, int]]) -> tuple[dict[str, object], ...]`
-- Function L178: `audit_candidate(candidate_path: Path, *, raw_data_root: Path, config_path: Path) -> dict[str, object]`
-- Function L344: `_audit_raw_exit_evidence(*, raw_data_root: Path, market: object, ingest_version: str, capture_lead_seconds: float, collection_policy: str, coverage_error: object) -> list[str]`
-- Function L389: `main() -> int`
-- Function L503: `aggregate_receipts(receipt_root: Path, *, limit: int = 96) -> dict[str, object]`
+- Function L46: `_raw_capture_source_summaries(*, evidence_sessions: tuple[object, ...], market: object, ingest_version: str, source_windows_seconds: dict[str, tuple[float, float]]) -> tuple[list[dict[str, object]], list[str]]`
+- Function L127: `_readiness_runtime_status(*, started_at: datetime, updated_at: datetime, backlog: int, last_candidate: str | None, last_receipt: str | None, last_error: str | None, code_revision: str | None, processing_candidate: str | None = None, process_id: int | None = None) -> RuntimeStatus`
+- Function L160: `_expected_coverage_evidence(*, index: SessionCoverageIndex, evidence_payload: tuple[dict[str, object], ...], coverage_error: object, source_windows_ns: dict[str, tuple[int, int]]) -> tuple[dict[str, object], ...]`
+- Function L177: `audit_candidate(candidate_path: Path, *, raw_data_root: Path, config_path: Path) -> dict[str, object]`
+- Function L345: `_audit_raw_exit_evidence(*, evidence_sessions: tuple[object, ...], market: object, ingest_version: str, capture_lead_seconds: float, collection_policy: str, coverage_error: object) -> tuple[list[str], list[dict[str, object]]]`
+- Function L382: `main() -> int`
+- Function L496: `aggregate_receipts(receipt_root: Path, *, limit: int = 96) -> dict[str, object]`
 
 ### `scripts/btc_vps_preflight.py`
 - Imports: `__future__, argparse, btc_short_horizon, collections, datetime, httpx, json, math, pathlib, re, subprocess`

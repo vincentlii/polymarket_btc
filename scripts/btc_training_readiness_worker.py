@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from hashlib import sha256
 import json
 import os
@@ -35,9 +35,6 @@ from btc_short_horizon.data.session_inventory import (  # noqa: E402
 )
 from btc_short_horizon.data.storage import write_atomic_json  # noqa: E402
 from btc_short_horizon.live.runtime import RuntimeStatus, RuntimeStatusStore  # noqa: E402
-from btc_short_horizon.research.opening_evidence import (  # noqa: E402
-    scan_forward_raw_event_metadata,
-)
 from scripts.btc_forward_collector import _readiness_protocol  # noqa: E402
 
 _EXIT_TERMINAL_MAX_AGE_SECONDS = 15
@@ -111,6 +108,12 @@ def _raw_capture_source_summaries(
                     "part_count": len(matching),
                     "row_count": row_count,
                     "gap_count": gap_count,
+                    "part_lineage_sha256": sha256(
+                        json.dumps(
+                            sorted((part.data_path, part.sha256) for part in matching),
+                            separators=(",", ":"),
+                        ).encode()
+                    ).hexdigest(),
                     "min_available_ts_ns": min(int(part.min_available_ts_ns) for part in matching),
                     "max_available_ts_ns": max(int(part.max_available_ts_ns) for part in matching),
                 }
@@ -255,12 +258,14 @@ def audit_candidate(
             "raw_training_evidence_ready": False,
             "raw_exit_evidence_ready": False,
             "raw_exit_evidence_errors": exit_errors,
+            "exit_source_summaries": [],
             "ready": False,
             "feature_materialization": {
                 "status": "deferred_to_offline_research",
                 "required": True,
             },
             "readiness_scope": _READINESS_SCOPE,
+            "integrity_level": "collector_content_addressed_manifest_lineage",
         }
         payload["receipt_sha256"] = sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -284,8 +289,6 @@ def audit_candidate(
         inventory_path = repository.inventory_path(session.session_id)
         if sha256(inventory_path.read_bytes()).hexdigest() != evidence["inventory_sha256"]:
             raise ValueError("readiness session inventory hash mismatch")
-        for part in session.parts:
-            repository.verify_part(part)
     errors = [candidate["coverage_error"]] if candidate.get("coverage_error") else []
     source_summaries, manifest_errors = _raw_capture_source_summaries(
         evidence_sessions=evidence_sessions,
@@ -299,8 +302,8 @@ def audit_candidate(
         },
     )
     errors.extend(manifest_errors)
-    exit_errors = _audit_raw_exit_evidence(
-        raw_data_root=raw_data_root,
+    exit_errors, exit_source_summaries = _audit_raw_exit_evidence(
+        evidence_sessions=evidence_sessions,
         market=market,
         ingest_version=str(candidate["ingest_version"]),
         capture_lead_seconds=project.collection.polymarket_capture_lead_seconds,
@@ -324,12 +327,14 @@ def audit_candidate(
         "raw_training_evidence_ready": not errors,
         "raw_exit_evidence_ready": not exit_errors,
         "raw_exit_evidence_errors": exit_errors,
+        "exit_source_summaries": exit_source_summaries,
         "ready": not errors,
         "feature_materialization": {
             "status": "deferred_to_offline_research",
             "required": True,
         },
         "readiness_scope": _READINESS_SCOPE,
+        "integrity_level": "collector_content_addressed_manifest_lineage",
     }
     payload["receipt_sha256"] = sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -339,47 +344,39 @@ def audit_candidate(
 
 def _audit_raw_exit_evidence(
     *,
-    raw_data_root: Path,
+    evidence_sessions: tuple[object, ...],
     market: object,
     ingest_version: str,
     capture_lead_seconds: float,
     collection_policy: str,
     coverage_error: object,
-) -> list[str]:
+) -> tuple[list[str], list[dict[str, object]]]:
     if collection_policy != "extended_t0_plus_900":
-        return ["not_collected_by_policy"]
+        return ["not_collected_by_policy"], []
     if coverage_error:
-        return [str(coverage_error)]
-    errors: list[str] = []
+        return [str(coverage_error)], []
+    summaries, errors = _raw_capture_source_summaries(
+        evidence_sessions=evidence_sessions,
+        market=market,
+        ingest_version=ingest_version,
+        source_windows_seconds={
+            "polymarket_clob": (-float(capture_lead_seconds), 900.0),
+        },
+    )
     t0_ns = int(market.t0.timestamp() * 1e9)  # type: ignore[attr-defined]
+    terminal_ns = int(market.t1.timestamp() * 1e9)  # type: ignore[attr-defined]
+    by_instrument = {str(item["instrument"]): item for item in summaries}
     for token_id in (market.up_token_id, market.down_token_id):  # type: ignore[attr-defined]
-        scan = scan_forward_raw_event_metadata(
-            raw_data_root=raw_data_root,
-            source="polymarket_clob",
-            instrument=token_id,
-            start_time=market.t0 - timedelta(seconds=capture_lead_seconds),  # type: ignore[attr-defined]
-            end_time=market.t1,  # type: ignore[attr-defined]
-            ingest_version=ingest_version,
-        )
-        summaries = {item.event_type: item for item in scan.event_types}
-        book = summaries.get("book")
-        if book is None or book.min_available_ts_ns > t0_ns:
-            errors.append(f"missing_t0_book:{token_id}")
-        gap = summaries.get("continuity_gap")
-        if gap is not None and gap.max_available_ts_ns >= t0_ns:
-            errors.append(f"clob_gap:{token_id}")
-        terminal_ns = int(market.t1.timestamp() * 1e9)  # type: ignore[attr-defined]
-        latest = max(
-            (
-                item.max_available_ts_ns
-                for event_type in ("book", "price_change", "last_trade_price")
-                if (item := summaries.get(event_type)) is not None
-            ),
-            default=0,
-        )
-        if latest < terminal_ns - _EXIT_TERMINAL_MAX_AGE_SECONDS * 1_000_000_000:
+        summary = by_instrument.get(token_id)
+        if summary is None:
+            continue
+        if int(summary["min_available_ts_ns"]) > t0_ns:
+            errors.append(f"missing_preopen_clob_evidence:{token_id}")
+        if int(summary["max_available_ts_ns"]) < (
+            terminal_ns - _EXIT_TERMINAL_MAX_AGE_SECONDS * 1_000_000_000
+        ):
             errors.append(f"missing_terminal_clob_evidence:{token_id}")
-    return errors
+    return errors, summaries
 
 
 def main() -> int:

@@ -1,64 +1,14 @@
-from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-import gc
 from inspect import signature
-import tracemalloc
+from types import SimpleNamespace
 
-import pytest
-
-from btc_short_horizon.data import BTC_15M_MARKET_FAMILY, MarketWindow, TimedMarketEvent
-from btc_short_horizon.data.collector import PartitionedRawEventWriter, RawCollectorEvent
-from btc_short_horizon.research.opening_evidence import RawPayloadError
+from btc_short_horizon.data import BTC_15M_MARKET_FAMILY, MarketWindow
 from scripts.btc_training_readiness_worker import _audit_raw_exit_evidence
 
 
-def test_exit_audit_interface_cannot_reuse_feature_normalizer_output() -> None:
-    """Exit readiness must use its bounded lifecycle scan, not full L2 replay."""
-
-    assert "polymarket_evidence" not in signature(_audit_raw_exit_evidence).parameters
-
-
-def _event(
-    token: str,
-    at: datetime,
-    event_type: str,
-    *,
-    ingest_version: str = "v16",
-    admission_sequence: int = 0,
-) -> RawCollectorEvent:
-    payload = {"event_type": event_type, "asset_id": token}
-    if event_type == "book":
-        payload.update(
-            {
-                "timestamp": int(at.timestamp() * 1000),
-                "bids": [{"price": "0.49", "size": "10"}],
-                "asks": [{"price": "0.51", "size": "10"}],
-            }
-        )
-    else:
-        payload.update({"stream_id": "market", "reason": "synthetic_gap"})
-    return RawCollectorEvent(
-        timing=TimedMarketEvent(
-            at,
-            at,
-            at,
-            f"{token}-{event_type}-{at.timestamp()}",
-            "polymarket_clob",
-            token,
-            "test-v1",
-            ingest_version,
-        ),
-        event_type=event_type,
-        payload=payload,
-        collector_session_id="session",
-        epoch_id=0,
-        admission_sequence=admission_sequence,
-    )
-
-
-def test_raw_exit_readiness_reads_real_parquet_and_rejects_lifecycle_gap(tmp_path) -> None:
+def _market() -> MarketWindow:
     t0 = datetime(2026, 8, 13, tzinfo=UTC)
-    market = MarketWindow(
+    return MarketWindow(
         BTC_15M_MARKET_FAMILY,
         BTC_15M_MARKET_FAMILY.slug_for(t0),
         "c",
@@ -69,188 +19,94 @@ def test_raw_exit_readiness_reads_real_parquet_and_rejects_lifecycle_gap(tmp_pat
         "chainlink-btc-usd-twap-60s-v1",
         "a" * 64,
     )
-    writer = PartitionedRawEventWriter(tmp_path)
-    writer.write(
-        (
-            _event("up", t0 - timedelta(seconds=1), "book"),
-            _event("down", t0 - timedelta(seconds=1), "book"),
-            _event("up", market.t1, "book"),
-            _event("down", market.t1, "book"),
-            _event("up", t0 + timedelta(minutes=12), "continuity_gap"),
+
+
+def _part(
+    token: str,
+    *,
+    market: MarketWindow,
+    minimum: datetime | None = None,
+    maximum: datetime | None = None,
+    gap_count: int = 0,
+) -> object:
+    start = minimum or market.t0 - timedelta(seconds=90)
+    end = maximum or market.t1
+    return SimpleNamespace(
+        manifest=SimpleNamespace(
+            data_path=f"raw/polymarket_clob/{token}/{start.timestamp()}.parquet",
+            sha256=("a" if token == "up" else "b") * 64,
+            source="polymarket_clob",
+            instrument=token,
+            ingest_version="v17",
+            min_available_ts_ns=int(start.timestamp() * 1e9),
+            max_available_ts_ns=int(end.timestamp() * 1e9),
+            row_count=10,
+            gap_count=gap_count,
         )
     )
-    errors = _audit_raw_exit_evidence(
-        raw_data_root=tmp_path,
+
+
+def test_exit_audit_is_manifest_only_and_cannot_replay_raw_payloads() -> None:
+    parameters = signature(_audit_raw_exit_evidence).parameters
+
+    assert "evidence_sessions" in parameters
+    assert "raw_data_root" not in parameters
+    assert "polymarket_evidence" not in parameters
+
+
+def test_raw_exit_readiness_accepts_complete_dual_token_manifest_lineage() -> None:
+    market = _market()
+    errors, summaries = _audit_raw_exit_evidence(
+        evidence_sessions=(
+            SimpleNamespace(parts=(_part("up", market=market), _part("down", market=market))),
+        ),
         market=market,
-        ingest_version="v16",
+        ingest_version="v17",
         capture_lead_seconds=90,
         collection_policy="extended_t0_plus_900",
         coverage_error=None,
     )
-    assert errors == ["clob_gap:up"]
-    assert _audit_raw_exit_evidence(
-        raw_data_root=tmp_path,
+
+    assert errors == []
+    assert {item["instrument"] for item in summaries} == {"up", "down"}
+    assert all(len(str(item["part_lineage_sha256"])) == 64 for item in summaries)
+
+
+def test_raw_exit_readiness_rejects_gap_and_silent_single_token_loss() -> None:
+    market = _market()
+    errors, _summaries = _audit_raw_exit_evidence(
+        evidence_sessions=(
+            SimpleNamespace(
+                parts=(
+                    _part("up", market=market, gap_count=1),
+                    _part(
+                        "down",
+                        market=market,
+                        maximum=market.t0 + timedelta(minutes=10),
+                    ),
+                )
+            ),
+        ),
         market=market,
-        ingest_version="v16",
+        ingest_version="v17",
+        capture_lead_seconds=90,
+        collection_policy="extended_t0_plus_900",
+        coverage_error=None,
+    )
+
+    assert "stream_manifest_gap:polymarket_clob:up" in errors
+    assert "missing_terminal_clob_evidence:down" in errors
+
+
+def test_raw_exit_readiness_keeps_collection_policy_fail_closed() -> None:
+    errors, summaries = _audit_raw_exit_evidence(
+        evidence_sessions=(),
+        market=_market(),
+        ingest_version="v17",
         capture_lead_seconds=90,
         collection_policy="core_t0_plus_180",
         coverage_error=None,
-    ) == ["not_collected_by_policy"]
-
-
-def test_raw_exit_readiness_rejects_silent_single_token_loss(tmp_path) -> None:
-    t0 = datetime(2026, 8, 13, tzinfo=UTC)
-    market = MarketWindow(
-        BTC_15M_MARKET_FAMILY,
-        BTC_15M_MARKET_FAMILY.slug_for(t0),
-        "c",
-        "up",
-        "down",
-        t0,
-        t0 + timedelta(minutes=15),
-        "chainlink-btc-usd-twap-60s-v1",
-        "a" * 64,
-    )
-    writer = PartitionedRawEventWriter(tmp_path)
-    writer.write(
-        (
-            _event("up", t0 - timedelta(seconds=1), "book"),
-            _event("down", t0 - timedelta(seconds=1), "book"),
-            _event("up", market.t1, "book"),
-        )
-    )
-    assert _audit_raw_exit_evidence(
-        raw_data_root=tmp_path,
-        market=market,
-        ingest_version="v16",
-        capture_lead_seconds=90,
-        collection_policy="extended_t0_plus_900",
-        coverage_error=None,
-    ) == ["missing_terminal_clob_evidence:down"]
-
-
-def test_raw_exit_readiness_rejects_row_payload_event_type_mismatch(tmp_path) -> None:
-    t0 = datetime(2026, 8, 13, tzinfo=UTC)
-    market = MarketWindow(
-        BTC_15M_MARKET_FAMILY,
-        BTC_15M_MARKET_FAMILY.slug_for(t0),
-        "c",
-        "up",
-        "down",
-        t0,
-        t0 + timedelta(minutes=15),
-        "chainlink-btc-usd-twap-60s-v1",
-        "a" * 64,
-    )
-    mismatched = replace(
-        _event("up", t0 - timedelta(seconds=1), "book"),
-        payload={
-            "event_type": "last_trade_price",
-            "asset_id": "up",
-            "timestamp": int((t0 - timedelta(seconds=1)).timestamp() * 1000),
-            "price": "0.5",
-            "size": "1",
-            "side": "BUY",
-        },
-    )
-    PartitionedRawEventWriter(tmp_path).write(
-        (
-            mismatched,
-            _event("down", t0 - timedelta(seconds=1), "book"),
-            _event("up", market.t1, "book"),
-            _event("down", market.t1, "book"),
-        )
     )
 
-    with pytest.raises(RawPayloadError, match="payload event_type mismatch"):
-        _audit_raw_exit_evidence(
-            raw_data_root=tmp_path,
-            market=market,
-            ingest_version="v16",
-            capture_lead_seconds=90,
-            collection_policy="extended_t0_plus_900",
-            coverage_error=None,
-        )
-
-
-def test_raw_exit_readiness_memory_is_bounded_by_scan_batch(tmp_path) -> None:
-    t0 = datetime(2026, 8, 13, tzinfo=UTC)
-    market = MarketWindow(
-        BTC_15M_MARKET_FAMILY,
-        BTC_15M_MARKET_FAMILY.slug_for(t0),
-        "c",
-        "up",
-        "down",
-        t0,
-        t0 + timedelta(minutes=15),
-        "chainlink-btc-usd-twap-60s-v1",
-        "a" * 64,
-    )
-    events = []
-    for index in range(12_000):
-        at = t0 + timedelta(milliseconds=75 * index)
-        events.append(_event("up", at, "book"))
-        events.append(_event("down", at, "book"))
-    writer = PartitionedRawEventWriter(tmp_path)
-    writer.write(tuple(events))
-    del events
-    gc.collect()
-
-    tracemalloc.start()
-    errors = _audit_raw_exit_evidence(
-        raw_data_root=tmp_path,
-        market=market,
-        ingest_version="v16",
-        capture_lead_seconds=90,
-        collection_policy="extended_t0_plus_900",
-        coverage_error=None,
-    )
-    _, peak_bytes = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
-
-    assert errors == []
-    assert peak_bytes < 24 * 1024 * 1024
-
-
-def test_raw_exit_readiness_keeps_v17_timestamp_policy_fail_closed(tmp_path) -> None:
-    t0 = datetime(2026, 8, 13, tzinfo=UTC)
-    market = MarketWindow(
-        BTC_15M_MARKET_FAMILY,
-        BTC_15M_MARKET_FAMILY.slug_for(t0),
-        "c",
-        "up",
-        "down",
-        t0,
-        t0 + timedelta(minutes=15),
-        "chainlink-btc-usd-twap-60s-v1",
-        "a" * 64,
-    )
-    writer = PartitionedRawEventWriter(tmp_path)
-    writer.write(
-        (
-            _event(
-                "up",
-                t0 - timedelta(seconds=1),
-                "book",
-                ingest_version="btc-short-horizon-v17",
-                admission_sequence=1,
-            ),
-            _event(
-                "up",
-                market.t1,
-                "book",
-                ingest_version="btc-short-horizon-v17",
-                admission_sequence=2,
-            ),
-        )
-    )
-
-    with pytest.raises(RawPayloadError, match="timestamp tolerance"):
-        _audit_raw_exit_evidence(
-            raw_data_root=tmp_path,
-            market=market,
-            ingest_version="btc-short-horizon-v17",
-            capture_lead_seconds=90,
-            collection_policy="extended_t0_plus_900",
-            coverage_error=None,
-        )
+    assert errors == ["not_collected_by_policy"]
+    assert summaries == []

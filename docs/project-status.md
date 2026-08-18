@@ -8,6 +8,12 @@
   readiness now validates immutable raw capture only (inventory, hashes,
   six-source stream manifests, gaps, rule lineage, and bounded CLOB lifecycle).
   It no longer reconstructs model features on the VPS.
+- A second real-candidate run proved that per-candidate full-file re-hashing and
+  CLOB payload scanning could still fill the cgroup through file cache and an
+  unbounded admission-sequence set. The final online path therefore reads only
+  the sealed session inventory and manifests. Full payload/hash audits run once
+  at archive restore and before local training instead of being repeated for
+  every overlapping 15-minute market.
 - Full 36-tick feature materialization remains available through the offline
   research pipeline and must emit a separate eligibility receipt before model
   training or promotion. This is a responsibility split, not a reduced data

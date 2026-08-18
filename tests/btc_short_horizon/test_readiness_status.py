@@ -106,6 +106,7 @@ def test_raw_capture_readiness_uses_verified_manifest_evidence_without_feature_r
         return SimpleNamespace(
             manifest=SimpleNamespace(
                 data_path=f"raw/{source}/{instrument}/part.parquet",
+                sha256="a" * 64,
                 source=source,
                 instrument=instrument,
                 ingest_version="v17",
@@ -157,6 +158,7 @@ def test_raw_capture_readiness_fails_closed_when_one_required_instrument_is_miss
     up = SimpleNamespace(
         manifest=SimpleNamespace(
             data_path="raw/polymarket_clob/up/part.parquet",
+            sha256="a" * 64,
             source="polymarket_clob",
             instrument="up",
             ingest_version="v17",
