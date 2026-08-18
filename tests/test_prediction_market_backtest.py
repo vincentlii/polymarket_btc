@@ -57,7 +57,7 @@ class _ConcurrentReplayAdapter:
             oms_type=OmsType.NETTING,
             account_type=AccountType.CASH,
             base_currency=USD,
-            fee_model_factory=lambda: object(),
+            fee_model_factory=lambda **_: object(),
         )
 
     async def load_replay(

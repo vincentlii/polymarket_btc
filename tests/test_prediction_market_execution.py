@@ -3,14 +3,22 @@ from __future__ import annotations
 import importlib
 from types import SimpleNamespace
 
+import pytest
+from nautilus_trader.model.data import CustomData, TradeTick
+from nautilus_trader.model.enums import AggressorSide
+from nautilus_trader.model.identifiers import InstrumentId, TradeId
+from nautilus_trader.model.objects import Price, Quantity
+
 from prediction_market_extensions.backtesting import _prediction_market_backtest as backtest_module
 from prediction_market_extensions.backtesting._backtest_runtime import (
+    BACKTEST_CUSTOM_DATA_CLIENT_ID,
     add_engine_data_by_type,
     build_backtest_run_state,
     print_backtest_result_warnings,
 )
 from prediction_market_extensions.backtesting._execution_config import (
     ExecutionModelConfig,
+    SameTimestampPriority,
     StaticLatencyConfig,
 )
 from prediction_market_extensions.backtesting._prediction_market_backtest import (
@@ -52,18 +60,24 @@ class _EngineStub:
 
 def test_add_engine_data_by_type_splits_mixed_replay_records() -> None:
     class _BookRecord:
-        pass
+        instrument_id = "BOOK.POLYMARKET"
 
     class _TradeRecord:
-        pass
+        instrument_id = "TRADE.POLYMARKET"
 
     class _DataEngineStub:
         def __init__(self) -> None:
-            self.added: list[tuple[list[object], bool]] = []
+            self.added: list[tuple[list[object], object | None, bool]] = []
             self.sort_calls = 0
 
-        def add_data(self, records, *, sort=True):  # type: ignore[no-untyped-def]
-            self.added.append((list(records), bool(sort)))
+        def add_data(  # type: ignore[no-untyped-def]
+            self,
+            records,
+            *,
+            client_id=None,
+            sort=True,
+        ):
+            self.added.append((list(records), client_id, bool(sort)))
 
         def sort_data(self) -> None:
             self.sort_calls += 1
@@ -75,7 +89,77 @@ def test_add_engine_data_by_type_splits_mixed_replay_records() -> None:
 
     add_engine_data_by_type(engine, [trade, first_book, second_book])
 
-    assert engine.added == [([trade], False), ([first_book, second_book], False)]
+    assert engine.added[0][0] == [trade]
+    assert engine.added[1][0] == [first_book, second_book]
+    assert all(client_id is None for _, client_id, _ in engine.added)
+    assert all(sort is False for _, _, sort in engine.added)
+    assert engine.sort_calls == 1
+
+
+def test_add_engine_data_by_type_applies_explicit_priority_to_timestamp_ties() -> None:
+    class _BookRecord:
+        instrument_id = "BOOK.POLYMARKET"
+
+    class _TradeRecord:
+        instrument_id = "TRADE.POLYMARKET"
+
+    class _DataEngineStub:
+        def __init__(self) -> None:
+            self.added_types: list[type[object]] = []
+
+        def add_data(self, records, **kwargs):  # type: ignore[no-untyped-def]
+            del kwargs
+            self.added_types.append(type(records[0]))
+
+        def sort_data(self) -> None:
+            pass
+
+    engine = _DataEngineStub()
+
+    add_engine_data_by_type(
+        engine,
+        [_BookRecord(), _TradeRecord()],
+        preferred_type_order=(_TradeRecord, _BookRecord),
+    )
+
+    assert engine.added_types == [_TradeRecord, _BookRecord]
+
+
+def test_add_engine_data_by_type_wraps_and_routes_custom_data() -> None:
+    from btc_short_horizon.backtest import BtcReplayBoundary
+
+    class _DataEngineStub:
+        def __init__(self) -> None:
+            self.added: list[tuple[list[object], object | None, bool]] = []
+            self.sort_calls = 0
+
+        def add_data(  # type: ignore[no-untyped-def]
+            self,
+            records,
+            *,
+            client_id=None,
+            sort=True,
+        ):
+            self.added.append((list(records), client_id, bool(sort)))
+
+        def sort_data(self) -> None:
+            self.sort_calls += 1
+
+    boundary = BtcReplayBoundary(
+        market_slug="btc-updown-15m-1",
+        ts_event=10,
+        ts_init=10,
+    )
+    engine = _DataEngineStub()
+
+    add_engine_data_by_type(engine, [boundary])
+
+    records, client_id, sort = engine.added[0]
+    assert len(records) == 1
+    assert isinstance(records[0], CustomData)
+    assert records[0].data is boundary
+    assert client_id == BACKTEST_CUSTOM_DATA_CLIENT_ID
+    assert sort is False
     assert engine.sort_calls == 1
 
 
@@ -97,6 +181,47 @@ def test_add_engine_data_by_type_does_not_sort_empty_records() -> None:
     assert engine.sort_calls == 0
 
 
+def test_execution_trade_volume_stress_rounds_down_without_mutating_original_tick() -> None:
+    trade = TradeTick(
+        instrument_id=InstrumentId.from_str("TOKEN.POLYMARKET"),
+        price=Price(0.5, 2),
+        size=Quantity(5.0, 2),
+        aggressor_side=AggressorSide.SELLER,
+        trade_id=TradeId("trade-1"),
+        ts_event=10,
+        ts_init=11,
+    )
+
+    stressed = backtest_module._records_for_execution(  # type: ignore[attr-defined]
+        (trade,),
+        ExecutionModelConfig(trade_execution_size_multiplier=0.5),
+    )
+
+    assert len(stressed) == 1
+    assert float(stressed[0].size) == 2.5
+    assert float(trade.size) == 5.0
+    assert stressed[0].trade_id == trade.trade_id
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("slippage_ticks", True),
+        ("entry_slippage_pct", float("nan")),
+        ("exit_slippage_pct", True),
+        ("prob_fill_on_limit", float("inf")),
+        ("min_synthetic_book_size", True),
+        ("synthetic_book_depth_multiplier", float("nan")),
+    ),
+)
+def test_execution_config_rejects_non_finite_and_boolean_numeric_values(
+    field: str,
+    value: object,
+) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        ExecutionModelConfig(**{field: value})  # type: ignore[arg-type]
+
+
 def test_prediction_market_backtest_build_engine_forwards_execution(monkeypatch):
     monkeypatch.setattr(backtest_module, "BacktestEngine", _EngineStub)
 
@@ -109,6 +234,9 @@ def test_prediction_market_backtest_build_engine_forwards_execution(monkeypatch)
         probability_window=16,
         execution=ExecutionModelConfig(
             queue_position=True,
+            maker_rebates_enabled=False,
+            trade_execution_size_multiplier=0.5,
+            same_timestamp_priority=SameTimestampPriority.TRADE_BEFORE_BOOK,
             latency_model=StaticLatencyConfig(
                 base_latency_ms=25.0,
                 insert_latency_ms=10.0,
@@ -124,6 +252,7 @@ def test_prediction_market_backtest_build_engine_forwards_execution(monkeypatch)
     venue_kwargs = engine.venues[0]
     assert venue_kwargs["queue_position"] is True
     assert venue_kwargs["liquidity_consumption"] is True
+    assert venue_kwargs["fee_model"]._maker_rebates_enabled is False
 
     latency_model = venue_kwargs["latency_model"]
     assert latency_model is not None

@@ -6,6 +6,7 @@ import warnings
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime
+from decimal import ROUND_FLOOR, Decimal
 from typing import Any
 
 import pandas as pd
@@ -14,8 +15,9 @@ from nautilus_trader.backtest.engine import BacktestEngine
 from nautilus_trader.common.component import is_backtest_force_stop
 from nautilus_trader.config import LoggingConfig
 from nautilus_trader.config import StrategyFactory as NautilusStrategyFactory
+from nautilus_trader.model.data import OrderBookDeltas, TradeTick
 from nautilus_trader.model.identifiers import InstrumentId, TraderId
-from nautilus_trader.model.objects import Money
+from nautilus_trader.model.objects import Money, Quantity
 from nautilus_trader.risk.config import RiskEngineConfig
 from nautilus_trader.trading.strategy import Strategy
 
@@ -34,7 +36,10 @@ from prediction_market_extensions.backtesting._backtest_runtime import (
     add_engine_data_by_type,
     build_backtest_run_state,
 )
-from prediction_market_extensions.backtesting._execution_config import ExecutionModelConfig
+from prediction_market_extensions.backtesting._execution_config import (
+    ExecutionModelConfig,
+    SameTimestampPriority,
+)
 from prediction_market_extensions.backtesting._market_data_config import MarketDataConfig
 from prediction_market_extensions.backtesting._replay_specs import ReplaySpec
 from prediction_market_extensions.backtesting._result_policies import (
@@ -77,6 +82,49 @@ REPLAY_LOAD_WORKERS_ENV = "BACKTEST_REPLAY_LOAD_WORKERS"
 LOADER_PROGRESS_ENV = "BACKTEST_LOADER_PROGRESS"
 DEFAULT_REPLAY_LOAD_WORKERS = 32
 MAX_REPLAY_LOAD_WORKERS = 128
+
+
+def _scale_trade_tick_size(record: TradeTick, multiplier: float) -> TradeTick | None:
+    precision = int(record.size.precision)
+    quantum = Decimal(1).scaleb(-precision)
+    scaled_size = (Decimal(str(record.size)) * Decimal(str(multiplier))).quantize(
+        quantum,
+        rounding=ROUND_FLOOR,
+    )
+    if scaled_size <= 0:
+        return None
+    return TradeTick(
+        instrument_id=record.instrument_id,
+        price=record.price,
+        size=Quantity.from_str(f"{scaled_size:.{precision}f}"),
+        aggressor_side=record.aggressor_side,
+        trade_id=record.trade_id,
+        ts_event=record.ts_event,
+        ts_init=record.ts_init,
+    )
+
+
+def _records_for_execution(
+    records: Sequence[Any], execution: ExecutionModelConfig
+) -> tuple[Any, ...]:
+    multiplier = execution.trade_execution_size_multiplier
+    if multiplier == 1.0:
+        return tuple(records)
+    stressed: list[Any] = []
+    for record in records:
+        if not isinstance(record, TradeTick):
+            stressed.append(record)
+            continue
+        scaled = _scale_trade_tick_size(record, multiplier)
+        if scaled is not None:
+            stressed.append(scaled)
+    return tuple(stressed)
+
+
+def _execution_type_priority(execution: ExecutionModelConfig) -> tuple[type[Any], ...]:
+    if execution.same_timestamp_priority is SameTimestampPriority.TRADE_BEFORE_BOOK:
+        return (TradeTick, OrderBookDeltas)
+    return (OrderBookDeltas, TradeTick)
 
 
 def _record_ts_event(record: Any) -> int | None:
@@ -264,7 +312,11 @@ class PredictionMarketBacktest:
         try:
             for loaded_sim in loaded_sims:
                 engine.add_instrument(loaded_sim.instrument)
-                add_engine_data_by_type(engine, list(loaded_sim.records))
+                add_engine_data_by_type(
+                    engine,
+                    _records_for_execution(loaded_sim.records, self.execution),
+                    preferred_type_order=_execution_type_priority(self.execution),
+                )
 
             if self.auxiliary_data_factory is not None:
                 auxiliary_records = tuple(self.auxiliary_data_factory(tuple(loaded_sims)))
@@ -475,7 +527,9 @@ class PredictionMarketBacktest:
             base_currency=engine_profile.base_currency,
             starting_balances=[Money(self.initial_cash, engine_profile.base_currency)],
             fill_model=fill_model,
-            fee_model=engine_profile.fee_model_factory(),
+            fee_model=engine_profile.fee_model_factory(
+                maker_rebates_enabled=self.execution.maker_rebates_enabled
+            ),
             book_type=engine_profile.book_type,
             latency_model=latency_model,
             liquidity_consumption=engine_profile.liquidity_consumption,

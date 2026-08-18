@@ -1,0 +1,10 @@
+{
+  "captured_at_utc": "2026-08-05T14:01:39.3171219Z",
+  "vps_host": "43.155.205.49",
+  "vps_project": "/home/ubuntu/polymarket_btc",
+  "git_revision": "2d1be58902ae3d0ca9a7595e04c3a9d9fd215b99",
+  "compose_sha256": "f58364c1315b2b35d06874e1269bb9410aeff506a1584549d0114a4e1668ebce",
+  "compose_depth_backup_sha256": "c3101005b5d3f6f41c8a0233e5eb235af0a5b1b1015e12bcc22fd8f7effdb819",
+  "rollback_rule": "Keep the current release and deploy/compose.yaml.pre-depth. Roll back by checking out this revision, restoring the recorded compose file or backup, and recreating the three services.",
+  "data_rule": "Never delete the existing runtime/paper epoch ledgers or raw collector data while changing strategy epoch."
+}

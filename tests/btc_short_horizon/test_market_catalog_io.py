@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import json
 
 import pytest
 
@@ -26,7 +27,7 @@ def _window() -> MarketWindow:
         down_token_id="down-token",
         t0=t0,
         t1=t0 + BTC_15M_MARKET_FAMILY.window_seconds_as_timedelta,
-        rule_epoch="chainlink-btc-usd-v1",
+        rule_epoch="chainlink-btc-usd-point-v1",
         rule_hash="a" * 64,
         resolution=MarketOutcome.UP,
         label_available_ts=datetime(2026, 4, 13, 0, 16, tzinfo=UTC),
@@ -64,3 +65,18 @@ def test_market_catalog_reader_rejects_unknown_market_family(tmp_path) -> None: 
 
     with pytest.raises(MarketValidationError, match="unknown family"):
         read_market_catalog(path)
+
+
+def test_legacy_catalog_requires_explicit_unproven_read(tmp_path) -> None:
+    catalog = MarketCatalog(families=(BTC_15M_MARKET_FAMILY,), windows=(_window(),))
+    payload = market_catalog_payload(
+        catalog=catalog, collected_at=datetime(2026, 4, 13, tzinfo=UTC)
+    )
+    payload["schema_version"] = "btc-market-catalog-v1"
+    for market in payload["markets"]:
+        market.pop("rule_contract_sha256")
+    path = tmp_path / "legacy.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(MarketValidationError, match="no rule contract fingerprint"):
+        read_market_catalog(path)
+    assert read_market_catalog(path, allow_unproven_legacy=True).windows()

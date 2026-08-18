@@ -75,6 +75,54 @@ class _VenueState:
     gap: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class OpeningVenueSnapshot:
+    """Bounded venue-only component used by the readiness materializer."""
+
+    values: tuple[tuple[str, float], ...]
+    latest_price: float | None
+    rv_300: float
+    flags: frozenset[str]
+    ages: tuple[float, ...]
+    gap: bool
+
+
+@dataclass(frozen=True, slots=True)
+class OpeningReferenceSnapshot:
+    """Bounded Chainlink component used by the readiness materializer."""
+
+    opening: BtcReferencePrice | None
+    latest: BtcReferencePrice | None
+    latest_age_seconds: float | None
+    gap: bool
+
+
+def market_probability_from_books(
+    *,
+    up: BtcBookTop | None,
+    down: BtcBookTop | None,
+    decision_ts_ns: int,
+    stale_seconds: float = 1.0,
+) -> tuple[float, frozenset[str]]:
+    """Compute the PM complement probability from two bounded BBO snapshots."""
+
+    if up is None or down is None:
+        return 0.5, frozenset({"polymarket_book_unavailable"})
+    up_age = (decision_ts_ns - up.available_ts_ns) / _NANOS_PER_SECOND
+    down_age = (decision_ts_ns - down.available_ts_ns) / _NANOS_PER_SECOND
+    flags: set[str] = set()
+    if up_age > stale_seconds or down_age > stale_seconds:
+        flags.add("polymarket_book_stale")
+    up_mid = (up.bid + up.ask) / 2.0
+    down_implied_up = 1.0 - ((down.bid + down.ask) / 2.0)
+    if abs(up_mid - down_implied_up) > max(up.ask - up.bid, down.ask - down.bid):
+        flags.add("polymarket_complement_mismatch")
+    return (
+        max(1e-6, min(1.0 - 1e-6, (up_mid + down_implied_up) / 2.0)),
+        frozenset(flags),
+    )
+
+
 class OpeningFeatureState:
     """Per-stream state; no venue can regress or contaminate another venue's epoch."""
 
@@ -126,6 +174,41 @@ class OpeningFeatureState:
         state.book = None
         state.last_available_ts_ns = 0
         state.gap = True
+
+    def venue_snapshot(
+        self, *, source: str, decision_ts_ns: int
+    ) -> OpeningVenueSnapshot:
+        values, flags, latest_price, rv_300, ages = self._venue_values(
+            source=source,
+            decision_ts_ns=decision_ts_ns,
+        )
+        return OpeningVenueSnapshot(
+            values=tuple(sorted(values.items())),
+            latest_price=latest_price,
+            rv_300=rv_300,
+            flags=frozenset(flags),
+            ages=tuple(ages),
+            gap=self._venues[source].gap,
+        )
+
+    def reference_snapshot(
+        self, *, decision_ts_ns: int, market_window_start_ns: int
+    ) -> OpeningReferenceSnapshot:
+        opening, latest = self._reference_prices(
+            decision_ts_ns=decision_ts_ns,
+            market_window_start_ns=market_window_start_ns,
+        )
+        latest_age = (
+            None
+            if latest is None
+            else (decision_ts_ns - latest.available_ts_ns) / _NANOS_PER_SECOND
+        )
+        return OpeningReferenceSnapshot(
+            opening=opening,
+            latest=latest,
+            latest_age_seconds=latest_age,
+            gap=self._reference_gap,
+        )
 
     def update(self, event: BtcTrade | BtcBookTop | BtcReferencePrice) -> None:
         if isinstance(event, BtcReferencePrice):

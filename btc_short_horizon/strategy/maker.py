@@ -25,14 +25,17 @@ class MakerStrategyConfig:
     max_shares: float = 1.0
     safety_buffer: float = 0.01
     minimum_edge: float = 0.0
-    maker_fee_per_share: float = 0.0
     entry_start_seconds: float = 3.0
     entry_end_seconds: float = 180.0
-    edge_persistence_seconds: float = 2.0
+    confirmation_signals: int = 2
+    signal_cadence_seconds: float = 5.0
+    signal_cadence_tolerance_seconds: float = 0.25
     max_work_seconds: float = 60.0
     stale_after_seconds: float = 1.0
     cancel_probability_drop: float = 0.03
-    price_level_tick_offsets: tuple[int, ...] = (0, 1, 2)
+    max_visible_depth_fraction: float = 0.05
+    price_level_tick_offsets: tuple[int, ...] = (0,)
+    improve_inside_spread: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.structure, LayerStructure):
@@ -41,15 +44,16 @@ class MakerStrategyConfig:
             ("max_shares", self.max_shares),
             ("safety_buffer", self.safety_buffer),
             ("minimum_edge", self.minimum_edge),
-            ("maker_fee_per_share", self.maker_fee_per_share),
             ("entry_start_seconds", self.entry_start_seconds),
             ("entry_end_seconds", self.entry_end_seconds),
-            ("edge_persistence_seconds", self.edge_persistence_seconds),
+            ("signal_cadence_seconds", self.signal_cadence_seconds),
+            ("signal_cadence_tolerance_seconds", self.signal_cadence_tolerance_seconds),
             ("max_work_seconds", self.max_work_seconds),
             ("stale_after_seconds", self.stale_after_seconds),
             ("cancel_probability_drop", self.cancel_probability_drop),
+            ("max_visible_depth_fraction", self.max_visible_depth_fraction),
         ):
-            if not isfinite(value) or value < 0.0:
+            if isinstance(value, bool) or not isfinite(value) or value < 0.0:
                 raise ValueError(f"{name} must be finite and >= 0")
         if self.max_shares <= 0.0 or self.entry_start_seconds <= 0.0:
             raise ValueError("max_shares and entry_start_seconds must be > 0")
@@ -57,16 +61,32 @@ class MakerStrategyConfig:
             raise ValueError("entry_end_seconds must exceed entry_start_seconds")
         if self.max_work_seconds <= 0.0 or self.stale_after_seconds <= 0.0:
             raise ValueError("max_work_seconds and stale_after_seconds must be > 0")
-        if self.safety_buffer >= 1.0:
-            raise ValueError("safety_buffer must be less than 1")
-        if len(self.price_level_tick_offsets) < len(self.structure.allocations):
-            raise ValueError("price_level_tick_offsets must cover every configured layer")
+        if self.safety_buffer + self.minimum_edge >= 1.0:
+            raise ValueError("safety_buffer plus minimum_edge must be less than 1")
+        if (
+            isinstance(self.confirmation_signals, bool)
+            or not isinstance(self.confirmation_signals, int)
+            or self.confirmation_signals < 1
+        ):
+            raise ValueError("confirmation_signals must be an integer >= 1")
+        if self.signal_cadence_seconds <= 0.0:
+            raise ValueError("signal_cadence_seconds must be > 0")
+        if self.signal_cadence_tolerance_seconds >= self.signal_cadence_seconds:
+            raise ValueError("signal cadence tolerance must be below the cadence")
+        if not 0.0 < self.max_visible_depth_fraction <= 1.0:
+            raise ValueError("max_visible_depth_fraction must be within (0, 1]")
+        if self.cancel_probability_drop >= 1.0:
+            raise ValueError("cancel_probability_drop must be less than 1")
+        if len(self.price_level_tick_offsets) != len(self.structure.allocations):
+            raise ValueError("price_level_tick_offsets must match the configured layer count")
         if any(
             not isinstance(offset, int) or offset < 0 for offset in self.price_level_tick_offsets
         ):
             raise ValueError("price_level_tick_offsets must contain non-negative integers")
         if tuple(sorted(self.price_level_tick_offsets)) != self.price_level_tick_offsets:
             raise ValueError("price_level_tick_offsets must be non-decreasing")
+        if not isinstance(self.improve_inside_spread, bool):
+            raise ValueError("improve_inside_spread must be bool")
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,12 +108,14 @@ class CancellationAssessment:
 def plan_opening_mispricing_orders(
     *,
     market_slug: str,
+    p_boundary_up: float,
     p_up: float,
-    p_market_mid_up: float,
     books: OutcomeBooks,
     decision_ts_ns: int,
     elapsed_seconds: float,
     config: MakerStrategyConfig,
+    selected_side: TokenSide | None = None,
+    expires_ts_ns: int | None = None,
 ) -> PlanDecision:
     """Select only the side with the highest viable passive executable edge."""
 
@@ -101,16 +123,29 @@ def plan_opening_mispricing_orders(
         raise ValueError("decision_ts_ns must be non-negative")
     if not isfinite(p_up) or not 0.0 < p_up < 1.0:
         raise ValueError("p_up must be finite and in (0, 1)")
-    if not isfinite(p_market_mid_up) or not 0.0 < p_market_mid_up < 1.0:
-        raise ValueError("p_market_mid_up must be finite and in (0, 1)")
+    if not isfinite(p_boundary_up) or not 0.0 < p_boundary_up < 1.0:
+        raise ValueError("p_boundary_up must be finite and in (0, 1)")
     if not isfinite(elapsed_seconds) or elapsed_seconds < 0.0:
         raise ValueError("elapsed_seconds must be finite and >= 0")
     if not config.entry_start_seconds <= elapsed_seconds <= config.entry_end_seconds:
         return PlanDecision(plan=None, reason="outside_entry_window")
+    if selected_side is not None and not isinstance(selected_side, TokenSide):
+        raise TypeError("selected_side must be a TokenSide")
+    effective_expiry_ts_ns = (
+        decision_ts_ns + round(config.max_work_seconds * _NANOS_PER_SECOND)
+        if expires_ts_ns is None
+        else expires_ts_ns
+    )
+    if effective_expiry_ts_ns <= decision_ts_ns:
+        raise ValueError("expires_ts_ns must be after decision_ts_ns")
 
     candidates: list[OrderPlan] = []
+    p_market_mid_up = books.implied_up_midpoint
     for side in (TokenSide.UP, TokenSide.DOWN):
+        if selected_side is not None and side is not selected_side:
+            continue
         fair = p_up if side is TokenSide.UP else 1.0 - p_up
+        boundary = p_boundary_up if side is TokenSide.UP else 1.0 - p_boundary_up
         market = p_market_mid_up if side is TokenSide.UP else 1.0 - p_market_mid_up
         book = books.for_side(side)
         layers = _build_layers(p_fair=fair, book=book, config=config)
@@ -121,13 +156,13 @@ def plan_opening_mispricing_orders(
                 market_slug=market_slug,
                 token_id=book.token_id,
                 side=side,
+                p_boundary=boundary,
                 p_fair=fair,
                 p_market=market,
-                maker_fee_per_share=config.maker_fee_per_share,
                 safety_buffer=config.safety_buffer,
                 minimum_edge=config.minimum_edge,
                 created_ts_ns=decision_ts_ns,
-                expires_ts_ns=decision_ts_ns + round(config.max_work_seconds * _NANOS_PER_SECOND),
+                expires_ts_ns=effective_expiry_ts_ns,
                 layers=layers,
             )
         )
@@ -136,7 +171,11 @@ def plan_opening_mispricing_orders(
     return PlanDecision(
         plan=max(
             candidates,
-            key=lambda plan: (plan.net_edge(plan.layers[0].price), plan.model_edge, plan.side),
+            key=lambda plan: (
+                plan.net_edge(plan.layers[0].price),
+                plan.model_edge,
+                plan.side.value,
+            ),
         ),
         reason="accepted",
     )
@@ -166,7 +205,7 @@ def evaluate_cancellation(
     if has_data_gap:
         return CancellationAssessment(True, "data_gap")
     if data_age_seconds > config.stale_after_seconds:
-        return CancellationAssessment(True, "data_stale")
+        return CancellationAssessment(True, "book_stale_connection_unobserved")
     if not tick_unchanged:
         return CancellationAssessment(True, "tick_changed")
     if not fee_unchanged:
@@ -178,8 +217,7 @@ def evaluate_cancellation(
     if selected_probability <= plan.p_fair - config.cancel_probability_drop:
         return CancellationAssessment(True, "probability_drop")
     if all(
-        selected_probability - layer.price - plan.maker_fee_per_share - plan.safety_buffer
-        < plan.minimum_edge
+        selected_probability - layer.price - plan.safety_buffer < plan.minimum_edge
         for layer in plan.layers
     ):
         return CancellationAssessment(True, "edge_exhausted")
@@ -189,19 +227,43 @@ def evaluate_cancellation(
 def _build_layers(
     *, p_fair: float, book: SideBook, config: MakerStrategyConfig
 ) -> tuple[MakerOrderLayer, ...]:
-    maximum_price = p_fair - config.maker_fee_per_share - config.safety_buffer - config.minimum_edge
+    maximum_price = p_fair - config.safety_buffer - config.minimum_edge
+    anchor_price = book.best_bid
+    improved_price = _snap_down(book.best_bid + book.tick_size, book.tick_size)
+    if (
+        config.improve_inside_spread
+        and improved_price < book.best_ask - 1e-12
+        and improved_price <= maximum_price + 1e-12
+    ):
+        anchor_price = improved_price
     layers: list[MakerOrderLayer] = []
-    seen_prices: set[float] = set()
     for index, allocation in enumerate(config.structure.allocations):
         offset = config.price_level_tick_offsets[index]
-        price = _snap_down(book.best_bid - offset * book.tick_size, book.tick_size)
-        if not 0.0 < price < book.best_ask or price > maximum_price + 1e-12 or price in seen_prices:
-            continue
-        size = config.max_shares * allocation
-        if size <= 0.0:
-            continue
-        layers.append(MakerOrderLayer(price=price, size=size))
-        seen_prices.add(price)
+        price = _snap_down(anchor_price - offset * book.tick_size, book.tick_size)
+        if not 0.0 < price < book.best_ask or price > maximum_price + 1e-12:
+            return ()
+        queue_ahead = book.visible_bid_size_at(price)
+        visible_size = (
+            book.visible_bid_size_at(book.best_bid)
+            if price > book.best_bid and queue_ahead <= 0.0
+            else queue_ahead
+        )
+        if visible_size <= 0.0:
+            return ()
+        size = min(
+            config.max_shares * allocation,
+            visible_size * config.max_visible_depth_fraction,
+        )
+        if size + 1e-12 < book.minimum_order_size:
+            return ()
+        layers.append(
+            MakerOrderLayer(
+                price=price,
+                size=size,
+                visible_size=visible_size,
+                queue_ahead=queue_ahead,
+            )
+        )
     return tuple(layers)
 
 

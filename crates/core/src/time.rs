@@ -1,5 +1,4 @@
 const NANOS_PER_SECOND: i128 = 1_000_000_000;
-const NAUTILUS_FIXED_SCALAR: f64 = 1_000_000_000.0;
 
 pub fn decimal_seconds_to_ns(value: &str) -> Result<i128, String> {
     let trimmed = value.trim();
@@ -67,24 +66,50 @@ pub fn float_seconds_to_ms_string(value: f64) -> String {
     format!("{:.6}", value * 1000.0)
 }
 
-pub fn fixed_raw_values(values: &[f64], precision: u8) -> Result<Vec<i128>, String> {
-    let precision_factor = 10_f64.powi(i32::from(precision));
+pub fn fixed_raw_values(
+    values: &[f64],
+    precision: u8,
+    fixed_precision: u8,
+    fixed_scalar: i128,
+) -> Result<Vec<i128>, String> {
+    if precision > fixed_precision {
+        return Err(format!(
+            "value precision {precision} exceeds Nautilus fixed precision {fixed_precision}"
+        ));
+    }
+    let expected_scalar = 10_i128
+        .checked_pow(u32::from(fixed_precision))
+        .ok_or_else(|| format!("Nautilus fixed precision is too large: {fixed_precision}"))?;
+    if fixed_scalar != expected_scalar {
+        return Err(format!(
+            "Nautilus fixed scalar {fixed_scalar} does not match fixed precision {fixed_precision}"
+        ));
+    }
+    let precision_factor = 10_i128
+        .checked_pow(u32::from(precision))
+        .ok_or_else(|| format!("value precision is too large: {precision}"))?;
+    let raw_units_per_value_unit = fixed_scalar / precision_factor;
     values
         .iter()
-        .map(|value| fixed_raw_value(*value, precision_factor))
+        .map(|value| fixed_raw_value(*value, precision_factor, raw_units_per_value_unit))
         .collect()
 }
 
-fn fixed_raw_value(value: f64, precision_factor: f64) -> Result<i128, String> {
+fn fixed_raw_value(
+    value: f64,
+    precision_factor: i128,
+    raw_units_per_value_unit: i128,
+) -> Result<i128, String> {
     if !value.is_finite() {
         return Err(format!("fixed-point value must be finite: {value:?}"));
     }
-    let rounded = (value * precision_factor).round_ties_even() / precision_factor;
-    let raw = (rounded * NAUTILUS_FIXED_SCALAR).round_ties_even();
-    if !raw.is_finite() {
+    let rounded_units = (value * precision_factor as f64).round_ties_even();
+    if !rounded_units.is_finite() {
         return Err(format!("fixed-point raw value must be finite: {value:?}"));
     }
-    Ok(raw as i128)
+    (rounded_units as i128)
+        .checked_mul(raw_units_per_value_unit)
+        .ok_or_else(|| format!("fixed-point raw value overflows i128: {value:?}"))
 }
 
 fn parse_decimal_digits(value: &str) -> Result<i128, String> {
@@ -164,11 +189,11 @@ mod tests {
     #[test]
     fn converts_fixed_raw_values_with_precision_rounding() {
         assert_eq!(
-            fixed_raw_values(&[0.105], 2).unwrap(),
-            vec![100_000_000_i128]
+            fixed_raw_values(&[0.60, 0.105], 2, 9, 1_000_000_000).unwrap(),
+            vec![600_000_000_i128, 100_000_000_i128]
         );
         assert_eq!(
-            fixed_raw_values(&[1009.1234564], 6).unwrap(),
+            fixed_raw_values(&[1009.1234564], 6, 9, 1_000_000_000).unwrap(),
             vec![1_009_123_456_000_i128]
         );
     }

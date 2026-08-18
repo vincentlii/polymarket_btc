@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -100,6 +100,154 @@ def test_okx_book_synchronizer_requires_snapshot_and_sequence_continuity() -> No
     assert gap.status is DepthUpdateStatus.GAP
 
 
+def test_okx_book_rejects_crossed_snapshot_and_delta_fail_closed() -> None:
+    book = OkxBookSynchronizer(instrument="BTC-USDT", source="okx_spot")
+    invalid_snapshot = book.apply(
+        action="snapshot",
+        payload={
+            **_snapshot(),
+            "bids": [["101", "1", "0", "1"]],
+            "asks": [["101", "1", "0", "1"]],
+        },
+        collector_receive_ts=RECEIVE,
+    )
+    assert invalid_snapshot.status is DepthUpdateStatus.GAP
+    assert not book.synchronized
+
+    assert (
+        book.apply(action="snapshot", payload=_snapshot(), collector_receive_ts=RECEIVE).status
+        is DepthUpdateStatus.APPLIED
+    )
+    invalid_delta = book.apply(
+        action="update",
+        payload={
+            "ts": "1776038400100",
+            "seqId": "101",
+            "prevSeqId": "100",
+            "bids": [["102", "1", "0", "1"]],
+            "asks": [],
+        },
+        collector_receive_ts=RECEIVE,
+    )
+
+    assert invalid_delta.status is DepthUpdateStatus.GAP
+    assert invalid_delta.reason == "empty_or_crossed_book"
+    assert not book.synchronized
+
+
+def test_okx_snapshot_requires_official_minus_one_previous_sequence() -> None:
+    book = OkxBookSynchronizer(instrument="BTC-USDT", source="okx_spot")
+
+    result = book.apply(
+        action="snapshot",
+        payload={**_snapshot(), "prevSeqId": "0"},
+        collector_receive_ts=RECEIVE,
+    )
+
+    assert result.status is DepthUpdateStatus.GAP
+    assert result.reason == "snapshot_previous_sequence_not_minus_one"
+    assert not book.synchronized
+
+
+def test_okx_book_applies_official_maintenance_sequence_reset() -> None:
+    book = OkxBookSynchronizer(instrument="BTC-USDT", source="okx_spot")
+    book.apply(action="snapshot", payload=_snapshot(), collector_receive_ts=RECEIVE)
+    first = book.apply(
+        action="update",
+        payload={
+            "ts": "1776038400100",
+            "seqId": "115",
+            "prevSeqId": "100",
+            "bids": [["100.5", "4", "0", "1"]],
+            "asks": [],
+        },
+        collector_receive_ts=RECEIVE,
+    )
+    reset = book.apply(
+        action="update",
+        payload={
+            "ts": "1776038400200",
+            "seqId": "3",
+            "prevSeqId": "115",
+            "bids": [],
+            "asks": [["100.8", "2", "0", "1"]],
+        },
+        collector_receive_ts=RECEIVE,
+    )
+    after_reset = book.apply(
+        action="update",
+        payload={
+            "ts": "1776038400300",
+            "seqId": "5",
+            "prevSeqId": "3",
+            "bids": [],
+            "asks": [],
+        },
+        collector_receive_ts=RECEIVE,
+    )
+
+    assert first.status is DepthUpdateStatus.APPLIED
+    assert reset.status is DepthUpdateStatus.APPLIED
+    assert reset.last_update_id == 3
+    assert reset.book_top is not None
+    assert reset.book_top.ask == pytest.approx(100.8)
+    assert after_reset.status is DepthUpdateStatus.APPLIED
+    assert after_reset.last_update_id == 5
+
+
+def test_okx_non_chained_old_message_is_a_gap_not_a_stale_duplicate() -> None:
+    book = OkxBookSynchronizer(instrument="BTC-USDT", source="okx_spot")
+    book.apply(action="snapshot", payload=_snapshot(), collector_receive_ts=RECEIVE)
+    book.apply(
+        action="update",
+        payload={
+            "ts": "1776038400100",
+            "seqId": "110",
+            "prevSeqId": "100",
+            "bids": [],
+            "asks": [],
+        },
+        collector_receive_ts=RECEIVE,
+    )
+
+    result = book.apply(
+        action="update",
+        payload={
+            "ts": "1776038400200",
+            "seqId": "105",
+            "prevSeqId": "104",
+            "bids": [],
+            "asks": [],
+        },
+        collector_receive_ts=RECEIVE,
+    )
+
+    assert result.status is DepthUpdateStatus.GAP
+    assert result.reason == "previous_sequence_mismatch"
+    assert not book.synchronized
+
+
+def test_okx_nonempty_same_sequence_is_a_gap() -> None:
+    book = OkxBookSynchronizer(instrument="BTC-USDT", source="okx_spot")
+    book.apply(action="snapshot", payload=_snapshot(), collector_receive_ts=RECEIVE)
+
+    result = book.apply(
+        action="update",
+        payload={
+            "ts": "1776038400100",
+            "seqId": "100",
+            "prevSeqId": "100",
+            "bids": [["100.5", "1", "0", "1"]],
+            "asks": [],
+        },
+        collector_receive_ts=RECEIVE,
+    )
+
+    assert result.status is DepthUpdateStatus.GAP
+    assert result.reason == "nonempty_same_sequence"
+    assert not book.synchronized
+
+
 def test_okx_book_timing_is_venue_timestamped() -> None:
     timing = normalize_okx_book_update(
         _snapshot(),
@@ -110,5 +258,23 @@ def test_okx_book_timing_is_venue_timestamped() -> None:
     )
 
     assert timing.source_ts.timestamp() == pytest.approx(1_776_038_400.0)
-    assert timing.sequence_or_hash == "snapshot:100"
+    assert timing.sequence_or_hash.startswith("snapshot:-1:100:")
     assert timing.source == "okx_spot"
+    assert timing.schema_version == "okx-books-v2"
+
+
+def test_okx_timing_tolerates_source_clock_lead_without_precausal_availability() -> None:
+    source_time = RECEIVE + timedelta(seconds=2)
+    timing = normalize_okx_book_update(
+        {
+            **_snapshot(),
+            "ts": str(int(source_time.timestamp() * 1_000)),
+        },
+        action="snapshot",
+        instrument="BTC-USDT",
+        collector_receive_ts=RECEIVE,
+        source="okx_spot",
+    )
+
+    assert timing.source_ts == source_time
+    assert timing.available_ts == source_time

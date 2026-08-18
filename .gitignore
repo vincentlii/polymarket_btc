@@ -4,6 +4,7 @@
 # Environment
 .env
 deploy/.env
+deploy/secrets/
 .uv-cache/
 
 # Python
@@ -37,6 +38,13 @@ deploy/runtime/
 
 # Temp
 .tmp/
+.codex-test-tmp/
+.pytest-final-v6/
+.pytest-*/
+.audit_pytest/
+.audit_tmp/
+.t/
+.test-tmp/
 
 # Rust
 target/

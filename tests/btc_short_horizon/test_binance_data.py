@@ -150,6 +150,60 @@ def test_depth_synchronizer_buffers_before_snapshot_and_resets_after_gap() -> No
     assert synchronizer.needs_snapshot
 
 
+@pytest.mark.parametrize("source", ["binance_spot", "binance_perp"])
+def test_depth_synchronizer_does_not_expose_snapshot_before_websocket_bridge(
+    source: str,
+) -> None:
+    synchronizer = BinanceDepthSynchronizer(
+        instrument="BTCUSDT",
+        source=source,
+    )
+
+    snapshot = synchronizer.apply_snapshot(
+        {
+            "lastUpdateId": 100,
+            "bids": [["100", "2"]],
+            "asks": [["101", "3"]],
+            "E": 1_776_038_400_000,
+        },
+        collector_receive_ts=RECEIVE,
+    )
+
+    assert snapshot.status is DepthUpdateStatus.AWAITING_SNAPSHOT
+    assert snapshot.book_top is None
+    assert snapshot.reason == "delta_bridge_required"
+    assert not synchronizer.synchronized
+    assert synchronizer.needs_snapshot
+    assert not synchronizer.requires_snapshot
+
+    delta = (
+        {
+            "U": 101,
+            "u": 101,
+            "b": [["100.5", "4"]],
+            "a": [],
+            "E": 1_776_038_400_100,
+        }
+        if source == "binance_spot"
+        else {
+            "U": 99,
+            "u": 101,
+            "pu": 98,
+            "b": [["100.5", "4"]],
+            "a": [],
+            "E": 1_776_038_400_100,
+        }
+    )
+    bridged = synchronizer.observe_delta(
+        delta,
+        collector_receive_ts=RECEIVE,
+    )
+
+    assert bridged.status is DepthUpdateStatus.APPLIED
+    assert synchronizer.synchronized
+    assert not synchronizer.needs_snapshot
+
+
 def test_depth_synchronizer_rejects_first_buffered_update_after_snapshot_gap() -> None:
     synchronizer = BinanceDepthSynchronizer(instrument="BTCUSDT")
     synchronizer.observe_delta(
@@ -170,6 +224,151 @@ def test_depth_synchronizer_rejects_first_buffered_update_after_snapshot_gap() -
     assert result.status is DepthUpdateStatus.AWAITING_SNAPSHOT
     assert result.reason == "snapshot_too_old"
     assert not synchronizer.synchronized
+
+
+def test_perpetual_depth_uses_official_snapshot_overlap_then_pu_continuity() -> None:
+    synchronizer = BinanceDepthSynchronizer(
+        instrument="BTCUSDT",
+        source="binance_perp",
+    )
+    buffered = synchronizer.observe_delta(
+        {
+            "U": 99,
+            "u": 105,
+            "pu": 98,
+            "b": [["100.5", "4"]],
+            "a": [],
+            "E": 1_776_038_400_100,
+        },
+        collector_receive_ts=RECEIVE,
+    )
+    snapshot = synchronizer.apply_snapshot(
+        {
+            "lastUpdateId": 100,
+            "bids": [["100", "2"]],
+            "asks": [["101", "3"]],
+            "E": 1_776_038_400_000,
+        },
+        collector_receive_ts=RECEIVE,
+    )
+    next_update = synchronizer.observe_delta(
+        {
+            "U": 106,
+            "u": 107,
+            "pu": 105,
+            "b": [],
+            "a": [["100.8", "2"]],
+            "E": 1_776_038_400_200,
+        },
+        collector_receive_ts=RECEIVE,
+    )
+
+    assert buffered.status is DepthUpdateStatus.AWAITING_SNAPSHOT
+    assert snapshot.status is DepthUpdateStatus.APPLIED
+    assert snapshot.last_update_id == 105
+    assert next_update.status is DepthUpdateStatus.APPLIED
+    assert next_update.last_update_id == 107
+    assert next_update.book_top is not None
+    assert next_update.book_top.ask == pytest.approx(100.8)
+
+
+def test_perpetual_depth_rejects_missing_pu_after_first_processed_event() -> None:
+    synchronizer = BinanceDepthSynchronizer(
+        instrument="BTCUSDT",
+        source="binance_perp",
+    )
+    synchronizer.observe_delta(
+        {
+            "U": 99,
+            "u": 105,
+            "pu": 98,
+            "b": [],
+            "a": [],
+            "E": 1_776_038_400_100,
+        },
+        collector_receive_ts=RECEIVE,
+    )
+    synchronizer.apply_snapshot(
+        {
+            "lastUpdateId": 100,
+            "bids": [["100", "2"]],
+            "asks": [["101", "3"]],
+            "E": 1_776_038_400_000,
+        },
+        collector_receive_ts=RECEIVE,
+    )
+
+    result = synchronizer.observe_delta(
+        {
+            "U": 106,
+            "u": 106,
+            "b": [],
+            "a": [],
+            "E": 1_776_038_400_200,
+        },
+        collector_receive_ts=RECEIVE,
+    )
+
+    assert result.status is DepthUpdateStatus.GAP
+    assert result.reason == "previous_update_id_missing"
+    assert synchronizer.needs_snapshot
+
+
+@pytest.mark.parametrize(
+    ("bids", "asks"),
+    [
+        ([], [["101", "1"]]),
+        ([["101", "1"]], [["101", "1"]]),
+    ],
+)
+def test_depth_synchronizer_rejects_empty_or_crossed_snapshot(
+    bids: list[list[str]],
+    asks: list[list[str]],
+) -> None:
+    synchronizer = BinanceDepthSynchronizer(instrument="BTCUSDT")
+
+    result = synchronizer.apply_snapshot(
+        {
+            "lastUpdateId": 100,
+            "bids": bids,
+            "asks": asks,
+            "E": 1_776_038_400_000,
+        },
+        collector_receive_ts=RECEIVE,
+    )
+
+    assert result.status is DepthUpdateStatus.GAP
+    assert result.reason == "empty_or_crossed_snapshot"
+    assert not synchronizer.synchronized
+    assert synchronizer.needs_snapshot
+
+
+def test_diff_depth_crossing_delta_invalidates_without_committing_partial_book() -> None:
+    synchronizer = BinanceDepthSynchronizer(instrument="BTCUSDT")
+    synchronizer.apply_snapshot(
+        {
+            "lastUpdateId": 100,
+            "bids": [["100", "2"]],
+            "asks": [["101", "3"]],
+            "E": 1_776_038_400_000,
+        },
+        collector_receive_ts=RECEIVE,
+    )
+
+    result = synchronizer.observe_delta(
+        {
+            "U": 101,
+            "u": 101,
+            "b": [["102", "1"]],
+            "a": [],
+            "E": 1_776_038_400_100,
+        },
+        collector_receive_ts=RECEIVE,
+    )
+
+    assert result.status is DepthUpdateStatus.GAP
+    assert result.reason == "empty_or_crossed_book"
+    assert synchronizer.needs_snapshot
 
 
 def test_depth_and_book_ticker_timing_preserve_their_available_evidence() -> None:

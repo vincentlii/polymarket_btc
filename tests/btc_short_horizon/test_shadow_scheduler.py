@@ -4,6 +4,9 @@ import argparse
 import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from btc_short_horizon.data import (
     BTC_15M_MARKET_FAMILY,
@@ -12,8 +15,10 @@ from btc_short_horizon.data import (
     write_market_catalog,
 )
 from btc_short_horizon.live.shadow_scheduler import scan_shadow_windows
-from btc_short_horizon.live.runtime import RuntimeStatusStore
+from btc_short_horizon.live.runtime import RuntimeControl, RuntimeStatusStore
+import scripts.btc_opening_shadow_scheduler as shadow_scheduler_script
 from scripts.btc_opening_shadow_scheduler import run_async
+from scripts.btc_opening_proxy_shadow import ShadowEvidenceUnavailableError
 
 
 def _market(start: datetime) -> MarketWindow:
@@ -25,7 +30,7 @@ def _market(start: datetime) -> MarketWindow:
         down_token_id="down",
         t0=start,
         t1=start + timedelta(minutes=15),
-        rule_epoch="chainlink-btc-usd-v1",
+        rule_epoch="chainlink-btc-usd-twap-60s-v1",
         rule_hash="a" * 64,
     )
 
@@ -84,6 +89,22 @@ def test_shadow_scan_waits_for_handoff_and_skips_completed_output(tmp_path) -> N
 
     assert rescanned.ready == ()
 
+    (completed / "metrics.json").unlink()
+    (completed / "skip.json").write_text("{}", encoding="utf-8")
+    skipped = scan_shadow_windows(
+        catalog_directory=catalog_directory,
+        output_root=output_root,
+        family=BTC_15M_MARKET_FAMILY,
+        model_sha256=model_sha256,
+        now=market.t1 + timedelta(seconds=241),
+        handoff_delay_seconds=180,
+        flush_interval_seconds=60,
+        lookback=timedelta(hours=2),
+    )
+
+    assert skipped.ready == ()
+    assert skipped.incomplete_outputs == ()
+
 
 def test_shadow_scan_marks_partial_output_for_operator_review(tmp_path) -> None:
     market = _market(datetime(2026, 7, 16, 12, tzinfo=UTC))
@@ -135,3 +156,171 @@ def test_shadow_scheduler_marks_invalid_model_failed(tmp_path) -> None:
     assert status is not None
     assert status.state == "failed"
     assert not status.healthy
+
+
+def test_shadow_scheduler_loads_artifact_against_current_market_epoch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    observed: list[object] = []
+
+    def load(**kwargs: object):
+        observed.append(kwargs.get("expected_rule_epoch"))
+        raise ValueError("model artifact rule epoch mismatch")
+
+    monkeypatch.setattr(shadow_scheduler_script.ModelArtifactStore, "load", staticmethod(load))
+    args = argparse.Namespace(
+        config=Path("configs/btc_short_horizon/baseline.toml"),
+        model_directory=tmp_path / "model",
+        runtime_root=tmp_path / "runtime",
+        catalog_directory=None,
+        output_root=None,
+        raw_data_root=None,
+        poll_seconds=60.0,
+        lookback_hours=2.0,
+        book_lookback_seconds=300,
+        availability_delay_seconds=1.0,
+    )
+
+    with pytest.raises(ValueError, match="rule epoch mismatch"):
+        asyncio.run(run_async(args))
+
+    assert observed == ["chainlink-btc-usd-twap-60s-v1"]
+
+
+def test_shadow_scheduler_publishes_current_running_status_before_first_scan(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    observed = []
+    monkeypatch.setenv("BTC_CODE_REVISION", "current-revision")
+    monkeypatch.setattr(
+        shadow_scheduler_script.ModelArtifactStore,
+        "load",
+        staticmethod(
+            lambda **_kwargs: (
+                object(),
+                SimpleNamespace(
+                    config={},
+                    model_id="test-model",
+                    model_sha256="a" * 64,
+                ),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        shadow_scheduler_script,
+        "validate_opening_proxy_protocol",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def inspect_first_scan(**_kwargs):
+        observed.append(RuntimeStatusStore(runtime_root).read("opening_shadow"))
+        RuntimeControl(runtime_root).request_stop(
+            reason="test complete",
+            requested_at=datetime.now(UTC),
+        )
+        return SimpleNamespace(ready=(), incomplete_outputs=(), catalog_errors=())
+
+    monkeypatch.setattr(
+        shadow_scheduler_script,
+        "scan_shadow_windows",
+        inspect_first_scan,
+    )
+    args = argparse.Namespace(
+        config=Path("configs/btc_short_horizon/baseline.toml"),
+        model_directory=tmp_path / "model",
+        runtime_root=runtime_root,
+        catalog_directory=tmp_path / "catalogs",
+        output_root=tmp_path / "shadow",
+        raw_data_root=tmp_path / "raw",
+        poll_seconds=0.01,
+        lookback_hours=2.0,
+        book_lookback_seconds=300,
+        availability_delay_seconds=1.0,
+    )
+
+    asyncio.run(run_async(args))
+
+    assert len(observed) == 1
+    status = observed[0]
+    assert status is not None
+    assert status.state == "running"
+    assert status.healthy
+    assert status.details["phase"] == "initialized"
+    assert status.details["identity"]["code_revision"] == "current-revision"
+
+
+def test_shadow_scheduler_terminally_skips_window_without_current_epoch_evidence(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    output_root = tmp_path / "shadow"
+    market = _market(datetime(2026, 7, 16, 12, tzinfo=UTC))
+    window = SimpleNamespace(
+        market=market,
+        catalog_path=tmp_path / "catalog.json",
+        output_directory=output_root / f"{market.slug}-{'a' * 12}",
+    )
+    scans = 0
+    shadow_calls = 0
+    monkeypatch.setenv("BTC_CODE_REVISION", "current-revision")
+    monkeypatch.setattr(
+        shadow_scheduler_script.ModelArtifactStore,
+        "load",
+        staticmethod(
+            lambda **_kwargs: (
+                object(),
+                SimpleNamespace(config={}, model_id="test-model", model_sha256="a" * 64),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        shadow_scheduler_script,
+        "validate_opening_proxy_protocol",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def scan(**_kwargs):
+        nonlocal scans
+        scans += 1
+        if scans == 1:
+            return SimpleNamespace(ready=(window,), incomplete_outputs=(), catalog_errors=())
+        assert (window.output_directory / "skip.json").is_file()
+        RuntimeControl(runtime_root).request_stop(
+            reason="test complete",
+            requested_at=datetime.now(UTC),
+        )
+        return SimpleNamespace(ready=(), incomplete_outputs=(), catalog_errors=())
+
+    async def no_evidence(_args):
+        nonlocal shadow_calls
+        shadow_calls += 1
+        raise ShadowEvidenceUnavailableError(
+            "forward CLOB data produced no causal shadow observations"
+        )
+
+    monkeypatch.setattr(shadow_scheduler_script, "scan_shadow_windows", scan)
+    monkeypatch.setattr(shadow_scheduler_script, "run_shadow_pass", no_evidence)
+    args = argparse.Namespace(
+        config=Path("configs/btc_short_horizon/baseline.toml"),
+        model_directory=tmp_path / "model",
+        runtime_root=runtime_root,
+        catalog_directory=tmp_path / "catalogs",
+        output_root=output_root,
+        raw_data_root=tmp_path / "raw",
+        poll_seconds=0.01,
+        lookback_hours=2.0,
+        book_lookback_seconds=300,
+        availability_delay_seconds=1.0,
+    )
+
+    asyncio.run(run_async(args))
+
+    assert shadow_calls == 1
+    status = RuntimeStatusStore(runtime_root).read("opening_shadow")
+    assert status is not None
+    assert status.healthy
+    assert status.details["skipped_windows"] == 1

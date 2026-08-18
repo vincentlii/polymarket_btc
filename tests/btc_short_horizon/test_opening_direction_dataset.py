@@ -7,7 +7,11 @@ import pytest
 
 from btc_short_horizon.data import BTC_15M_MARKET_FAMILY, MarketOutcome, MarketWindow
 from btc_short_horizon.features import OpeningFeatureObservation, opening_feature_schema
-from btc_short_horizon.research.opening_dataset import build_opening_direction_dataset
+from btc_short_horizon.research.opening_dataset import (
+    build_opening_direction_dataset,
+    market_stage_sample_weights,
+)
+from btc_short_horizon.strategy import OpeningStage
 
 
 T0 = datetime(2026, 4, 13, tzinfo=UTC)
@@ -77,6 +81,41 @@ def test_opening_direction_dataset_weights_each_market_once() -> None:
             if sample.group_id == market.slug
         ]
         assert np.sum(build.dataset.sample_weights[indices]) == pytest.approx(1.0)
+        elapsed = [
+            (build.dataset.samples[index].feature_ts - market.t0).total_seconds()
+            for index in indices
+        ]
+        for lower, upper in ((3, 30), (35, 90), (95, 180)):
+            stage_indices = [
+                index
+                for index, seconds in zip(indices, elapsed, strict=True)
+                if lower <= seconds <= upper
+            ]
+            assert np.sum(build.dataset.sample_weights[stage_indices]) == pytest.approx(1.0 / 3.0)
+
+
+def test_market_stage_weights_are_equal_with_unequal_snapshot_counts() -> None:
+    stages = (
+        OpeningStage.EARLY,
+        OpeningStage.PRICE_DISCOVERY,
+        OpeningStage.PRICE_DISCOVERY,
+        OpeningStage.MID_EARLY,
+        OpeningStage.MID_EARLY,
+        OpeningStage.MID_EARLY,
+    )
+
+    weights = market_stage_sample_weights(stages)
+
+    assert sum(weights) == pytest.approx(1.0)
+    for stage in OpeningStage:
+        assert sum(
+            weight for weight, item in zip(weights, stages, strict=True) if item is stage
+        ) == (pytest.approx(1.0 / 3.0))
+
+
+def test_market_stage_weights_reject_missing_stage_instead_of_renormalizing() -> None:
+    with pytest.raises(ValueError, match="missing required opening stages"):
+        market_stage_sample_weights((OpeningStage.EARLY, OpeningStage.MID_EARLY))
 
 
 def test_opening_direction_dataset_excludes_whole_incomplete_or_ineligible_markets() -> None:

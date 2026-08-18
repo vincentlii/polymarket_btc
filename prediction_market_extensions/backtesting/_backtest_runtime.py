@@ -8,8 +8,9 @@ from nautilus_trader.backtest.config import BacktestEngineConfig
 from nautilus_trader.backtest.engine import BacktestEngine
 from nautilus_trader.common.component import is_backtest_force_stop
 from nautilus_trader.config import LoggingConfig
+from nautilus_trader.model.data import CustomData, DataType
 from nautilus_trader.model.enums import AccountType, BookType, OmsType
-from nautilus_trader.model.identifiers import TraderId, Venue
+from nautilus_trader.model.identifiers import ClientId, TraderId, Venue
 from nautilus_trader.model.objects import Currency, Money
 from nautilus_trader.risk.config import RiskEngineConfig
 from nautilus_trader.trading.strategy import Strategy
@@ -31,6 +32,9 @@ from prediction_market_extensions.adapters.prediction_market.fill_model import (
 from prediction_market_extensions.backtesting._result_policies import (
     apply_binary_settlement_pnl,
 )
+
+
+BACKTEST_CUSTOM_DATA_CLIENT_ID = ClientId("BACKTEST-CUSTOM")
 
 
 def _record_timestamp_ns(record: object) -> int | None:
@@ -177,12 +181,38 @@ def print_backtest_result_warnings(*, results: Sequence[dict[str, Any]], market_
             print(line)
 
 
-def add_engine_data_by_type(engine: BacktestEngine, records: Sequence[Any]) -> None:
+def add_engine_data_by_type(
+    engine: BacktestEngine,
+    records: Sequence[Any],
+    *,
+    preferred_type_order: Sequence[type[Any]] = (),
+) -> None:
+    """Add homogeneous batches while preserving an explicit stable tie priority."""
+
     records_by_type: dict[type[Any], list[Any]] = {}
     for record in records:
         records_by_type.setdefault(type(record), []).append(record)
-    for typed_records in records_by_type.values():
-        engine.add_data(typed_records, sort=False)
+    ordered_types = tuple(
+        record_type for record_type in preferred_type_order if record_type in records_by_type
+    ) + tuple(
+        record_type for record_type in records_by_type if record_type not in preferred_type_order
+    )
+    for record_type in ordered_types:
+        typed_records = records_by_type[record_type]
+        first_record = typed_records[0]
+        if getattr(first_record, "instrument_id", None) is None:
+            custom_records = (
+                typed_records
+                if isinstance(first_record, CustomData)
+                else [CustomData(DataType(record_type), record) for record in typed_records]
+            )
+            engine.add_data(
+                custom_records,
+                client_id=BACKTEST_CUSTOM_DATA_CLIENT_ID,
+                sort=False,
+            )
+        else:
+            engine.add_data(typed_records, sort=False)
     if records_by_type:
         engine.sort_data()
 

@@ -10,6 +10,12 @@
 
 当前策略是 15 分钟 BTC 市场的 post-only maker，决策 cadence 为 5 秒，并要求连续两个信号。它不是微秒级 taker 抢单策略。更近的部署区域、已建立的连接、无数据 gap、正确的队列/撤单状态和稳定的 P99，通常比将 Python 局部代码再缩短 1 ms 更重要；但 maker 入队和撤单竞争仍受延迟影响，因此必须测量而不是忽略。
 
+当前 `Research Paper` 不执行签名、HMAC 或 HTTP POST，也不声称测量真实 submit
+latency。它固定注入正式场景中的 P99 `base + insert/cancel` 延迟，并在这段时间内
+执行 post-only crossing、queue 与 cancel-race 模拟。这样可以先验证策略状态机和
+数据链路；真实签名、连接复用、venue ack 与 User WebSocket 时延只能在最小 Canary
+中测量，不能从 Paper 看板倒推出。
+
 ## 原帖逐项核对
 
 | 原帖主张 | 判断 | 当前官方事实与本项目处理 |
@@ -141,7 +147,7 @@ WebSocket event / 5s decision tick
 
 官方当前说明 matching engine primary servers 位于 `eu-west-2`；最近的非受限区域是 `eu-west-1`。通过 KYC/KYB 后才可能获得 `eu-west-2` direct co-location。[Trading Overview：Server Infrastructure](https://docs.polymarket.com/trading/overview#server-infrastructure)
 
-截至核对日，官方 geoblock 文档将德国 `DE` 列为 `Blocked`。**因此法兰克福 VPS 不能作为开仓服务器**；订单提交前必须从候选 VPS IP 调用官方 `GET https://polymarket.com/api/geoblock` 并 fail closed。地区限制和法律资格优先于延迟优化。[Geographic Restrictions](https://docs.polymarket.com/api-reference/geoblock)
+截至 2026-07-21 核对，官方 geoblock 文档将德国 `DE` 与英国 `GB` 都列为 `Blocked`。**因此法兰克福和伦敦 VPS 都不能作为开仓服务器**；订单提交前必须从候选 VPS IP 调用官方 `GET https://polymarket.com/api/geoblock` 并 fail closed。地区限制和法律资格优先于延迟优化。[Geographic Restrictions](https://docs.polymarket.com/api-reference/geoblock)
 
 ## 截至 2026-07-16 的不确定性
 
@@ -159,4 +165,122 @@ WebSocket event / 5s decision tick
 4. 不实现“order nonce 预估”；明确区分 L1 API-key nonce、V2 order salt/timestamp 和 L2 request timestamp。
 5. 只在订单参数确定后签名。若以后要维护短寿命 pre-signed price grid，必须先取得 timestamp-age 实测证据并评估泄漏/错误提交风险。
 6. 保留 REST heartbeat、启动检查和重连对账；删除的只能是实时行情与订单状态的 REST 轮询。
-7. 首尔 VPS 首次只运行 collector、Shadow 与 dashboard，并记录至少一周网络分布；未来是否迁往更靠近 `eu-west-2` 的合规区域由实测决定。法兰克福当前官方规则下不可作为开仓部署默认值。
+7. 首尔 VPS 首次只运行 collector、Shadow 与 dashboard，并记录至少一周网络分布；未来是否迁往更靠近 `eu-west-2` 的合规区域由实测决定。法兰克福与伦敦在当前官方规则下都不可作为开仓部署默认值。
+
+### 已实现的控制面边界
+
+`LiveOperationsController` 已将 authenticated heartbeat、完整账户 ledger
+刷新、REST reconciliation、User-channel gap admission、状态和 dashboard
+投影组成独立 cadence 的有界 supervisor。官方 heartbeat 当前可能返回
+历史 `heartbeat_id`，也可能只返回 `{"status":"ok"}`；gateway 对两种明确
+成功响应兼容，其他响应 fail closed。
+
+WAL checkpoint/rotation 只允许在服务已 halt、无未终态 order/trade、无
+reserved notional 且市场状态无歧义时执行。segment 之间保留全局 sequence
+与 hash 连续性，完整读取仍审计全部历史 segment。目标 VPS 必须先运行
+`scripts/btc_vps_preflight.py`，把 release revision、rule epoch、官方
+geoblock、NTP、CLOB clock offset 与 CLOB/Gamma/Binance 延迟分布写入不可变
+receipt；任何失败都不能启用后续服务。
+
+## 2026-07-20 回放执行契约补充
+
+历史 maker 结论不再依赖单一的“悲观场景”。正式证据必须同时包含四个
+P99 组件：完整/50% `TradeTick` 成交量，分别配合
+`book_before_trade` 与 `trade_before_book` 的同时间戳排序。四个组件必须使用
+相同的 insert/update/cancel latency，开启 Nautilus queue position，并关闭
+maker rebate。50% 成交量只是政策压力，不代表能够从 L2 恢复真实 FIFO。
+
+当前 P99 参数（base 150 ms、insert 50 ms、update 25 ms、cancel 100 ms）仍是
+部署前压力值，不是实测分布。Minimum-size Canary 必须重新测量完整链路并替换
+这些值；在此之前，任何单一组件都带有
+`standalone_strategy_conclusion=false`，不能生成 Maker Go。
+
+正式回放还必须满足以下失败关闭条件：
+
+- 所有订单均为 `post_only`，所有实际 fill 均为 maker；
+- maker commission 与 rebate 都为零；
+- `cancel_rejected`、提前终止或未运行到 `label_available_ts` 均使结果无效；
+- Up/Down 两个结果必须互补，event-level partial fills 必须与 Nautilus
+  order-level 汇总在数量、加权价格和 commission 上一致；
+- 1/3/10/30/60 秒 markout 必须记录其盘口时间与 book age，不能把旧盘口静默
+  当成新报价；
+- 真实引擎 fixture 必须持续覆盖 insert-latency post-only race、cancel-latency
+  partial fill race、multi-layer rejection 和 GTC 最大工作时间。
+
+当前官方费用边界为：maker 不收 trading fee；若做诊断性 rebate 估算，crypto、
+sports 和其他合格类别当前分别使用 20%、15% 和 25% 分成。正式 BTC 结论始终
+禁用 rebate，因为日级 payout、最低累计金额与其他 maker 的钱包级状态无法由
+逐笔历史回放精确恢复。参考 [Fees](https://docs.polymarket.com/trading/fees) 与
+[Maker Rebates](https://docs.polymarket.com/market-makers/maker-rebates)。
+
+## Venue taker-delay policy
+
+Research Paper now treats CLOB `itode` as a required boolean market rule. The
+enabled value maps through policy `clob-itode-250ms-v1`; the 250 ms value is a
+documented venue policy assumption, not a VPS measurement. Both the flag and
+policy ID are hashed into the immutable rule snapshot. Total simulated FAK
+latency is `client_taker_latency + frozen_market_delay`, and reporting preserves
+both components so they cannot be double-counted.
+
+After POST, feed staleness is not a valid cancellation mechanism for the venue
+delay. A gap or unusable book at the match deadline produces invalid execution
+evidence rather than a fabricated cancel or zero fill. Offline replay extends
+its tail by the same frozen server delay and never queries current rules.
+
+## 2026-07-21 Live 执行安全契约
+
+当前实现将“尽量少做热路径工作”约束为一组可恢复、可对账的不变量，而不是以
+牺牲订单身份或持久化证据来换取较小的本地耗时：
+
+1. 只接受精确锁定的 `py-clob-client-v2==1.0.2`、官方
+   `https://clob.polymarket.com` origin、显式提供的 L2 credentials 与已验证的
+   signer/funder/signature type。程序不会在运行中派生或创建 credentials，也不会
+   将 secret、passphrase、private key 或完整认证 payload 写入日志/WAL。
+2. `prepare` 阶段完成 V2 order build/sign，并用官方 builder 本地计算 EIP-712
+   order hash。该 hash 就是 venue order ID；在任何 POST 前先与完整订单意图一起
+   写入 hash-chained WAL 并 `fsync`。
+3. 同一 placement cycle 的多层订单只发一次 `POST /orders`。响应按每张订单独立
+   解析；成功项的 `orderID` 必须等于本地预计算 hash，重复 ID、字段缺失、错误
+   tick/size/market/token 或 mixed-result 语义不一致都会 fail closed。Batch 仍不是
+   原子提交。[Post multiple orders](https://docs.polymarket.com/api-reference/trade/post-multiple-orders)
+4. POST 返回后把每张结果作为第二个 WAL transaction 持久化。正常热路径因此有
+   两次必要的耐久化边界：网络前保存可恢复身份，网络后保存 venue 结果。成功
+   heartbeat 不逐次落 WAL，避免无界写放大；失败与状态变化仍必须持久化。
+5. POST 不自动重试。若连接中断或响应丢失，预计算 hash 允许启动恢复直接查询
+   open orders 与 `GET /order/{orderID}`；可证明的 LIVE、MATCHED、CANCELED、
+   INVALID 等终态会重建本地状态。既不在 open orders，也无法取得终态证明的订单
+   保持 unknown，并立即关闭交易闸门、执行 cancel-all，禁止猜测后重提。
+   [Get single order by ID](https://docs.polymarket.com/api-reference/trade/get-single-order-by-id)
+6. User channel 固定使用
+   `wss://ws-subscriptions-clob.polymarket.com/ws/user`。初次连接可省略 `markets`
+   以订阅账户事件；动态过滤使用 condition IDs。任何 reconnect 或订阅替换都立即
+   标记 gap，在新的 REST reconciliation 完成前不能重新开放下单。Order/trade
+   更新分别按累计数量与 `(trade_id, client_order_id)` 幂等，只有 CONFIRMED fill
+   计入 canary 晋级计数。[User Channel](https://docs.polymarket.com/api-reference/wss/user)
+7. REST order amount 使用官方 6-decimal fixed-math；User WebSocket 的 price/size
+   使用 decimal 字符串。两者在各自边界解析，禁止用同一个隐式缩放规则混读。
+8. 撤单请求、撤单响应、cancel-before/after-fill race 与 heartbeat failure 都是
+   独立状态边界。任何未知提交、User channel gap、terminal trade failure、规则
+   变化或对账失败都会进入只撤单/停机状态，而不是继续接收新 placement cycle。
+9. Research Paper 同时比较直接 FAK 与 maker-to-FAK。直接 FAK 在共享的两次信号
+   确认后等待 P99 taker latency；maker-to-FAK 必须先等待 maker cancel ack，且
+   maker fill 必须为零。两者随后都只使用当时完整 ask depth 执行一次 FAK，并在
+   每个价位计入官方曲线 taker fee、0.5c 滑点、3c 模型不确定性和 3c 最低净 edge。
+   FAK 可部分立即成交，剩余量取消，不得追单或自动重试。
+   [Create Order](https://docs.polymarket.com/trading/orders/create)、
+   [Fees](https://docs.polymarket.com/trading/fees)
+10. 模拟时间不能由下一条行情倒推。若 insert、cancel ack 或 FAK deadline 早于
+    下一条 admitted event，先使用 deadline 当时最后可用的 book 完成状态迁移，
+    再处理后来事件；恰好同 timestamp 时先应用事件，作为保守 tie-break。这样未来
+    的盘口不能改变过去本应发生的 post-only rejection 或 FAK VWAP。同 timestamp
+    的 Up/Down 事件先全部排空，再运行 freshness watchdog，避免中间态误判一腿陈旧；
+    无事件时 50 ms runtime clock 仍持续执行一秒陈旧门槛。
+11. 每个新 execution epoch 都原子保存逐市场 CLOB rule snapshot，包括 token、tick、
+    minimum size、fee curve、observed time 与内容 hash。离线 Paper replay 必须读取该
+    snapshot 和 immutable raw event，并复用实时 `ResearchPaperPortfolio`；不得用当前
+    规则猜测历史执行，也不得另写一套简化策略。
+
+这个实现缩短了正常请求链，但不宣称已经得到真实 VPS P99。订单 build/sign、两次
+WAL `fsync`、socket/HTTP、venue ack、User WebSocket 与 cancel ack 仍需在 Shadow
+及 minimum-size Canary 中分别测量。若磁盘同步成为 P99 瓶颈，应先选择可靠低延迟
+磁盘并做 WAL checkpoint/rotation；不得删除网络前持久化边界。

@@ -7,7 +7,10 @@ import asyncio
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 import json
+from math import ceil
+from numbers import Integral, Real
 from pathlib import Path
+from uuid import uuid4
 
 import httpx
 import numpy as np
@@ -21,6 +24,7 @@ else:
 ensure_repo_root(__file__)
 
 from btc_short_horizon.data import MarketOutcome, MarketWindow, read_market_catalog  # noqa: E402
+from btc_short_horizon.data.storage import sha256_file, write_atomic_json  # noqa: E402
 from btc_short_horizon.research.polymarket_price_history import (  # noqa: E402
     TokenPricePoint,
     fetch_polymarket_price_history,
@@ -29,10 +33,12 @@ from btc_short_horizon.research.opening_proxy import (  # noqa: E402
     OPENING_REGIMES,
     opening_regime_for_elapsed_seconds,
 )
+from btc_short_horizon.research.provenance import git_provenance  # noqa: E402
 
 
 _THRESHOLDS = (0.0, 0.01, 0.02, 0.03, 0.04, 0.05, 0.075, 0.10)
 _REQUIRED_PRICE_COLUMNS = {"token_id", "ts_seconds", "price"}
+_SELECTION_FAMILY_ALPHA = 0.05 / (len(_THRESHOLDS) * len(OPENING_REGIMES))
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -43,7 +49,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--entry-price-buffer", type=float, default=0.01)
     parser.add_argument("--max-price-age-seconds", type=int, default=75)
     parser.add_argument("--min-development-entries", type=int, default=100)
-    parser.add_argument("--bootstrap-resamples", type=int, default=2_000)
+    parser.add_argument("--bootstrap-resamples", type=int, default=10_000)
     parser.add_argument("--max-fetch-concurrency", type=int, default=4)
     parser.add_argument("--minimum-consecutive-signals", type=int, default=2)
     parser.add_argument("--maximum-signal-gap-seconds", type=int, default=5)
@@ -54,6 +60,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     _validate_args(args)
     if args.output_directory.exists():
         raise FileExistsError(f"output directory already exists: {args.output_directory}")
+    code_provenance = git_provenance()
     predictions_path = args.proxy_artifact_directory / "predictions.parquet"
     catalog_path = args.proxy_artifact_directory / "market_catalog.json"
     predictions = pd.read_parquet(predictions_path)
@@ -78,6 +85,13 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         max_concurrency=args.max_fetch_concurrency,
         maximum_prediction_offset_seconds=maximum_prediction_offset_seconds,
     )
+    coverage_path = args.price_cache.with_suffix(f"{args.price_cache.suffix}.coverage.json")
+    source_hashes = {
+        "predictions_sha256": sha256_file(predictions_path),
+        "market_catalog_sha256": sha256_file(catalog_path),
+        "price_cache_sha256": sha256_file(args.price_cache),
+        "price_cache_coverage_sha256": sha256_file(coverage_path),
+    }
     candidates, coverage = _build_candidates(
         predictions=predictions,
         prices=prices,
@@ -169,6 +183,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         "study_type": "opening_market_price_edge_proxy",
         "probability_artifact": str(args.proxy_artifact_directory),
         "price_cache": str(args.price_cache),
+        "source_hashes": source_hashes,
+        "code_provenance": code_provenance,
         "entry_protocol": {
             "one_entry_per_market": True,
             "earliest_qualifying_candidate": True,
@@ -177,6 +193,9 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             "price_fidelity_minutes": 1,
             "minimum_consecutive_signals": args.minimum_consecutive_signals,
             "maximum_signal_gap_seconds": args.maximum_signal_gap_seconds,
+            "bootstrap_resamples": args.bootstrap_resamples,
+            "selection_family_size": len(_THRESHOLDS) * len(OPENING_REGIMES),
+            "selection_family_alpha": _SELECTION_FAMILY_ALPHA,
             "regimes": [regime.value for regime in OPENING_REGIMES],
         },
         "coverage": coverage,
@@ -209,10 +228,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             "Threshold selection uses development OOF only; sealed holdout is evaluated once.",
         ],
     }
-    (output / "metrics.json").write_text(
-        json.dumps(result, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    write_atomic_json(output / "metrics.json", result)
     return result
 
 
@@ -246,52 +262,51 @@ def _load_or_fetch_prices(
     cache_exists = cache_path.is_file()
     if cache_exists:
         cached = pd.read_parquet(cache_path)
-        if not _REQUIRED_PRICE_COLUMNS.issubset(cached.columns):
-            raise ValueError("price cache has an unsupported schema")
+        _validate_price_rows(cached)
     else:
         cached = pd.DataFrame(columns=sorted(_REQUIRED_PRICE_COLUMNS))
-    attempted_tokens = _price_cache_coverage(coverage_path)
-    if cache_exists and not attempted_tokens:
-        # The cache file is replaced only after every request has completed.  A
-        # pre-manifest cache therefore proves this study's full token set was attempted.
-        attempted_tokens = set(expected_tokens)
+    cached_tokens = set(cached["token_id"].astype(str).unique().tolist())
+    manifest_tokens = _price_cache_coverage(coverage_path)
+    if manifest_tokens - cached_tokens:
+        raise ValueError("price cache coverage claims tokens which have no cached evidence")
+    complete_tokens = manifest_tokens | cached_tokens
     missing_markets = tuple(
         market
         for market in sorted(markets, key=lambda item: item.t0)
-        if market.up_token_id not in attempted_tokens
-        or market.down_token_id not in attempted_tokens
+        if market.up_token_id not in complete_tokens or market.down_token_id not in complete_tokens
     )
     if missing_markets:
         fetched = asyncio.run(
             _fetch_market_price_batches(
                 markets=missing_markets,
-                cached_tokens=attempted_tokens,
+                cached_tokens=complete_tokens,
                 max_concurrency=max_concurrency,
                 maximum_prediction_offset_seconds=maximum_prediction_offset_seconds,
             )
         )
-        new_rows = pd.DataFrame(asdict(point) for point in fetched)
-        cached = new_rows if cached.empty else pd.concat((cached, new_rows), ignore_index=True)
-        cached = cached.drop_duplicates(
-            subset=["token_id", "ts_seconds", "price"],
-        ).sort_values(["token_id", "ts_seconds", "price"])
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = cache_path.with_suffix(f"{cache_path.suffix}.tmp")
-        cached.to_parquet(temporary, index=False)
-        temporary.replace(cache_path)
-        attempted_tokens.update(
-            token_id
-            for market in missing_markets
-            for token_id in (market.up_token_id, market.down_token_id)
+        new_rows = pd.DataFrame(
+            (asdict(point) for point in fetched),
+            columns=sorted(_REQUIRED_PRICE_COLUMNS),
         )
-    if attempted_tokens and not coverage_path.is_file():
-        coverage_path.write_text(
-            json.dumps(
-                {"attempted_token_ids": sorted(attempted_tokens)},
-                separators=(",", ":"),
-            ),
-            encoding="utf-8",
-        )
+        if not new_rows.empty:
+            _validate_price_rows(new_rows)
+            cached = new_rows if cached.empty else pd.concat((cached, new_rows), ignore_index=True)
+            _validate_price_rows(cached)
+            cached = cached.drop_duplicates(
+                subset=["token_id", "ts_seconds", "price"],
+            ).sort_values(["token_id", "ts_seconds", "price"])
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = cache_path.with_name(f".{cache_path.name}.{uuid4().hex}.tmp")
+            try:
+                cached.to_parquet(temporary, index=False)
+                temporary.replace(cache_path)
+            finally:
+                temporary.unlink(missing_ok=True)
+        complete_tokens = set(cached["token_id"].astype(str).unique().tolist())
+    write_atomic_json(
+        coverage_path,
+        {"version": 2, "complete_token_ids": sorted(complete_tokens)},
+    )
     return cached[cached["token_id"].astype(str).isin(expected_tokens)].copy()
 
 
@@ -299,10 +314,60 @@ def _price_cache_coverage(path: Path) -> set[str]:
     if not path.is_file():
         return set()
     payload = json.loads(path.read_text(encoding="utf-8"))
-    values = payload.get("attempted_token_ids") if isinstance(payload, dict) else None
-    if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
-        raise ValueError("price cache coverage manifest is invalid")
+    if isinstance(payload, dict) and "attempted_token_ids" in payload:
+        return set()
+    values = payload.get("complete_token_ids") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict) or payload.get("version") != 2:
+        values = None
+    if not isinstance(values, list) or any(
+        not isinstance(value, str) or not value or value.strip() != value for value in values
+    ):
+        raise ValueError("price cache coverage manifest is invalid or obsolete")
+    if len(values) != len(set(values)):
+        raise ValueError("price cache coverage token IDs must be unique")
     return set(values)
+
+
+def _validate_price_rows(frame: pd.DataFrame) -> None:
+    if not _REQUIRED_PRICE_COLUMNS.issubset(frame.columns):
+        raise ValueError("price cache has an unsupported schema")
+    if frame.empty:
+        return
+    token_ids = frame["token_id"]
+    if token_ids.isna().any() or any(
+        not isinstance(value, str) or not value or value.strip() != value
+        for value in token_ids.tolist()
+    ):
+        raise ValueError("price cache token IDs must be non-empty and trimmed")
+    raw_timestamps = frame["ts_seconds"].to_numpy()
+    raw_prices = frame["price"].to_numpy()
+    if np.issubdtype(raw_timestamps.dtype, np.bool_) or not np.issubdtype(
+        raw_timestamps.dtype, np.number
+    ):
+        raise ValueError("price cache timestamps must use a numeric dtype")
+    if np.issubdtype(raw_prices.dtype, np.bool_) or not np.issubdtype(raw_prices.dtype, np.number):
+        raise ValueError("price cache probabilities must use a numeric dtype")
+    timestamps = np.asarray(raw_timestamps, dtype=float)
+    prices = np.asarray(raw_prices, dtype=float)
+    if not np.isfinite(timestamps).all() or np.any(timestamps != np.floor(timestamps)):
+        raise ValueError("price cache timestamps must be finite integer seconds")
+    if np.any(timestamps < 0.0):
+        raise ValueError("price cache timestamps must be non-negative")
+    if not np.isfinite(prices).all() or np.any((prices <= 0.0) | (prices >= 1.0)):
+        raise ValueError("price cache probabilities must be finite and lie in (0, 1)")
+    conflicts = (
+        pd.DataFrame(
+            {
+                "token_id": token_ids.to_numpy(),
+                "ts_seconds": timestamps.astype(np.int64),
+                "_numeric_price": prices,
+            }
+        )
+        .groupby(["token_id", "ts_seconds"], dropna=False)["_numeric_price"]
+        .nunique()
+    )
+    if (conflicts > 1).any():
+        raise ValueError("price cache contains conflicting prices for one token timestamp")
 
 
 async def _fetch_market_price_batches(
@@ -390,11 +455,15 @@ def _build_candidates(
             down_ts, down_price = down[down_index]
             if max(decision_ts - up_ts, decision_ts - down_ts) > max_price_age_seconds:
                 continue
-            up_entry = min(0.999999, up_price + entry_price_buffer)
-            down_entry = min(0.999999, down_price + entry_price_buffer)
+            up_entry = up_price + entry_price_buffer
+            down_entry = down_price + entry_price_buffer
+            if up_entry >= 1.0 and down_entry >= 1.0:
+                continue
             up_edge = float(prediction.p_up) - up_entry
             down_edge = 1.0 - float(prediction.p_up) - down_entry
-            side = "up" if up_edge >= down_edge else "down"
+            side = (
+                "up" if down_entry >= 1.0 or (up_entry < 1.0 and up_edge >= down_edge) else "down"
+            )
             entry_price = up_entry if side == "up" else down_entry
             predicted_edge = up_edge if side == "up" else down_edge
             outcome = int(prediction.label) if side == "up" else 1 - int(prediction.label)
@@ -439,9 +508,25 @@ def _select_one_entry_per_market(
     threshold: float,
     minimum_consecutive_signals: int = 1,
     maximum_signal_gap_seconds: int = 5,
+    thresholds_by_regime: Mapping[str, float] | None = None,
 ) -> pd.DataFrame:
-    if minimum_consecutive_signals < 1 or maximum_signal_gap_seconds < 1:
+    if any(
+        isinstance(value, bool) or not isinstance(value, Integral) or value < 1
+        for value in (minimum_consecutive_signals, maximum_signal_gap_seconds)
+    ):
         raise ValueError("signal persistence controls must be >= 1")
+    if isinstance(threshold, bool) or not isinstance(threshold, Real) or np.isnan(float(threshold)):
+        raise ValueError("threshold must be numeric and not NaN")
+    if thresholds_by_regime is not None and any(
+        not isinstance(regime, str)
+        or not regime
+        or regime.strip() != regime
+        or isinstance(regime_threshold, bool)
+        or not isinstance(regime_threshold, Real)
+        or not np.isfinite(float(regime_threshold))
+        for regime, regime_threshold in thresholds_by_regime.items()
+    ):
+        raise ValueError("regime thresholds must map valid names to finite values")
     selected_indexes: list[int] = []
     maximum_gap_ns = maximum_signal_gap_seconds * 1_000_000_000
     ordered = candidates.sort_values(["market_slug", "decision_ts_ns"])
@@ -451,7 +536,12 @@ def _select_one_entry_per_market(
         previous_ts_ns: int | None = None
         for row in group.itertuples():
             decision_ts_ns = int(row.decision_ts_ns)
-            if float(row.predicted_edge) < threshold:
+            row_threshold = (
+                thresholds_by_regime.get(str(row.regime))
+                if thresholds_by_regime is not None
+                else threshold
+            )
+            if row_threshold is None or float(row.predicted_edge) < row_threshold:
                 run_length = 0
                 previous_side = None
                 previous_ts_ns = None
@@ -486,15 +576,12 @@ def _select_one_entry_per_market_by_regime(
         return candidates.copy()
     if "regime" not in candidates.columns:
         raise ValueError("regime thresholds require a regime column")
-    thresholds = candidates["regime"].map(thresholds_by_regime)
-    eligible = candidates.loc[
-        thresholds.notna() & (candidates["predicted_edge"] >= thresholds),
-    ].copy()
     return _select_one_entry_per_market(
-        eligible,
+        candidates,
         threshold=float("-inf"),
         minimum_consecutive_signals=minimum_consecutive_signals,
         maximum_signal_gap_seconds=maximum_signal_gap_seconds,
+        thresholds_by_regime=thresholds_by_regime,
     )
 
 
@@ -509,14 +596,15 @@ def _select_positive_confidence_threshold(
         item
         for item in sweep
         if int(item["entry_count"]) >= min_development_entries
-        and float(item["realized_ev_ci95_lower"]) > 0.0
+        and int(item["utc_day_count"]) >= 2
+        and float(item["selection_adjusted_ev_ci_lower"]) > 0.0
     ]
     if not selectable:
         return None
     return max(
         selectable,
         key=lambda item: (
-            float(item["realized_ev_ci95_lower"]),
+            float(item["selection_adjusted_ev_ci_lower"]),
             float(item["realized_ev_per_share"]),
             -float(item["threshold"]),
         ),
@@ -551,6 +639,7 @@ def _select_regime_thresholds(
                         requested_markets=requested_markets,
                         bootstrap_resamples=bootstrap_resamples,
                         seed=17 + regime_index,
+                        selection_alpha=_SELECTION_FAMILY_ALPHA,
                     ),
                 }
             )
@@ -592,11 +681,22 @@ def _sensitivity_entries(
     minimum_consecutive_signals: int = 1,
     maximum_signal_gap_seconds: int = 5,
 ) -> pd.DataFrame:
+    if (
+        isinstance(additional_entry_cost, bool)
+        or not isinstance(additional_entry_cost, Real)
+        or not np.isfinite(float(additional_entry_cost))
+        or not 0.0 <= additional_entry_cost < 1.0
+    ):
+        raise ValueError("additional_entry_cost must be finite and lie in [0, 1)")
+    if (
+        isinstance(max_price_age_seconds, bool)
+        or not isinstance(max_price_age_seconds, Integral)
+        or max_price_age_seconds < 0
+    ):
+        raise ValueError("max_price_age_seconds must be a non-negative integer")
     adjusted = candidates[candidates["price_age_seconds"] <= max_price_age_seconds].copy()
-    adjusted["entry_price"] = np.minimum(
-        0.999999,
-        adjusted["entry_price"] + additional_entry_cost,
-    )
+    adjusted["entry_price"] += additional_entry_cost
+    adjusted = adjusted[adjusted["entry_price"] < 1.0].copy()
     adjusted["predicted_edge"] -= additional_entry_cost
     adjusted["pnl_per_share"] = adjusted["outcome"] - adjusted["entry_price"]
     if thresholds_by_regime is not None:
@@ -665,7 +765,24 @@ def _entry_metrics(
     requested_markets: int,
     bootstrap_resamples: int,
     seed: int,
+    selection_alpha: float | None = None,
 ) -> dict[str, object]:
+    if (
+        isinstance(requested_markets, bool)
+        or not isinstance(requested_markets, Integral)
+        or requested_markets < 1
+    ):
+        raise ValueError("requested_markets must be a positive integer")
+    if (
+        isinstance(bootstrap_resamples, bool)
+        or not isinstance(bootstrap_resamples, Integral)
+        or bootstrap_resamples < 100
+    ):
+        raise ValueError("bootstrap_resamples must be an integer >= 100")
+    if isinstance(seed, bool) or not isinstance(seed, Integral):
+        raise ValueError("bootstrap seed must be an integer")
+    if selection_alpha is not None and not 0.0 < selection_alpha < 0.05:
+        raise ValueError("selection_alpha must lie in (0, 0.05)")
     if entries.empty:
         return {
             "entry_count": 0,
@@ -673,23 +790,72 @@ def _entry_metrics(
             "realized_ev_per_share": 0.0,
             "realized_ev_ci95_lower": 0.0,
             "realized_ev_ci95_upper": 0.0,
+            "utc_day_count": 0,
+            "bootstrap_block_days": 0,
+            "selection_adjusted_ev_ci_lower": 0.0,
+            "selection_confidence_level": (
+                1.0 - selection_alpha if selection_alpha is not None else None
+            ),
         }
     pnl = entries["pnl_per_share"].to_numpy(dtype=float)
+    if not np.isfinite(pnl).all():
+        raise ValueError("entry PnL values must be finite")
     dates = pd.to_datetime(entries["decision_ts_ns"], unit="ns", utc=True).dt.date
     daily = pd.DataFrame({"date": dates, "pnl": pnl}).groupby("date")["pnl"].agg(["sum", "count"])
     if len(daily) == 1:
         lower = upper = float(np.mean(pnl))
+        selection_lower = lower
+        effective_block_days = 1
     else:
         rng = np.random.default_rng(seed)
-        choices = rng.integers(0, len(daily), size=(bootstrap_resamples, len(daily)))
-        sums = daily["sum"].to_numpy()[choices].sum(axis=1)
-        counts = daily["count"].to_numpy()[choices].sum(axis=1)
-        bootstrap_ev = sums / counts
+        first_day = daily.index.min()
+        last_day = daily.index.max()
+        calendar_day_count = (last_day - first_day).days + 1
+        sums_by_day = np.zeros(calendar_day_count, dtype=float)
+        counts_by_day = np.zeros(calendar_day_count, dtype=float)
+        for day, row in daily.iterrows():
+            position = (day - first_day).days
+            sums_by_day[position] = float(row["sum"])
+            counts_by_day[position] = float(row["count"])
+        effective_block_days = min(7, max(1, calendar_day_count // 2))
+        block_count = ceil(calendar_day_count / effective_block_days)
+        block_offsets = np.arange(effective_block_days, dtype=int)
+        bootstrap_chunks: list[np.ndarray] = []
+        remaining = int(bootstrap_resamples)
+        for _ in range(100):
+            draw_count = min(max(remaining * 2, 256), 2_048)
+            starts = rng.integers(
+                0,
+                calendar_day_count,
+                size=(draw_count, block_count),
+            )
+            choices = ((starts[:, :, None] + block_offsets) % calendar_day_count).reshape(
+                draw_count, -1
+            )[:, :calendar_day_count]
+            sums = sums_by_day[choices].sum(axis=1)
+            counts = counts_by_day[choices].sum(axis=1)
+            valid = counts > 0.0
+            if np.any(valid):
+                values = (sums[valid] / counts[valid])[:remaining]
+                bootstrap_chunks.append(values)
+                remaining -= len(values)
+            if remaining == 0:
+                break
+        if remaining:
+            raise ValueError("bootstrap could not sample entries from sparse research dates")
+        bootstrap_ev = np.concatenate(bootstrap_chunks)
         lower, upper = np.quantile(bootstrap_ev, (0.025, 0.975)).tolist()
+        selection_lower = (
+            float(np.quantile(bootstrap_ev, selection_alpha / 2.0))
+            if selection_alpha is not None
+            else float(lower)
+        )
     positive = float(pnl[pnl > 0.0].sum())
     negative = float(-pnl[pnl < 0.0].sum())
     return {
         "entry_count": len(entries),
+        "utc_day_count": len(daily),
+        "bootstrap_block_days": effective_block_days,
         "market_coverage": len(entries) / requested_markets,
         "win_rate": float(entries["outcome"].mean()),
         "average_entry_price": float(entries["entry_price"].mean()),
@@ -697,25 +863,32 @@ def _entry_metrics(
         "realized_ev_per_share": float(np.mean(pnl)),
         "realized_ev_ci95_lower": float(lower),
         "realized_ev_ci95_upper": float(upper),
+        "selection_adjusted_ev_ci_lower": float(selection_lower),
+        "selection_confidence_level": (
+            1.0 - selection_alpha if selection_alpha is not None else None
+        ),
         "profit_factor": positive / negative if negative > 0.0 else None,
     }
 
 
 def _validate_args(args: argparse.Namespace) -> None:
-    if not 0.0 <= args.entry_price_buffer < 0.25:
+    if isinstance(args.entry_price_buffer, bool) or not 0.0 <= args.entry_price_buffer < 0.25:
         raise ValueError("entry_price_buffer must be in [0, 0.25)")
-    if (
-        min(
-            args.max_price_age_seconds,
-            args.min_development_entries,
-            args.bootstrap_resamples,
-            args.max_fetch_concurrency,
-            args.minimum_consecutive_signals,
-            args.maximum_signal_gap_seconds,
-        )
-        < 1
+    controls = (
+        args.max_price_age_seconds,
+        args.min_development_entries,
+        args.bootstrap_resamples,
+        args.max_fetch_concurrency,
+        args.minimum_consecutive_signals,
+        args.maximum_signal_gap_seconds,
+    )
+    if any(
+        isinstance(value, bool) or not isinstance(value, Integral) or value < 1
+        for value in controls
     ):
         raise ValueError("integer research controls must be >= 1")
+    if args.bootstrap_resamples < 10_000:
+        raise ValueError("formal threshold selection requires bootstrap_resamples >= 10000")
 
 
 def _validate_predictions(predictions: pd.DataFrame) -> None:
@@ -726,6 +899,38 @@ def _validate_predictions(predictions: pd.DataFrame) -> None:
         raise ValueError("prediction artifact must contain development OOF and sealed holdout")
     if predictions["sample_id"].duplicated().any():
         raise ValueError("prediction sample IDs must be unique")
+    if predictions.empty:
+        raise ValueError("prediction artifact must not be empty")
+    sample_ids = predictions["sample_id"].tolist()
+    if any(
+        not isinstance(value, str) or not value or value.strip() != value for value in sample_ids
+    ):
+        raise ValueError("prediction sample IDs must be non-empty and trimmed")
+    raw_timestamps = predictions["feature_ts_ns"].to_numpy()
+    if np.issubdtype(raw_timestamps.dtype, np.bool_) or not np.issubdtype(
+        raw_timestamps.dtype, np.integer
+    ):
+        raise ValueError("prediction timestamps must use an integer nanosecond type")
+    timestamps = raw_timestamps.astype(np.int64, copy=False)
+    probabilities = pd.to_numeric(predictions["p_up"], errors="coerce").to_numpy(dtype=float)
+    raw_labels = predictions["label"].to_numpy()
+    if np.issubdtype(raw_labels.dtype, np.bool_) or not (
+        np.issubdtype(raw_labels.dtype, np.integer) or np.issubdtype(raw_labels.dtype, np.floating)
+    ):
+        raise ValueError("prediction labels must be numeric binary values")
+    labels = np.asarray(raw_labels, dtype=float)
+    if np.any(timestamps < 0.0):
+        raise ValueError("prediction timestamps must be non-negative")
+    if not np.isfinite(probabilities).all() or np.any(
+        (probabilities <= 0.0) | (probabilities >= 1.0)
+    ):
+        raise ValueError("prediction probabilities must be finite and lie in (0, 1)")
+    if not np.isfinite(labels).all() or np.any((labels != 0.0) & (labels != 1.0)):
+        raise ValueError("prediction labels must be binary")
+    for sample_id, timestamp in zip(sample_ids, timestamps, strict=True):
+        prefix, separator, suffix = sample_id.rpartition("@")
+        if not prefix or not separator or not suffix.isdigit() or int(suffix) != int(timestamp):
+            raise ValueError("prediction sample_id timestamps must match feature_ts_ns")
 
 
 def _validate_market_labels(*, predictions: pd.DataFrame, markets: Sequence[MarketWindow]) -> None:
@@ -736,6 +941,9 @@ def _validate_market_labels(*, predictions: pd.DataFrame, markets: Sequence[Mark
         labels = set(predictions.loc[predictions["market_slug"] == market.slug, "label"].tolist())
         if labels != {expected}:
             raise ValueError(f"prediction label disagrees with catalog for {market.slug!r}")
+        splits = set(predictions.loc[predictions["market_slug"] == market.slug, "split"].tolist())
+        if len(splits) != 1:
+            raise ValueError(f"prediction market crosses research splits: {market.slug!r}")
 
 
 def main(argv: Sequence[str] | None = None) -> int:

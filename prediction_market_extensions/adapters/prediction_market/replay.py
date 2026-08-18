@@ -18,13 +18,58 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
+from hashlib import sha256
+import json
 from typing import Any
 
 from nautilus_trader.model.enums import AccountType, BookType, OmsType
 from nautilus_trader.model.identifiers import InstrumentId, Venue
+
+
+def replay_records_sha256(records: Sequence[Any]) -> str:
+    """Return an order-independent digest of exact serialized replay records."""
+
+    serialized_records: list[bytes] = []
+    for record in records:
+        serializer = getattr(type(record), "to_dict", None)
+        if not callable(serializer):
+            raise TypeError(f"replay record {type(record).__name__} does not support to_dict")
+        payload = serializer(record)
+        if not isinstance(payload, Mapping):
+            raise TypeError(f"replay record {type(record).__name__} did not serialize to a mapping")
+        serialized_records.append(
+            json.dumps(
+                {"record_type": type(record).__name__, "payload": payload},
+                allow_nan=False,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        )
+    digest = sha256()
+    for serialized in sorted(serialized_records):
+        digest.update(len(serialized).to_bytes(8, byteorder="big"))
+        digest.update(serialized)
+    return digest.hexdigest()
+
+
+def verify_replay_records_sha256(records: Sequence[Any], expected: str) -> str:
+    """Fail closed unless loaded replay records match an audited digest."""
+
+    normalized = expected.strip().casefold() if isinstance(expected, str) else ""
+    if len(normalized) != 64 or any(
+        character not in "0123456789abcdef" for character in normalized
+    ):
+        raise ValueError("expected replay-record digest must be a SHA-256 hexadecimal digest")
+    actual = replay_records_sha256(records)
+    if actual != normalized:
+        raise ValueError(
+            f"loaded replay records SHA-256 mismatch: expected {normalized}, got {actual}"
+        )
+    return actual
 
 
 @dataclass(frozen=True)
@@ -75,7 +120,7 @@ class ReplayEngineProfile:
     oms_type: OmsType
     account_type: AccountType
     base_currency: Any
-    fee_model_factory: Any
+    fee_model_factory: Callable[..., Any]
     fill_model_mode: str = "taker"
     book_type: BookType = BookType.L1_MBP
     liquidity_consumption: bool = False
@@ -160,4 +205,6 @@ __all__ = [
     "ReplayEngineProfile",
     "ReplayLoadRequest",
     "ReplayWindow",
+    "replay_records_sha256",
+    "verify_replay_records_sha256",
 ]

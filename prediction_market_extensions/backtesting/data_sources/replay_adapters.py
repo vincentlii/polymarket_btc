@@ -35,6 +35,7 @@ from prediction_market_extensions.adapters.prediction_market import (
     ReplayEngineProfile,
     ReplayLoadRequest,
     ReplayWindow,
+    verify_replay_records_sha256,
 )
 from prediction_market_extensions.adapters.prediction_market.backtest_utils import (
     infer_realized_outcome,
@@ -492,7 +493,10 @@ async def _load_trade_ticks(
             return ordered_pmxt_trades
     for current_day in _trade_days_for_window(start_utc, end_utc):
         day_start = current_day
-        day_end = min(current_day + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1), end_utc)
+        day_end = min(
+            current_day + pd.Timedelta(86_399_999_999_999, unit="ns"),
+            end_utc,
+        )
         cache_path = _trade_cache_path(loader=loader, date=current_day)
         day_trades: tuple[TradeTick, ...]
         started_at = time.perf_counter()
@@ -955,6 +959,12 @@ class _BaseReplayAdapter(HistoricalReplayAdapter):
         metadata: dict[str, Any],
         requested_window: ReplayWindow,
     ) -> LoadedReplay:
+        expected_records_sha256 = metadata.get("expected_records_sha256")
+        if expected_records_sha256 is not None:
+            metadata["loaded_records_sha256"] = verify_replay_records_sha256(
+                records,
+                expected_records_sha256,
+            )
         return LoadedReplay(
             replay=replay,
             instrument=instrument,

@@ -32,35 +32,25 @@ from prediction_market_extensions.adapters.polymarket.parsing import (
 )
 
 _CRYPTO_MAKER_REBATE_RATE = Decimal("0.20")
+_SPORTS_MAKER_REBATE_RATE = Decimal("0.15")
 _DEFAULT_FEE_ENABLED_MAKER_REBATE_RATE = Decimal("0.25")
 _REBATE_QUANTUM = Decimal("0.00001")
-_CRYPTO_LABELS = frozenset({"crypto"})
-_FEE_ENABLED_NON_CRYPTO_LABELS = frozenset(
-    {
-        "culture",
-        "economics",
-        "finance",
-        "general",
-        "mentions",
-        "other",
-        "other general",
-        "politics",
-        "sports",
-        "tech",
-        "weather",
-    }
-)
+_MAKER_REBATE_RATE_BY_LABEL = {
+    "crypto": _CRYPTO_MAKER_REBATE_RATE,
+    "sports": _SPORTS_MAKER_REBATE_RATE,
+    "culture": _DEFAULT_FEE_ENABLED_MAKER_REBATE_RATE,
+    "economics": _DEFAULT_FEE_ENABLED_MAKER_REBATE_RATE,
+    "finance": _DEFAULT_FEE_ENABLED_MAKER_REBATE_RATE,
+    "general": _DEFAULT_FEE_ENABLED_MAKER_REBATE_RATE,
+    "mentions": _DEFAULT_FEE_ENABLED_MAKER_REBATE_RATE,
+    "other": _DEFAULT_FEE_ENABLED_MAKER_REBATE_RATE,
+    "other general": _DEFAULT_FEE_ENABLED_MAKER_REBATE_RATE,
+    "politics": _DEFAULT_FEE_ENABLED_MAKER_REBATE_RATE,
+    "tech": _DEFAULT_FEE_ENABLED_MAKER_REBATE_RATE,
+    "weather": _DEFAULT_FEE_ENABLED_MAKER_REBATE_RATE,
+}
 _CRYPTO_FEE_RATE_BPS = frozenset({Decimal("70"), Decimal("700")})
-_NON_CRYPTO_FEE_RATE_BPS = frozenset(
-    {
-        Decimal("30"),
-        Decimal("40"),
-        Decimal("50"),
-        Decimal("300"),
-        Decimal("400"),
-        Decimal("500"),
-    }
-)
+_UNAMBIGUOUS_25_PERCENT_REBATE_FEE_RATE_BPS = frozenset({Decimal("40"), Decimal("400")})
 
 
 def _normalize_label(value: object) -> str | None:
@@ -130,23 +120,27 @@ def infer_maker_rebate_rate(
     """
     Infer the maker rebate share for a fee-enabled Polymarket fill.
 
-    Polymarket's current fee schedule pays a 20% maker rebate for crypto
-    markets and 25% for other fee-enabled categories. Fee-free or
-    unclassified markets receive no rebate credit because there is no reliable
-    way to identify a rebate share.
+    Polymarket's current fee schedule pays 20% for crypto, 15% for sports,
+    and 25% for the remaining fee-enabled categories. Fee-free, conflicting,
+    or unclassified metadata receives no credit.
     """
     if fee_rate_bps <= 0:
         return Decimal("0")
 
     labels = _market_labels(market_info)
-    if labels & _CRYPTO_LABELS:
-        return _CRYPTO_MAKER_REBATE_RATE
-    if labels & _FEE_ENABLED_NON_CRYPTO_LABELS:
-        return _DEFAULT_FEE_ENABLED_MAKER_REBATE_RATE
+    classified_rates = {
+        _MAKER_REBATE_RATE_BY_LABEL[label]
+        for label in labels
+        if label in _MAKER_REBATE_RATE_BY_LABEL
+    }
+    if len(classified_rates) == 1:
+        return classified_rates.pop()
+    if classified_rates:
+        return Decimal("0")
 
     if fee_rate_bps in _CRYPTO_FEE_RATE_BPS:
         return _CRYPTO_MAKER_REBATE_RATE
-    if fee_rate_bps in _NON_CRYPTO_FEE_RATE_BPS:
+    if fee_rate_bps in _UNAMBIGUOUS_25_PERCENT_REBATE_FEE_RATE_BPS:
         return _DEFAULT_FEE_ENABLED_MAKER_REBATE_RATE
 
     return Decimal("0")
@@ -163,9 +157,10 @@ def calculate_maker_rebate(
     Calculate a fill-level maker rebate estimate in quote currency.
 
     Polymarket distributes actual rebates daily from each market's rebate pool.
-    For backtests, a per-fill credit equal to the documented rebate share of
-    the fill's fee-equivalent value preserves the aggregate economics without
-    pretending to know other makers' wallet-level state.
+    For sensitivity backtests, a per-fill credit equal to the documented
+    rebate share of the fill's fee-equivalent value approximates the aggregate
+    economics. It does not model daily payout timing or the minimum accrued
+    payout. Formal BTC evidence disables this credit.
     """
     if fee_rate_bps <= 0 or maker_rebate_rate <= 0:
         return 0.0
@@ -209,6 +204,8 @@ class PolymarketFeeModel(FeeModel):
     """
 
     def __init__(self, *, maker_rebates_enabled: bool = True) -> None:
+        if not isinstance(maker_rebates_enabled, bool):
+            raise TypeError("maker_rebates_enabled must be bool")
         self._maker_rebates_enabled = maker_rebates_enabled
 
     def get_commission(self, order, fill_qty, fill_px, instrument) -> Money:
@@ -244,10 +241,17 @@ class PolymarketFeeModel(FeeModel):
         fill_quantity = Decimal(str(fill_qty))
         fill_price = Decimal(str(fill_px))
 
-        if order.order_type == OrderType.LIMIT:
-            # The fee callback does not expose realized maker/taker liquidity.
-            # Repo-owned Polymarket book backtests use passive-posting limit
-            # orders, so treat their limit fills as maker-side rebates.
+        liquidity_side = getattr(order, "liquidity_side", LiquiditySide.NO_LIQUIDITY_SIDE)
+        post_only = getattr(order, "is_post_only", getattr(order, "post_only", False))
+        if callable(post_only):
+            post_only = post_only()
+        is_guaranteed_maker = liquidity_side == LiquiditySide.MAKER or (
+            liquidity_side == LiquiditySide.NO_LIQUIDITY_SIDE
+            and order.order_type == OrderType.LIMIT
+            and bool(post_only)
+        )
+
+        if is_guaranteed_maker:
             if not self._maker_rebates_enabled:
                 return Money(Decimal("0"), instrument.quote_currency)
 

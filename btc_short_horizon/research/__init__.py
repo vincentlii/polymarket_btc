@@ -6,6 +6,7 @@ from btc_short_horizon.research.walk_forward import (
     WalkForwardFold,
     WalkForwardPlan,
     build_walk_forward_plan,
+    direction_horizon_protocols,
     select_complete_group_indices,
 )
 from btc_short_horizon.research.pipeline import (
@@ -62,8 +63,37 @@ from btc_short_horizon.research.opening_model_gate import (
     target_confidence_bands,
     weighted_calibration_error,
 )
+from btc_short_horizon.research.opening_market_relative import (
+    MarketRelativeFeatureFamily,
+    OpeningMarketRelativeDatasetBuild,
+    build_opening_market_relative_datasets,
+    opening_market_relative_feature_schema,
+)
+from btc_short_horizon.research.opening_market_relative_research import (
+    MARKET_RELATIVE_LOGISTIC_ABLATIONS,
+    MarketRelativeAblation,
+    MarketRelativeCandidateMetrics,
+    MarketRelativeDevelopmentRun,
+    MarketRelativeSealedHoldoutRun,
+    build_market_relative_artifact_contract,
+    evaluate_market_relative_research_gate,
+    market_relative_development_report,
+    run_market_relative_development,
+    run_market_relative_sealed_holdout,
+)
+from btc_short_horizon.research.lightgbm_tuning import (
+    LightGBMSearchCandidate,
+    controlled_lightgbm_grid,
+)
+from btc_short_horizon.research.stage_aware_models import (
+    StageModelRuns,
+    run_stage_walk_forward_models,
+    sample_elapsed_seconds,
+    select_stage_dataset,
+)
 
 __all__ = [
+    "MARKET_RELATIVE_LOGISTIC_ABLATIONS",
     "CalibrationBinEvidence",
     "CandidateEvaluation",
     "CandidatePairedEvidence",
@@ -73,9 +103,16 @@ __all__ = [
     "GateDecision",
     "HoldoutPrediction",
     "MakerGateEvidence",
+    "MarketRelativeAblation",
+    "MarketRelativeCandidateMetrics",
+    "MarketRelativeDevelopmentRun",
+    "MarketRelativeSealedHoldoutRun",
+    "LightGBMSearchCandidate",
+    "MarketRelativeFeatureFamily",
     "OofPrediction",
     "OpeningMispricingGateEvidence",
     "OpeningMarketObservation",
+    "OpeningMarketRelativeDatasetBuild",
     "OpeningDirectionDatasetBuild",
     "ForwardBookEventLoad",
     "ForwardFeatureSourceSummary",
@@ -91,7 +128,10 @@ __all__ = [
     "WalkForwardFold",
     "WalkForwardPlan",
     "build_walk_forward_plan",
+    "direction_horizon_protocols",
     "build_opening_market_observations",
+    "build_opening_market_relative_datasets",
+    "build_market_relative_artifact_contract",
     "build_opening_proxy_prediction",
     "build_opening_direction_dataset",
     "build_direction_gate_artifact",
@@ -107,9 +147,19 @@ __all__ = [
     "evaluate_direction_gate",
     "evaluate_maker_gate",
     "evaluate_opening_mispricing_gate",
+    "evaluate_market_relative_research_gate",
+    "market_relative_development_report",
     "calibration_slope",
     "paired_daily_block_bootstrap",
     "select_direction_candidate",
     "target_confidence_bands",
     "weighted_calibration_error",
+    "opening_market_relative_feature_schema",
+    "run_market_relative_development",
+    "run_market_relative_sealed_holdout",
+    "controlled_lightgbm_grid",
+    "StageModelRuns",
+    "run_stage_walk_forward_models",
+    "sample_elapsed_seconds",
+    "select_stage_dataset",
 ]

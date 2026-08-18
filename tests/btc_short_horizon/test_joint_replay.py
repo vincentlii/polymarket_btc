@@ -11,11 +11,15 @@ from prediction_market_extensions.adapters.prediction_market import (
     ReplayCoverageStats,
     ReplayWindow,
 )
-from prediction_market_extensions.backtesting._execution_config import ExecutionModelConfig
+from prediction_market_extensions.backtesting._execution_config import (
+    ExecutionModelConfig,
+    StaticLatencyConfig,
+)
 from prediction_market_extensions.backtesting._market_data_config import MarketDataConfig
 
 from btc_short_horizon.backtest import (
     BtcJointReplayConfig,
+    BtcReplayBoundary,
     build_btc_joint_backtest,
     collect_btc_order_events,
     to_opening_mispricing_signal,
@@ -44,14 +48,14 @@ def _market() -> MarketWindow:
     )
 
 
-def _signal() -> object:
+def _signal(offset_seconds: int = 3) -> object:
     return to_opening_mispricing_signal(
         OpeningMispricingPrediction(
             market_slug=_market().slug,
             model_version="model-v1",
             feature_schema_hash="schema-v1",
             market_window_start_ts_ns=int(T0.timestamp() * 1_000_000_000),
-            trigger_ts_ns=int((T0 + timedelta(seconds=3)).timestamp() * 1_000_000_000),
+            trigger_ts_ns=int((T0 + timedelta(seconds=offset_seconds)).timestamp() * 1_000_000_000),
             p_up=0.64,
             p_boundary_up=0.62,
             p_market_mid_up=0.60,
@@ -70,6 +74,8 @@ def _config(**overrides: object) -> BtcJointReplayConfig:
         "signals": (_signal(),),
         "maker": MakerStrategyConfig(max_shares=5.0),
         "execution": ExecutionModelConfig(queue_position=True),
+        "up_records_sha256": "1" * 64,
+        "down_records_sha256": "2" * 64,
     }
     values.update(overrides)
     return BtcJointReplayConfig(**values)
@@ -104,10 +110,15 @@ def test_joint_backtest_uses_two_book_replays_one_strategy_and_causal_signals() 
     )
 
     assert [replay.token_index for replay in backtest.replays] == [0, 1]
+    assert backtest.replays[0].metadata["expected_records_sha256"] == "1" * 64
+    assert backtest.replays[1].metadata["expected_records_sha256"] == "2" * 64
     assert backtest.strategy_factory is None
     assert backtest.joint_strategy_factory is not None
     assert backtest.auxiliary_data_factory is not None
-    assert backtest.auxiliary_data_factory(()) == config.signals
+    auxiliary = backtest.auxiliary_data_factory(())
+    assert auxiliary[:-1] == config.signals
+    assert isinstance(auxiliary[-1], BtcReplayBoundary)
+    assert auxiliary[-1].ts_init == int(config.end_time.timestamp() * 1_000_000_000)
     assert collect_btc_order_events(backtest) == ()
     strategy = backtest.joint_strategy_factory(
         (_loaded(0, "UP.POLYMARKET"), _loaded(1, "DOWN.POLYMARKET"))
@@ -124,3 +135,70 @@ def test_joint_replay_rejects_non_queue_execution_and_mismatched_signals() -> No
     mismatched.market_slug = "other-market"
     with pytest.raises(ValueError, match="belong to the replay market"):
         _config(signals=(mismatched,))
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("initial_cash", float("nan"), "initial_cash"),
+        ("probability_window", True, "probability_window"),
+        ("up_token_index", True, "token indexes"),
+        ("formal_grid_component", "true", "formal_grid_component"),
+    ),
+)
+def test_joint_replay_rejects_invalid_numeric_and_boolean_configuration(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    with pytest.raises((TypeError, ValueError), match=message):
+        _config(**{field: value})
+
+
+def test_formal_joint_replay_requires_resolution_settlement_and_complete_signal_grid() -> None:
+    formal_execution = ExecutionModelConfig(
+        queue_position=True,
+        maker_rebates_enabled=False,
+        latency_model=StaticLatencyConfig(insert_latency_ms=50, cancel_latency_ms=100),
+    )
+    with pytest.raises(ValueError, match="run through label_available_ts"):
+        _config(formal_grid_component=True, execution=formal_execution)
+
+    market = _market()
+    with pytest.raises(ValueError, match="complete cadence-aligned signal grid"):
+        _config(
+            market=market,
+            end_time=market.label_available_ts,
+            formal_grid_component=True,
+            execution=formal_execution,
+        )
+
+
+def test_formal_joint_replay_caps_books_at_close_and_advances_to_observable_settlement() -> None:
+    market = _market()
+    signals = tuple(_signal(offset) for offset in range(5, 181, 5))
+    config = _config(
+        market=market,
+        end_time=market.label_available_ts,
+        signals=signals,
+        formal_grid_component=True,
+        execution=ExecutionModelConfig(
+            queue_position=True,
+            maker_rebates_enabled=False,
+            latency_model=StaticLatencyConfig(insert_latency_ms=50, cancel_latency_ms=100),
+        ),
+    )
+
+    backtest = build_btc_joint_backtest(
+        name="btc-15m-formal",
+        data=MarketDataConfig(platform="polymarket", data_type="book", vendor="pmxt"),
+        config=config,
+    )
+
+    assert all(replay.end_time == market.t1 for replay in backtest.replays)
+    assert all(
+        replay.metadata["settlement_observable_time"] == market.label_available_ts.isoformat()
+        for replay in backtest.replays
+    )
+    boundary = backtest.auxiliary_data_factory(())[-1]
+    assert boundary.ts_init == int(market.label_available_ts.timestamp() * 1_000_000_000)

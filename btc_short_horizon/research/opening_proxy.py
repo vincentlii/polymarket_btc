@@ -6,19 +6,27 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from math import erf, log, sqrt
+from numbers import Integral
 from typing import Mapping, Sequence
 
 import numpy as np
 
+from btc_short_horizon.data import BTC_15M_MARKET_FAMILY
 from btc_short_horizon.data.contracts import MarketOutcome, MarketWindow
 from btc_short_horizon.features.schema import FeatureSchema
 from btc_short_horizon.research.binance_history import BinanceKlineHistory
+from btc_short_horizon.research.opening_dataset import market_stage_sample_weights
 from btc_short_horizon.research.pipeline import DirectionDataset
 from btc_short_horizon.research.walk_forward import ResearchSample
+from btc_short_horizon.strategy import OpeningStage
 
 
 _NANOS_PER_SECOND = 1_000_000_000
 _WINDOWS_SECONDS = (5, 15, 30, 60, 180, 300, 900, 1_800, 3_600)
+
+
+class CausalFeatureUnavailableError(ValueError):
+    """Causal kline evidence is temporarily insufficient for one prediction."""
 
 
 class OpeningRegime(StrEnum):
@@ -37,9 +45,9 @@ def opening_regime_for_elapsed_seconds(elapsed_seconds: float) -> OpeningRegime:
 
     if 3.0 <= elapsed_seconds <= 30.0:
         return OpeningRegime.EARLY
-    if 30.0 < elapsed_seconds <= 90.0:
+    if 35.0 <= elapsed_seconds <= 90.0:
         return OpeningRegime.PRICE_DISCOVERY
-    if 90.0 < elapsed_seconds <= 180.0:
+    if 95.0 <= elapsed_seconds <= 180.0:
         return OpeningRegime.MID_EARLY
     raise ValueError("elapsed_seconds falls outside the frozen three-minute protocol")
 
@@ -57,29 +65,28 @@ def opening_proxy_protocol(
         entry_start_seconds=entry_start_seconds,
         entry_end_seconds=entry_end_seconds,
     )
+    regimes: list[dict[str, object]] = []
+    for regime in OPENING_REGIMES:
+        regime_offsets = [
+            offset_ms // 1_000
+            for offset_ms in offsets_ms
+            if opening_regime_for_elapsed_seconds(offset_ms / 1_000) is regime
+        ]
+        if regime_offsets:
+            regimes.append(
+                {
+                    "name": regime.value,
+                    "start_seconds": min(regime_offsets),
+                    "end_seconds": max(regime_offsets),
+                }
+            )
     return {
-        "version": 1,
+        "version": 2,
         "entry_start_seconds": entry_start_seconds,
         "entry_end_seconds": entry_end_seconds,
         "snapshot_seconds": snapshot_seconds,
         "decision_offsets_ms": list(offsets_ms),
-        "regimes": [
-            {
-                "name": OpeningRegime.EARLY.value,
-                "start_seconds": 3,
-                "end_seconds": 30,
-            },
-            {
-                "name": OpeningRegime.PRICE_DISCOVERY.value,
-                "start_seconds": 35,
-                "end_seconds": 90,
-            },
-            {
-                "name": OpeningRegime.MID_EARLY.value,
-                "start_seconds": 95,
-                "end_seconds": 180,
-            },
-        ],
+        "regimes": regimes,
     }
 
 
@@ -140,9 +147,17 @@ def opening_proxy_decision_offsets_ms(
 ) -> tuple[int, ...]:
     """Return cadence-aligned offsets anchored to market open."""
 
-    if cadence_ms < 1:
+    if isinstance(cadence_ms, bool) or not isinstance(cadence_ms, Integral) or cadence_ms < 1:
         raise ValueError("cadence_ms must be >= 1")
-    if entry_start_seconds < 0 or entry_end_seconds < entry_start_seconds:
+    if (
+        any(
+            isinstance(value, bool) or not isinstance(value, Integral)
+            for value in (entry_start_seconds, entry_end_seconds)
+        )
+        or entry_start_seconds < 0
+        or entry_end_seconds < entry_start_seconds
+        or entry_end_seconds > 180
+    ):
         raise ValueError("entry window is invalid")
     start_ms = entry_start_seconds * 1_000
     end_ms = entry_end_seconds * 1_000
@@ -170,6 +185,15 @@ def build_opening_proxy_dataset(
     reference and therefore cannot establish trading or maker profitability.
     """
 
+    ordered_markets = tuple(sorted(markets, key=lambda item: (item.t0, item.slug)))
+    if not ordered_markets:
+        raise ValueError("markets must not be empty")
+    if len({market.slug for market in ordered_markets}) != len(ordered_markets):
+        raise ValueError("market slugs must be unique")
+    if any(market.family != BTC_15M_MARKET_FAMILY for market in ordered_markets):
+        raise ValueError("opening proxy datasets require the BTC 15m market family")
+    if len({market.rule_epoch for market in ordered_markets}) != 1:
+        raise ValueError("one opening proxy dataset cannot mix market rule epochs")
     _validate_timing(
         snapshot_seconds=snapshot_seconds,
         entry_start_seconds=entry_start_seconds,
@@ -198,11 +222,12 @@ def build_opening_proxy_dataset(
     excluded_history = 0
     excluded_gaps = 0
 
-    for market in sorted(markets, key=lambda item: item.t0):
+    for market in ordered_markets:
         if market.resolution not in {MarketOutcome.UP, MarketOutcome.DOWN}:
             excluded_void += 1
             continue
-        assert market.label_available_ts is not None
+        if market.label_available_ts is None:
+            raise ValueError(f"resolved market {market.slug!r} is missing label availability")
         market_start_ns = _datetime_to_ns(market.t0)
         reference_index = int(np.searchsorted(available_ts_ns, market_start_ns, side="right")) - 1
         if reference_index < 0:
@@ -259,11 +284,16 @@ def build_opening_proxy_dataset(
         if failure is not None:
             excluded_history += 1
             continue
-        per_snapshot_weight = 1.0 / len(market_samples)
-        for sample, vector in market_samples:
+        market_weights = market_stage_sample_weights(
+            tuple(
+                OpeningStage(opening_regime_for_elapsed_seconds(elapsed_seconds).value)
+                for elapsed_seconds in snapshot_offsets
+            )
+        )
+        for (sample, vector), sample_weight in zip(market_samples, market_weights, strict=True):
             samples.append(sample)
             vectors.append(vector)
-            weights.append(per_snapshot_weight)
+            weights.append(sample_weight)
 
     if not samples:
         raise ValueError("no resolved markets have complete causal Binance opening-proxy history")
@@ -274,7 +304,7 @@ def build_opening_proxy_dataset(
             schema=schema,
             sample_weights=np.asarray(weights, dtype=float),
         ),
-        requested_markets=len(markets),
+        requested_markets=len(ordered_markets),
         excluded_void_markets=excluded_void,
         excluded_insufficient_history=excluded_history,
         excluded_kline_gaps=excluded_gaps,
@@ -308,7 +338,10 @@ def opening_proxy_feature_values_at(
     )
     reference_index = int(np.searchsorted(available_ts_ns, market_start_ns, side="right")) - 1
     if reference_index < 0:
-        raise ValueError("no causally available opening reference")
+        raise CausalFeatureUnavailableError(
+            "no causally available opening reference; "
+            f"decision_ts_ns={decision_ns} available_tail_ts_ns={int(available_ts_ns[-1])}"
+        )
     windows = _windows_for_interval(klines.interval_seconds)
     max_window_ns = max(windows) * _NANOS_PER_SECOND
     start = int(np.searchsorted(available_ts_ns, decision_ns - max_window_ns, side="left"))
@@ -324,9 +357,15 @@ def opening_proxy_feature_values_at(
             interval_ns=interval_ns,
         )
     ):
-        raise ValueError("incomplete causal Binance history at decision_time")
+        raise CausalFeatureUnavailableError(
+            "incomplete causal Binance history at decision_time; "
+            f"decision_ts_ns={decision_ns} available_tail_ts_ns={int(available_ts_ns[-1])}"
+        )
     if np.any(np.diff(klines.open_ts_ns[start:end]) != interval_ns):
-        raise ValueError("causal Binance history contains a kline gap")
+        raise CausalFeatureUnavailableError(
+            "causal Binance history contains a kline gap; "
+            f"decision_ts_ns={decision_ns} available_tail_ts_ns={int(available_ts_ns[end - 1])}"
+        )
     schema = opening_proxy_feature_schema(klines.interval_seconds)
     vector = _feature_vector(
         klines=klines,
@@ -369,6 +408,12 @@ def _feature_vector(
                 )
             ),
         )
+        if window_start >= end:
+            raise CausalFeatureUnavailableError(
+                "incomplete causal Binance history for "
+                f"{seconds}s feature window; decision_ts_ns={decision_ns} "
+                f"available_tail_ts_ns={int(available_ts_ns[end - 1])}"
+            )
         close = klines.close[window_start:end]
         volume = klines.volume[window_start:end]
         quote_volume = klines.quote_volume[window_start:end]
@@ -454,23 +499,37 @@ def _validate_timing(
     interval_seconds: int,
     availability_delay: timedelta,
 ) -> None:
-    if (
+    if any(
+        isinstance(value, bool) or not isinstance(value, Integral)
+        for value in (
+            snapshot_seconds,
+            entry_start_seconds,
+            entry_end_seconds,
+            interval_seconds,
+        )
+    ) or (
         snapshot_seconds < interval_seconds
         or snapshot_seconds % interval_seconds != 0
         or entry_start_seconds <= 0
         or entry_end_seconds < entry_start_seconds
-        or entry_end_seconds >= 900
+        or entry_end_seconds > 180
     ):
         raise ValueError("opening proxy snapshot and entry timing are invalid")
-    if availability_delay < timedelta(0):
+    if not isinstance(availability_delay, timedelta) or availability_delay < timedelta(0):
         raise ValueError("availability_delay must be non-negative")
 
 
 def _datetime_to_ns(value: datetime) -> int:
-    return int(value.timestamp() * _NANOS_PER_SECOND)
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("datetime must be timezone-aware")
+    utc = value.astimezone(UTC)
+    epoch = datetime(1970, 1, 1, tzinfo=UTC)
+    delta = utc - epoch
+    return ((delta.days * 86_400 + delta.seconds) * 1_000_000 + delta.microseconds) * 1_000
 
 
 __all__ = [
+    "CausalFeatureUnavailableError",
     "OPENING_REGIMES",
     "OpeningRegime",
     "OpeningProxyDatasetBuild",

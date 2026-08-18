@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 
 import pyarrow.parquet as pq
 import pytest
@@ -59,7 +60,8 @@ def test_artifact_writer_emits_complete_required_bundle(tmp_path) -> None:  # ty
         metrics={"net_ev": 0.01},
     )
 
-    RunArtifactWriter.write(directory=tmp_path, artifacts=artifacts, title="BTC run")
+    output = tmp_path / "run"
+    RunArtifactWriter.write(directory=output, artifacts=artifacts, title="BTC run")
 
     required = {
         "run_manifest.json",
@@ -73,6 +75,59 @@ def test_artifact_writer_emits_complete_required_bundle(tmp_path) -> None:  # ty
         "metrics.json",
         "report.html",
     }
-    assert required <= {path.name for path in tmp_path.iterdir()}
-    assert json.loads((tmp_path / "run_manifest.json").read_text())["code_revision"] == "code"
-    assert pq.read_table(tmp_path / "fills.parquet").num_rows == 1
+    assert required <= {path.name for path in output.iterdir()}
+    assert json.loads((output / "run_manifest.json").read_text())["code_revision"] == "code"
+    assert pq.read_table(output / "fills.parquet").num_rows == 1
+
+
+def test_artifact_writer_preserves_union_of_heterogeneous_event_fields(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    artifacts = BtcRunArtifacts(
+        manifest=RunManifest(
+            code_revision="code",
+            upstream_revision="upstream",
+            data_hashes={},
+            model_hashes={},
+            scenario={},
+            seed=0,
+        ),
+        data_quality={},
+        orders=(
+            {"event_type": "plan", "p_fair": 0.64},
+            {"event_type": "cancel_request", "client_order_id": "order-1"},
+        ),
+    )
+
+    output = tmp_path / "run"
+    RunArtifactWriter.write(directory=output, artifacts=artifacts, title="BTC run")
+
+    rows = pq.read_table(output / "orders.parquet").to_pylist()
+    assert rows == [
+        {
+            "client_order_id": None,
+            "event_type": "plan",
+            "p_fair": 0.64,
+        },
+        {
+            "client_order_id": "order-1",
+            "event_type": "cancel_request",
+            "p_fair": None,
+        },
+    ]
+
+    with pytest.raises(FileExistsError, match="already exists"):
+        RunArtifactWriter.write(directory=output, artifacts=artifacts, title="BTC rerun")
+
+
+def test_artifact_writer_serializes_undefined_statistics_as_null(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    artifacts = BtcRunArtifacts(
+        manifest=RunManifest("code", "upstream", {}, {}, {}, 0),
+        data_quality={},
+        metrics={"undefined_statistic": math.nan},
+    )
+    output = tmp_path / "run"
+
+    RunArtifactWriter.write(directory=output, artifacts=artifacts, title="BTC run")
+
+    assert json.loads((output / "metrics.json").read_text(encoding="utf-8")) == {
+        "undefined_statistic": None
+    }

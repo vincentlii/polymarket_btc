@@ -26,6 +26,10 @@ def test_polymarket_book_price_change_trade_and_tick_events_are_causal() -> None
     )
     assert snapshot.status is PolymarketL2Status.APPLIED
     assert snapshot.book_top is not None
+    assert normalizer.book_levels() == (
+        ((0.5, 10.0),),
+        ((0.52, 20.0),),
+    )
 
     changed = normalizer.apply(
         {
@@ -37,6 +41,7 @@ def test_polymarket_book_price_change_trade_and_tick_events_are_causal() -> None
     )
     assert changed.book_top is not None
     assert changed.book_top.bid == pytest.approx(0.51)
+    assert normalizer.book_levels()[0] == ((0.51, 5.0), (0.5, 10.0))
 
     trade = normalizer.apply(
         {
@@ -63,6 +68,42 @@ def test_polymarket_book_price_change_trade_and_tick_events_are_causal() -> None
     )
     assert tick.tick_size == pytest.approx(0.01)
     assert not tick.tick_size_changed
+
+
+def test_polymarket_in_place_updates_match_atomic_copy_updates() -> None:
+    events = (
+        {
+            "event_type": "book",
+            "asset_id": TOKEN,
+            "bids": [{"price": "0.50", "size": "10"}],
+            "asks": [{"price": "0.52", "size": "20"}],
+            "timestamp": "1776038400000",
+        },
+        {
+            "event_type": "price_change",
+            "timestamp": "1776038400100",
+            "price_changes": [
+                {"asset_id": TOKEN, "price": "0.51", "size": "5", "side": "BUY"},
+                {"asset_id": TOKEN, "price": "0.52", "size": "0", "side": "SELL"},
+            ],
+        },
+        {
+            "event_type": "book",
+            "asset_id": TOKEN,
+            "bids": [{"price": "0.49", "size": "8"}],
+            "asks": [{"price": "0.53", "size": "12"}],
+            "timestamp": "1776038400200",
+        },
+    )
+    atomic = PolymarketL2Normalizer(token_id=TOKEN)
+    bounded = PolymarketL2Normalizer(token_id=TOKEN, in_place_updates=True)
+
+    for payload in events:
+        atomic_result = atomic.apply(payload, collector_receive_ts=RECEIVE)
+        bounded_result = bounded.apply(payload, collector_receive_ts=RECEIVE)
+        assert bounded_result.status is atomic_result.status
+        assert bounded_result.reason == atomic_result.reason
+        assert bounded.book_levels() == atomic.book_levels()
 
 
 def test_polymarket_availability_remains_monotonic_when_source_clock_jitters() -> None:
@@ -94,10 +135,151 @@ def test_polymarket_availability_remains_monotonic_when_source_clock_jitters() -
     assert changed.book_top.available_ts_ns == int(changed.timing.available_ts.timestamp() * 1e9)
 
 
+def test_polymarket_small_source_regressions_cannot_ratchet_down_watermark() -> None:
+    normalizer = PolymarketL2Normalizer(token_id=TOKEN)
+    source_start = datetime(2026, 4, 13, tzinfo=UTC)
+    normalizer.apply(
+        {
+            "event_type": "book",
+            "asset_id": TOKEN,
+            "bids": [{"price": "0.50", "size": "10"}],
+            "asks": [{"price": "0.52", "size": "20"}],
+            "timestamp": int((source_start + timedelta(seconds=2)).timestamp() * 1_000),
+        },
+        collector_receive_ts=source_start + timedelta(seconds=3),
+    )
+    bounded = normalizer.apply(
+        {
+            "event_type": "price_change",
+            "timestamp": int((source_start + timedelta(seconds=1.4)).timestamp() * 1_000),
+            "price_changes": [
+                {
+                    "asset_id": TOKEN,
+                    "price": "0.51",
+                    "size": "5",
+                    "side": "BUY",
+                }
+            ],
+        },
+        collector_receive_ts=source_start + timedelta(seconds=4),
+    )
+    cumulative = normalizer.apply(
+        {
+            "event_type": "price_change",
+            "timestamp": int((source_start + timedelta(seconds=0.8)).timestamp() * 1_000),
+            "price_changes": [
+                {
+                    "asset_id": TOKEN,
+                    "price": "0.49",
+                    "size": "5",
+                    "side": "BUY",
+                }
+            ],
+        },
+        collector_receive_ts=source_start + timedelta(seconds=5),
+    )
+
+    assert bounded.status is PolymarketL2Status.APPLIED
+    assert cumulative.status is PolymarketL2Status.INVALID
+    assert cumulative.reason == "source_timestamp_regression"
+    assert not normalizer.has_snapshot
+
+
+def test_polymarket_material_source_regression_fails_closed_with_monotonic_receive_time() -> None:
+    normalizer = PolymarketL2Normalizer(token_id=TOKEN)
+    source_start = datetime(2026, 4, 13, tzinfo=UTC)
+    normalizer.apply(
+        {
+            "event_type": "book",
+            "asset_id": TOKEN,
+            "bids": [{"price": "0.50", "size": "10"}],
+            "asks": [{"price": "0.52", "size": "20"}],
+            "timestamp": int((source_start + timedelta(seconds=2)).timestamp() * 1_000),
+        },
+        collector_receive_ts=source_start + timedelta(seconds=3),
+    )
+
+    regressed = normalizer.apply(
+        {
+            "event_type": "price_change",
+            "timestamp": int(source_start.timestamp() * 1_000),
+            "price_changes": [{"asset_id": TOKEN, "price": "0.51", "size": "5", "side": "BUY"}],
+        },
+        collector_receive_ts=source_start + timedelta(seconds=4),
+    )
+
+    assert regressed.status is PolymarketL2Status.INVALID
+    assert regressed.reason == "source_timestamp_regression"
+    assert regressed.starts_new_epoch
+    assert regressed.requires_resubscribe
+    assert not normalizer.has_snapshot
+
+
+def test_polymarket_delayed_trade_timestamp_does_not_invalidate_newer_book_state() -> None:
+    """Trade notifications can arrive after newer book updates on the same socket."""
+
+    normalizer = PolymarketL2Normalizer(token_id=TOKEN)
+    source_start = datetime(2026, 4, 13, tzinfo=UTC)
+    normalizer.apply(
+        {
+            "event_type": "book",
+            "asset_id": TOKEN,
+            "bids": [{"price": "0.50", "size": "10"}],
+            "asks": [{"price": "0.52", "size": "20"}],
+            "timestamp": int(source_start.timestamp() * 1_000),
+        },
+        collector_receive_ts=source_start + timedelta(seconds=1),
+    )
+    changed = normalizer.apply(
+        {
+            "event_type": "price_change",
+            "timestamp": int((source_start + timedelta(seconds=5)).timestamp() * 1_000),
+            "price_changes": [{"asset_id": TOKEN, "price": "0.51", "size": "5", "side": "BUY"}],
+        },
+        collector_receive_ts=source_start + timedelta(seconds=6),
+    )
+    newer_trade = normalizer.apply(
+        {
+            "event_type": "last_trade_price",
+            "asset_id": TOKEN,
+            "price": "0.51",
+            "size": "1",
+            "side": "BUY",
+            "timestamp": int((source_start + timedelta(seconds=4)).timestamp() * 1_000),
+        },
+        collector_receive_ts=source_start + timedelta(seconds=6, milliseconds=500),
+    )
+
+    delayed_trade = normalizer.apply(
+        {
+            "event_type": "last_trade_price",
+            "asset_id": TOKEN,
+            "price": "0.51",
+            "size": "2",
+            "side": "BUY",
+            "timestamp": int((source_start + timedelta(seconds=2)).timestamp() * 1_000),
+        },
+        collector_receive_ts=source_start + timedelta(seconds=7),
+    )
+
+    assert changed.status is PolymarketL2Status.APPLIED
+    assert newer_trade.status is PolymarketL2Status.APPLIED
+    assert delayed_trade.status is PolymarketL2Status.APPLIED
+    assert delayed_trade.trade is not None
+    assert not delayed_trade.starts_new_epoch
+    assert not delayed_trade.requires_resubscribe
+    assert normalizer.has_snapshot
+    assert normalizer.book_levels()[0][0] == (0.51, 5.0)
+
+
 def test_polymarket_delta_before_snapshot_requires_resnapshot_and_crossed_book_is_invalid() -> None:
     normalizer = PolymarketL2Normalizer(token_id=TOKEN)
     waiting = normalizer.apply(
-        {"event_type": "price_change", "timestamp": "1776038400000", "price_changes": []},
+        {
+            "event_type": "price_change",
+            "timestamp": "1776038400000",
+            "price_changes": [{"asset_id": TOKEN, "price": "0.50", "size": "1", "side": "BUY"}],
+        },
         collector_receive_ts=RECEIVE,
     )
     assert waiting.status is PolymarketL2Status.AWAITING_SNAPSHOT
@@ -113,6 +295,316 @@ def test_polymarket_delta_before_snapshot_requires_resnapshot_and_crossed_book_i
         collector_receive_ts=RECEIVE,
     )
     assert invalid.status is PolymarketL2Status.INVALID
+
+
+def test_polymarket_other_token_delta_does_not_require_a_snapshot() -> None:
+    normalizer = PolymarketL2Normalizer(token_id=TOKEN)
+
+    ignored = normalizer.apply(
+        {
+            "event_type": "price_change",
+            "timestamp": "1776038400000",
+            "price_changes": [
+                {"asset_id": "other-token", "price": "0.50", "size": "1", "side": "BUY"}
+            ],
+        },
+        collector_receive_ts=RECEIVE,
+    )
+
+    assert ignored.status is PolymarketL2Status.IGNORED
+    assert ignored.reason == "other_token"
+    assert not ignored.requires_resubscribe
+
+
+def test_polymarket_one_sided_snapshot_is_valid_terminal_book_state() -> None:
+    normalizer = PolymarketL2Normalizer(token_id=TOKEN)
+
+    terminal = normalizer.apply(
+        {
+            "event_type": "book",
+            "asset_id": TOKEN,
+            "bids": [{"price": "0.99", "size": "10"}],
+            "asks": [],
+            "timestamp": "1776038400000",
+        },
+        collector_receive_ts=RECEIVE,
+    )
+
+    assert terminal.status is PolymarketL2Status.APPLIED
+    assert terminal.book_top is None
+    assert normalizer.has_snapshot
+    assert not terminal.requires_resubscribe
+
+
+def test_polymarket_price_change_may_leave_a_valid_one_sided_book() -> None:
+    normalizer = PolymarketL2Normalizer(token_id=TOKEN)
+    normalizer.apply(
+        {
+            "event_type": "book",
+            "asset_id": TOKEN,
+            "bids": [{"price": "0.50", "size": "10"}],
+            "asks": [{"price": "0.52", "size": "20"}],
+            "timestamp": "1776038400000",
+        },
+        collector_receive_ts=RECEIVE,
+    )
+
+    terminal = normalizer.apply(
+        {
+            "event_type": "price_change",
+            "timestamp": "1776038400100",
+            "price_changes": [{"asset_id": TOKEN, "price": "0.52", "size": "0", "side": "SELL"}],
+        },
+        collector_receive_ts=RECEIVE,
+    )
+
+    assert terminal.status is PolymarketL2Status.APPLIED
+    assert terminal.book_top is None
+    assert normalizer.has_snapshot
+    assert not terminal.requires_resubscribe
+
+
+def test_polymarket_price_change_reconciles_levels_to_reported_bbo() -> None:
+    normalizer = PolymarketL2Normalizer(token_id=TOKEN)
+    normalizer.apply(
+        {
+            "event_type": "book",
+            "asset_id": TOKEN,
+            "bids": [{"price": "0.49", "size": "10"}],
+            "asks": [
+                {"price": "0.51", "size": "20"},
+                {"price": "0.52", "size": "30"},
+            ],
+            "timestamp": "1776038400000",
+        },
+        collector_receive_ts=RECEIVE,
+    )
+
+    changed = normalizer.apply(
+        {
+            "event_type": "price_change",
+            "timestamp": "1776038400100",
+            "price_changes": [
+                {
+                    "asset_id": TOKEN,
+                    "price": "0.51",
+                    "size": "5",
+                    "side": "BUY",
+                    "best_bid": "0.51",
+                    "best_ask": "0.52",
+                }
+            ],
+        },
+        collector_receive_ts=RECEIVE,
+    )
+
+    assert changed.status is PolymarketL2Status.APPLIED
+    assert changed.book_top is not None
+    assert changed.book_top.bid == pytest.approx(0.51)
+    assert changed.book_top.ask == pytest.approx(0.52)
+    assert not changed.requires_resubscribe
+
+
+def test_polymarket_malformed_snapshot_discards_prior_book_and_tick() -> None:
+    normalizer = PolymarketL2Normalizer(token_id=TOKEN)
+    normalizer.apply(
+        {
+            "event_type": "book",
+            "asset_id": TOKEN,
+            "bids": [{"price": "0.50", "size": "10"}],
+            "asks": [{"price": "0.52", "size": "20"}],
+            "timestamp": "1776038400000",
+        },
+        collector_receive_ts=RECEIVE,
+    )
+    normalizer.apply(
+        {
+            "event_type": "tick_size_change",
+            "asset_id": TOKEN,
+            "new_tick_size": "0.01",
+            "timestamp": "1776038400100",
+        },
+        collector_receive_ts=RECEIVE,
+    )
+
+    with pytest.raises(ValueError, match="price must be numeric"):
+        normalizer.apply(
+            {
+                "event_type": "book",
+                "asset_id": TOKEN,
+                "bids": [
+                    {"price": "0.49", "size": "5"},
+                    {"price": "invalid", "size": "1"},
+                ],
+                "asks": [{"price": "0.53", "size": "4"}],
+                "timestamp": "1776038400200",
+            },
+            collector_receive_ts=RECEIVE,
+        )
+
+    changed = normalizer.apply(
+        {
+            "event_type": "price_change",
+            "timestamp": "1776038400300",
+            "price_changes": [{"asset_id": TOKEN, "price": "0.51", "size": "2", "side": "BUY"}],
+        },
+        collector_receive_ts=RECEIVE,
+    )
+
+    assert changed.status is PolymarketL2Status.AWAITING_SNAPSHOT
+    assert changed.book_top is None
+    assert normalizer.tick_size is None
+
+
+def test_polymarket_malformed_price_change_batch_discards_prior_book() -> None:
+    normalizer = PolymarketL2Normalizer(token_id=TOKEN)
+    normalizer.apply(
+        {
+            "event_type": "book",
+            "asset_id": TOKEN,
+            "bids": [{"price": "0.50", "size": "10"}],
+            "asks": [{"price": "0.52", "size": "20"}],
+            "timestamp": "1776038400000",
+        },
+        collector_receive_ts=RECEIVE,
+    )
+
+    with pytest.raises(ValueError, match="side must be BUY or SELL"):
+        normalizer.apply(
+            {
+                "event_type": "price_change",
+                "timestamp": "1776038400100",
+                "price_changes": [
+                    {"asset_id": TOKEN, "price": "0.51", "size": "5", "side": "BUY"},
+                    {"asset_id": TOKEN, "price": "0.53", "size": "2", "side": "HOLD"},
+                ],
+            },
+            collector_receive_ts=RECEIVE,
+        )
+
+    changed = normalizer.apply(
+        {
+            "event_type": "price_change",
+            "timestamp": "1776038400200",
+            "price_changes": [
+                {"asset_id": TOKEN, "price": "0.54", "size": "3", "side": "SELL"},
+                {"asset_id": TOKEN, "price": "0.52", "size": "0", "side": "SELL"},
+            ],
+        },
+        collector_receive_ts=RECEIVE,
+    )
+
+    assert changed.status is PolymarketL2Status.AWAITING_SNAPSHOT
+    assert changed.book_top is None
+
+
+def test_polymarket_fork_uses_independent_copy_on_write_book_state() -> None:
+    normalizer = PolymarketL2Normalizer(token_id=TOKEN)
+    normalizer.apply(
+        {
+            "event_type": "book",
+            "asset_id": TOKEN,
+            "bids": [{"price": "0.50", "size": "10"}],
+            "asks": [{"price": "0.52", "size": "20"}],
+            "timestamp": "1776038400000",
+        },
+        collector_receive_ts=RECEIVE,
+    )
+    candidate = normalizer.fork()
+    candidate_change = candidate.apply(
+        {
+            "event_type": "price_change",
+            "timestamp": "1776038400100",
+            "price_changes": [
+                {
+                    "asset_id": TOKEN,
+                    "price": "0.51",
+                    "size": "5",
+                    "side": "BUY",
+                }
+            ],
+        },
+        collector_receive_ts=RECEIVE,
+    )
+    original_change = normalizer.apply(
+        {
+            "event_type": "price_change",
+            "timestamp": "1776038400100",
+            "price_changes": [
+                {
+                    "asset_id": TOKEN,
+                    "price": "0.505",
+                    "size": "5",
+                    "side": "BUY",
+                }
+            ],
+        },
+        collector_receive_ts=RECEIVE,
+    )
+
+    assert candidate_change.book_top is not None
+    assert candidate_change.book_top.bid == pytest.approx(0.51)
+    assert original_change.book_top is not None
+    assert original_change.book_top.bid == pytest.approx(0.505)
+
+    untouched_candidate = normalizer.fork()
+    untouched_candidate.reset()
+    assert normalizer.has_snapshot
+
+
+@pytest.mark.parametrize("invalid_event", ["book", "price_change"])
+def test_polymarket_complete_invalid_book_discards_prior_state_until_snapshot(
+    invalid_event: str,
+) -> None:
+    normalizer = PolymarketL2Normalizer(token_id=TOKEN)
+    normalizer.apply(
+        {
+            "event_type": "book",
+            "asset_id": TOKEN,
+            "bids": [{"price": "0.50", "size": "10"}],
+            "asks": [{"price": "0.52", "size": "20"}],
+            "timestamp": "1776038400000",
+        },
+        collector_receive_ts=RECEIVE,
+    )
+    normalizer.apply(
+        {
+            "event_type": "tick_size_change",
+            "asset_id": TOKEN,
+            "new_tick_size": "0.01",
+            "timestamp": "1776038400100",
+        },
+        collector_receive_ts=RECEIVE,
+    )
+    payload = (
+        {
+            "event_type": "book",
+            "asset_id": TOKEN,
+            "bids": [{"price": "0.53", "size": "1"}],
+            "asks": [{"price": "0.52", "size": "1"}],
+            "timestamp": "1776038400200",
+        }
+        if invalid_event == "book"
+        else {
+            "event_type": "price_change",
+            "price_changes": [{"asset_id": TOKEN, "price": "0.53", "size": "1", "side": "BUY"}],
+            "timestamp": "1776038400200",
+        }
+    )
+
+    invalid = normalizer.apply(payload, collector_receive_ts=RECEIVE)
+    waiting = normalizer.apply(
+        {
+            "event_type": "price_change",
+            "price_changes": [{"asset_id": TOKEN, "price": "0.49", "size": "1", "side": "BUY"}],
+            "timestamp": "1776038400300",
+        },
+        collector_receive_ts=RECEIVE,
+    )
+
+    assert invalid.status is PolymarketL2Status.INVALID
+    assert waiting.status is PolymarketL2Status.AWAITING_SNAPSHOT
+    assert normalizer.tick_size is None
 
 
 def test_polymarket_reset_discards_book_and_tick_state_after_a_connection_gap() -> None:

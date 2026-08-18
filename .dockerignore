@@ -2,6 +2,11 @@
 .venv
 .uv-cache
 .pytest_cache
+.pytest-*
+.audit_pytest
+.audit_tmp
+.t
+.test-tmp
 .ruff_cache
 __pycache__
 *.py[cod]
@@ -16,4 +21,5 @@ dist
 target
 crates/*/target
 deploy/.env
+deploy/secrets
 deploy/runtime
