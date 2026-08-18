@@ -1,8 +1,8 @@
 # Codebase UML Inventory
 
 This file is generated from Python AST metadata and excludes `tests/` plus git-ignored private strategy/research directories.
-Generated: 2026-08-18T05:28:24+00:00
-Modules: 258 | Classes: 539 | Functions/methods: 3529
+Generated: 2026-08-18T05:45:34+00:00
+Modules: 258 | Classes: 539 | Functions/methods: 3530
 
 ## Backtesting Data Flow
 
@@ -2163,59 +2163,59 @@ flowchart TD
 
 ### `btc_short_horizon/research/opening_evidence.py`
 - Imports: `__future__, btc_short_horizon, collections, dataclasses, datetime, hashlib, json, math, os, pathlib, pyarrow, shutil, tempfile, time, typing`
-- Function L257: `stream_forward_raw_events(*, raw_data_root: Path, source: str, instrument: str, start_time: datetime, end_time: datetime, ingest_version: str | None = None, expected_polymarket_source_timestamp_regression_tolerance_seconds: float | None = None) -> ForwardRawEventStream`
-- Function L365: `scan_forward_raw_event_metadata(*, raw_data_root: Path, source: str, instrument: str, start_time: datetime, end_time: datetime, ingest_version: str | None = None) -> ForwardRawEventScan`
-- Function L497: `load_forward_raw_events(*, raw_data_root: Path, source: str, instrument: str, start_time: datetime, end_time: datetime, ingest_version: str | None = None, expected_polymarket_source_timestamp_regression_tolerance_seconds: float | None = None) -> ForwardRawEventLoad`
-- Function L648: `load_forward_polymarket_book_events(*, raw_data_root: Path, token_id: str, start_time: datetime, end_time: datetime, ingest_version: str | None = None, expected_source_timestamp_regression_tolerance_seconds: float | None = None) -> ForwardBookEventLoad`
-- Function L700: `fold_forward_polymarket_book_events(*, raw_data_root: Path, token_id: str, start_time: datetime, end_time: datetime, on_event: Callable[[TokenBookStateEvent], None], ingest_version: str | None = None, expected_source_timestamp_regression_tolerance_seconds: float | None = None) -> ForwardBookEventLoad`
-- Function L750: `_fold_polymarket_raw_load(raw_load: ForwardRawEventLoad, *, token_id: str, on_event: Callable[[TokenBookStateEvent], None]) -> _PolymarketBookFoldCounts`
-- Function L766: `_fold_polymarket_events(raw_events: Iterable[ForwardRawEvent], *, token_id: str, source_timestamp_regression_tolerance_seconds: float | None, on_event: Callable[[TokenBookStateEvent], None], deduplicate_sequence: bool = True) -> _PolymarketBookFoldCounts`
-- Function L919: `build_opening_market_observations(*, market: MarketWindow, up_events: Sequence[TokenBookStateEvent], down_events: Sequence[TokenBookStateEvent], decision_ts_ns: Sequence[int], initial_data_gap: bool = False) -> tuple[OpeningMarketObservation, ...]`
-- Function L1000: `pmxt_order_book_state_events(*, token_id: str, records: Sequence[OrderBookDeltas], gap_hours: Sequence[object] = ()) -> PmxtBookEventLoad`
-- Function L1065: `_raw_manifest_parts(*, raw_data_root: Path, source: str, instrument: str, start_time: datetime, end_time: datetime) -> Iterator[tuple[Path, DataPartitionManifest]]`
-- Function L1152: `_read_raw_manifest(path: Path) -> DataPartitionManifest`
-- Function L1164: `_validate_raw_manifest(manifest: DataPartitionManifest, *, manifest_path: Path, raw_data_root: Path, expected_source: str, expected_instrument: str) -> Path`
-- Function L1238: `_validate_raw_part_statistics(path: Path, *, manifest: DataPartitionManifest) -> None`
-- Function L1299: `_raw_rows(path: Path, *, manifest: DataPartitionManifest) -> Iterator[tuple[int, dict[str, object]]]`
-- Function L1335: `_duckdb_sorted_raw_rows(*, parts: Sequence[tuple[Path, DataPartitionManifest]], start_ns: int, end_ns: int) -> Iterator[tuple[Path, int, Mapping[str, object]]]`
-- Function L1459: `_duckdb_memory_limit() -> str`
-- Function L1486: `_readiness_scratch_parent() -> Path`
-- Function L1506: `_readiness_temp_limits() -> tuple[int, int]`
-- Function L1522: `_readiness_float_env(name: str, default: float, *, minimum: float, maximum: float) -> float`
-- Function L1539: `_readiness_temp_stale_seconds() -> float`
-- Function L1561: `_directory_size_bytes(parent: Path) -> int`
-- Function L1578: `_cleanup_stale_readiness_scratch(parent: Path) -> None`
-- Function L1594: `_stream_verified_raw_rows(*, rows: Iterable[tuple[Path, int, Mapping[str, object]]], source: str, instrument: str, expected_ingest_version: str | None) -> Iterator[ForwardRawEvent]`
-- Function L1650: `_sha256_path(path: Path) -> str`
-- Function L1661: `_validate_raw_identity(row: Mapping[str, object], *, expected_source: str, expected_instrument: str, path: Path, row_index: int) -> None`
-- Function L1677: `_payload_mapping(row: Mapping[str, object], *, path: Path, row_index: int) -> Mapping[str, object]`
-- Function L1690: `_validate_polymarket_scan_payload(payload: Mapping[str, object], *, event_type: str, token_id: str, path: Path, row_index: int) -> None`
-- Function L1735: `_validate_token_events(events: Sequence[TokenBookStateEvent], *, expected_token_id: str) -> None`
-- Function L1742: `_state_event_sort_key(event: TokenBookStateEvent) -> tuple[int, int, str, int, int, int, str, int]`
-- Function L1757: `_raw_payload_sort_key(row: ForwardRawEvent) -> tuple[int, int, str, int, int, int, str, str, int]`
-- Function L1773: `_window_ns(*, start_time: datetime, end_time: datetime) -> tuple[int, int]`
-- Function L1781: `_hours_between(*, start_time: datetime, end_time: datetime) -> Iterator[datetime]`
-- Function L1789: `_required_text(row: Mapping[str, object], name: str, path: Path, row_index: int) -> str`
-- Function L1796: `_required_int(row: Mapping[str, object], name: str, path: Path, row_index: int) -> int`
-- Function L1803: `_optional_int(row: Mapping[str, object], name: str, path: Path, row_index: int) -> int | None`
-- Function L1818: `_as_utc(value: datetime, name: str) -> datetime`
-- Function L1824: `_datetime_to_ns(value: datetime) -> int`
-- Function L1828: `_datetime_from_ns(value: int) -> datetime`
-- Function L1832: `_as_float(value: object | None) -> float | None`
-- Class L86: `RawPayloadError(ValueError)`
-- Class L91: `TokenBookStateEvent`
-  - Method L105: `__post_init__(self) -> None`
-- Class L131: `ForwardBookEventLoad`
-- Class L146: `PmxtBookEventLoad`
-- Class L156: `OpeningMarketObservation`
-  - Method L171: `__post_init__(self) -> None`
-- Class L187: `ForwardRawEvent`
-- Class L208: `ForwardRawEventLoad`
-- Class L221: `ForwardRawEventTypeSummary`
-- Class L231: `ForwardRawEventScan`
-  - Method L241: `event_type(self, name: str) -> ForwardRawEventTypeSummary | None`
-- Class L246: `ForwardRawEventStream`
-- Class L692: `_PolymarketBookFoldCounts`
+- Function L255: `stream_forward_raw_events(*, raw_data_root: Path, source: str, instrument: str, start_time: datetime, end_time: datetime, ingest_version: str | None = None, expected_polymarket_source_timestamp_regression_tolerance_seconds: float | None = None) -> ForwardRawEventStream`
+- Function L363: `scan_forward_raw_event_metadata(*, raw_data_root: Path, source: str, instrument: str, start_time: datetime, end_time: datetime, ingest_version: str | None = None) -> ForwardRawEventScan`
+- Function L495: `load_forward_raw_events(*, raw_data_root: Path, source: str, instrument: str, start_time: datetime, end_time: datetime, ingest_version: str | None = None, expected_polymarket_source_timestamp_regression_tolerance_seconds: float | None = None) -> ForwardRawEventLoad`
+- Function L646: `load_forward_polymarket_book_events(*, raw_data_root: Path, token_id: str, start_time: datetime, end_time: datetime, ingest_version: str | None = None, expected_source_timestamp_regression_tolerance_seconds: float | None = None) -> ForwardBookEventLoad`
+- Function L698: `fold_forward_polymarket_book_events(*, raw_data_root: Path, token_id: str, start_time: datetime, end_time: datetime, on_event: Callable[[TokenBookStateEvent], None], ingest_version: str | None = None, expected_source_timestamp_regression_tolerance_seconds: float | None = None) -> ForwardBookEventLoad`
+- Function L748: `_fold_polymarket_raw_load(raw_load: ForwardRawEventLoad, *, token_id: str, on_event: Callable[[TokenBookStateEvent], None]) -> _PolymarketBookFoldCounts`
+- Function L764: `_fold_polymarket_events(raw_events: Iterable[ForwardRawEvent], *, token_id: str, source_timestamp_regression_tolerance_seconds: float | None, on_event: Callable[[TokenBookStateEvent], None], deduplicate_sequence: bool = True) -> _PolymarketBookFoldCounts`
+- Function L917: `build_opening_market_observations(*, market: MarketWindow, up_events: Sequence[TokenBookStateEvent], down_events: Sequence[TokenBookStateEvent], decision_ts_ns: Sequence[int], initial_data_gap: bool = False) -> tuple[OpeningMarketObservation, ...]`
+- Function L998: `pmxt_order_book_state_events(*, token_id: str, records: Sequence[OrderBookDeltas], gap_hours: Sequence[object] = ()) -> PmxtBookEventLoad`
+- Function L1063: `_raw_manifest_parts(*, raw_data_root: Path, source: str, instrument: str, start_time: datetime, end_time: datetime) -> Iterator[tuple[Path, DataPartitionManifest]]`
+- Function L1150: `_read_raw_manifest(path: Path) -> DataPartitionManifest`
+- Function L1162: `_validate_raw_manifest(manifest: DataPartitionManifest, *, manifest_path: Path, raw_data_root: Path, expected_source: str, expected_instrument: str) -> Path`
+- Function L1236: `_validate_raw_part_statistics(path: Path, *, manifest: DataPartitionManifest) -> None`
+- Function L1297: `_raw_rows(path: Path, *, manifest: DataPartitionManifest) -> Iterator[tuple[int, dict[str, object]]]`
+- Function L1333: `_duckdb_sorted_raw_rows(*, parts: Sequence[tuple[Path, DataPartitionManifest]], start_ns: int, end_ns: int) -> Iterator[tuple[Path, int, Mapping[str, object]]]`
+- Function L1457: `_duckdb_memory_limit() -> str`
+- Function L1484: `_readiness_scratch_parent() -> Path`
+- Function L1504: `_readiness_temp_limits() -> tuple[int, int]`
+- Function L1520: `_readiness_float_env(name: str, default: float, *, minimum: float, maximum: float) -> float`
+- Function L1537: `_readiness_temp_stale_seconds() -> float`
+- Function L1559: `_directory_size_bytes(parent: Path) -> int`
+- Function L1576: `_cleanup_stale_readiness_scratch(parent: Path) -> None`
+- Function L1592: `_stream_verified_raw_rows(*, rows: Iterable[tuple[Path, int, Mapping[str, object]]], source: str, instrument: str, expected_ingest_version: str | None) -> Iterator[ForwardRawEvent]`
+- Function L1648: `_sha256_path(path: Path) -> str`
+- Function L1659: `_validate_raw_identity(row: Mapping[str, object], *, expected_source: str, expected_instrument: str, path: Path, row_index: int) -> None`
+- Function L1675: `_payload_mapping(row: Mapping[str, object], *, path: Path, row_index: int) -> Mapping[str, object]`
+- Function L1688: `_validate_polymarket_scan_payload(payload: Mapping[str, object], *, event_type: str, token_id: str, path: Path, row_index: int) -> None`
+- Function L1733: `_validate_token_events(events: Sequence[TokenBookStateEvent], *, expected_token_id: str) -> None`
+- Function L1740: `_state_event_sort_key(event: TokenBookStateEvent) -> tuple[int, int, str, int, int, int, str, int]`
+- Function L1755: `_raw_payload_sort_key(row: ForwardRawEvent) -> tuple[int, int, str, int, int, int, str, str, int]`
+- Function L1771: `_window_ns(*, start_time: datetime, end_time: datetime) -> tuple[int, int]`
+- Function L1779: `_hours_between(*, start_time: datetime, end_time: datetime) -> Iterator[datetime]`
+- Function L1787: `_required_text(row: Mapping[str, object], name: str, path: Path, row_index: int) -> str`
+- Function L1794: `_required_int(row: Mapping[str, object], name: str, path: Path, row_index: int) -> int`
+- Function L1801: `_optional_int(row: Mapping[str, object], name: str, path: Path, row_index: int) -> int | None`
+- Function L1816: `_as_utc(value: datetime, name: str) -> datetime`
+- Function L1822: `_datetime_to_ns(value: datetime) -> int`
+- Function L1826: `_datetime_from_ns(value: int) -> datetime`
+- Function L1830: `_as_float(value: object | None) -> float | None`
+- Class L84: `RawPayloadError(ValueError)`
+- Class L89: `TokenBookStateEvent`
+  - Method L103: `__post_init__(self) -> None`
+- Class L129: `ForwardBookEventLoad`
+- Class L144: `PmxtBookEventLoad`
+- Class L154: `OpeningMarketObservation`
+  - Method L169: `__post_init__(self) -> None`
+- Class L185: `ForwardRawEvent`
+- Class L206: `ForwardRawEventLoad`
+- Class L219: `ForwardRawEventTypeSummary`
+- Class L229: `ForwardRawEventScan`
+  - Method L239: `event_type(self, name: str) -> ForwardRawEventTypeSummary | None`
+- Class L244: `ForwardRawEventStream`
+- Class L690: `_PolymarketBookFoldCounts`
 
 ### `btc_short_horizon/research/opening_features.py`
 - Imports: `__future__, bisect, btc_short_horizon, collections, dataclasses, datetime, gc, pathlib, pyarrow, statistics`
@@ -4499,13 +4499,14 @@ flowchart TD
 - Function L388: `main(argv: Sequence[str] | None = None) -> int`
 
 ### `scripts/btc_training_readiness_worker.py`
-- Imports: `__future__, argparse, btc_short_horizon, collections, dataclasses, datetime, hashlib, json, os, pathlib, scripts, time`
-- Function L52: `_readiness_runtime_status(*, started_at: datetime, updated_at: datetime, backlog: int, last_candidate: str | None, last_receipt: str | None, last_error: str | None, code_revision: str | None, processing_candidate: str | None = None, process_id: int | None = None) -> RuntimeStatus`
-- Function L85: `_expected_coverage_evidence(*, index: SessionCoverageIndex, evidence_payload: tuple[dict[str, object], ...], coverage_error: object, source_windows_ns: dict[str, tuple[int, int]]) -> tuple[dict[str, object], ...]`
-- Function L102: `audit_candidate(candidate_path: Path, *, raw_data_root: Path, config_path: Path) -> dict[str, object]`
-- Function L278: `_audit_raw_exit_evidence(*, raw_data_root: Path, market: object, ingest_version: str, capture_lead_seconds: float, collection_policy: str, coverage_error: object) -> list[str]`
-- Function L323: `main() -> int`
-- Function L437: `aggregate_receipts(receipt_root: Path, *, limit: int = 96) -> dict[str, object]`
+- Imports: `__future__, argparse, btc_short_horizon, datetime, hashlib, json, os, pathlib, scripts, time`
+- Function L49: `_raw_capture_source_summaries(*, evidence_sessions: tuple[object, ...], market: object, ingest_version: str, source_windows_seconds: dict[str, tuple[float, float]]) -> tuple[list[dict[str, object]], list[str]]`
+- Function L128: `_readiness_runtime_status(*, started_at: datetime, updated_at: datetime, backlog: int, last_candidate: str | None, last_receipt: str | None, last_error: str | None, code_revision: str | None, processing_candidate: str | None = None, process_id: int | None = None) -> RuntimeStatus`
+- Function L161: `_expected_coverage_evidence(*, index: SessionCoverageIndex, evidence_payload: tuple[dict[str, object], ...], coverage_error: object, source_windows_ns: dict[str, tuple[int, int]]) -> tuple[dict[str, object], ...]`
+- Function L178: `audit_candidate(candidate_path: Path, *, raw_data_root: Path, config_path: Path) -> dict[str, object]`
+- Function L344: `_audit_raw_exit_evidence(*, raw_data_root: Path, market: object, ingest_version: str, capture_lead_seconds: float, collection_policy: str, coverage_error: object) -> list[str]`
+- Function L389: `main() -> int`
+- Function L503: `aggregate_receipts(receipt_root: Path, *, limit: int = 96) -> dict[str, object]`
 
 ### `scripts/btc_vps_preflight.py`
 - Imports: `__future__, argparse, btc_short_horizon, collections, datetime, httpx, json, math, pathlib, re, subprocess`

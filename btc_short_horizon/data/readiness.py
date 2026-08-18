@@ -116,7 +116,7 @@ def current_protocol_receipts(
     receipts = [
         item
         for item in payloads
-        if item.get("schema_version") == "btc-training-readiness-receipt-v1"
+        if item.get("schema_version") == "btc-training-readiness-receipt-v2"
     ]
     if not receipts:
         return []

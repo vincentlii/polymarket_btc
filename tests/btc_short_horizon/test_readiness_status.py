@@ -1,9 +1,11 @@
 import json
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 from btc_short_horizon.live.dashboard import _readiness_status
 from scripts.btc_training_readiness_worker import (
     _expected_coverage_evidence,
+    _raw_capture_source_summaries,
     _readiness_runtime_status,
     aggregate_receipts,
 )
@@ -26,7 +28,7 @@ def test_recorded_coverage_failure_is_a_terminal_no_go_without_reaudit() -> None
 
 
 def test_recent_status_is_lightweight_and_fails_closed(tmp_path) -> None:
-    schema = "btc-training-readiness-receipt-v1"
+    schema = "btc-training-readiness-receipt-v2"
     (tmp_path / "a.json").write_text(
         json.dumps({"schema_version": schema, "market_slug": "a", "ready": True})
     )
@@ -64,7 +66,7 @@ def test_readiness_runtime_status_declares_its_watch_interval() -> None:
 def test_readiness_status_uses_only_the_latest_protocol_epoch(tmp_path) -> None:
     receipt_root = tmp_path / "readiness" / "receipts"
     receipt_root.mkdir(parents=True)
-    schema = "btc-training-readiness-receipt-v1"
+    schema = "btc-training-readiness-receipt-v2"
     (receipt_root / "btc-updown-15m-100.json").write_text(
         json.dumps(
             {
@@ -94,3 +96,82 @@ def test_readiness_status_uses_only_the_latest_protocol_epoch(tmp_path) -> None:
         assert status["receipt_count"] == 1
         assert status["ready_count"] == 1
         assert status["invalid_markets"] == []
+
+
+def test_raw_capture_readiness_uses_verified_manifest_evidence_without_feature_replay() -> None:
+    t0 = datetime(2026, 8, 18, tzinfo=UTC)
+    market = SimpleNamespace(t0=t0, up_token_id="up", down_token_id="down")
+
+    def part(source: str, instrument: str) -> object:
+        return SimpleNamespace(
+            manifest=SimpleNamespace(
+                data_path=f"raw/{source}/{instrument}/part.parquet",
+                source=source,
+                instrument=instrument,
+                ingest_version="v17",
+                min_available_ts_ns=int((t0.timestamp() - 3_600) * 1e9),
+                max_available_ts_ns=int((t0.timestamp() + 180) * 1e9),
+                row_count=10,
+                gap_count=0,
+            )
+        )
+
+    session = SimpleNamespace(
+        parts=(
+            part("polymarket_clob", "up"),
+            part("polymarket_clob", "down"),
+            part("polymarket_rtds_chainlink", "btc/usd"),
+            part("binance_spot", "BTCUSDT"),
+            part("binance_perp", "BTCUSDT"),
+            part("okx_spot", "BTC-USDT"),
+            part("okx_swap", "BTC-USDT-SWAP"),
+        )
+    )
+    windows = {
+        "polymarket_clob": (-90.0, 180.0),
+        "polymarket_rtds_chainlink": (-3_600.0, 180.0),
+        "binance_spot": (-3_600.0, 180.0),
+        "binance_perp": (-3_600.0, 180.0),
+        "okx_spot": (-3_600.0, 180.0),
+        "okx_swap": (-3_600.0, 180.0),
+    }
+
+    summaries, errors = _raw_capture_source_summaries(
+        evidence_sessions=(session,),
+        market=market,
+        ingest_version="v17",
+        source_windows_seconds=windows,
+    )
+
+    assert errors == []
+    assert len(summaries) == 7
+    assert {item["instrument"] for item in summaries if item["source"] == "polymarket_clob"} == {
+        "up",
+        "down",
+    }
+
+
+def test_raw_capture_readiness_fails_closed_when_one_required_instrument_is_missing() -> None:
+    t0 = datetime(2026, 8, 18, tzinfo=UTC)
+    market = SimpleNamespace(t0=t0, up_token_id="up", down_token_id="down")
+    up = SimpleNamespace(
+        manifest=SimpleNamespace(
+            data_path="raw/polymarket_clob/up/part.parquet",
+            source="polymarket_clob",
+            instrument="up",
+            ingest_version="v17",
+            min_available_ts_ns=int((t0.timestamp() - 90) * 1e9),
+            max_available_ts_ns=int((t0.timestamp() + 180) * 1e9),
+            row_count=1,
+            gap_count=0,
+        )
+    )
+
+    _summaries, errors = _raw_capture_source_summaries(
+        evidence_sessions=(SimpleNamespace(parts=(up,)),),
+        market=market,
+        ingest_version="v17",
+        source_windows_seconds={"polymarket_clob": (-90.0, 180.0)},
+    )
+
+    assert errors == ["missing_stream_manifest:polymarket_clob:down"]

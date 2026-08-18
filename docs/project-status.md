@@ -2,20 +2,22 @@
 
 ## 2026-08-18 readiness worker memory and health correction
 
-- Readiness feature construction now folds the CLOB pair, Chainlink, and each
-  configured BTC venue independently. It retains only the 36 decision-tick
-  components and composes the final observations afterward; it no longer keeps
-  one feature state (and its trade deque) per decision tick or a full raw-event
-  tuple. The retained batch builder and the bounded six-source path are covered
-  by differential tests, including OKX Spot and Swap snapshots.
-- Model-feature and exit-lifecycle readiness are now separate modules. The
-  feature normalizer stops at `t0+180s`; the remaining 12 minutes are verified
-  by a fixed-batch structural scan that checks payload identity, gaps and
-  terminal activity without rebuilding the complete Up/Down books.
-- Each feature source is externally sorted once into a bounded temporary
-  Parquet stream and then read sequentially in eight-row batches. The former
-  random locator path, which repeatedly decoded Parquet row groups and retained
-  Arrow allocator arenas until the container limit, has been removed.
+- Real-candidate verification disproved the earlier in-process external-sort
+  design: despite small Arrow batches, DuckDB/Arrow/file-cache lifetime still
+  drove the 768 MiB cgroup to its limit and restarted the worker. Production
+  readiness now validates immutable raw capture only (inventory, hashes,
+  six-source stream manifests, gaps, rule lineage, and bounded CLOB lifecycle).
+  It no longer reconstructs model features on the VPS.
+- Full 36-tick feature materialization remains available through the offline
+  research pipeline and must emit a separate eligibility receipt before model
+  training or promotion. This is a responsibility split, not a reduced data
+  contract: the collector continues storing all six raw sources and the full
+  Up/Down CLOB lifecycle.
+
+- The superseded one-source-at-a-time and external-sort attempts remain covered
+  as offline materializer behavior, but are no longer on the production
+  readiness path. Real VPS validation showed that optimizing batch size alone
+  could not provide a hard process-memory bound.
 - The readiness status includes its worker PID, and its container healthcheck
   requires both a fresh healthy status and a live non-zombie process. A stale
   status file can no longer make an OOM-killed/restarted worker appear healthy.

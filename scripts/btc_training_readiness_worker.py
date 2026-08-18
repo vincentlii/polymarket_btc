@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import argparse
-from collections import Counter
-from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 import json
@@ -37,9 +35,6 @@ from btc_short_horizon.data.session_inventory import (  # noqa: E402
 )
 from btc_short_horizon.data.storage import write_atomic_json  # noqa: E402
 from btc_short_horizon.live.runtime import RuntimeStatus, RuntimeStatusStore  # noqa: E402
-from btc_short_horizon.research.opening_features import (  # noqa: E402
-    build_forward_opening_readiness_observations,
-)
 from btc_short_horizon.research.opening_evidence import (  # noqa: E402
     scan_forward_raw_event_metadata,
 )
@@ -47,6 +42,83 @@ from scripts.btc_forward_collector import _readiness_protocol  # noqa: E402
 
 _EXIT_TERMINAL_MAX_AGE_SECONDS = 15
 _WATCH_INTERVAL_SECONDS = 60.0
+_RECEIPT_SCHEMA_VERSION = "btc-training-readiness-receipt-v2"
+_READINESS_SCOPE = "raw_capture_integrity_only_feature_materialization_deferred"
+
+
+def _raw_capture_source_summaries(
+    *,
+    evidence_sessions: tuple[object, ...],
+    market: object,
+    ingest_version: str,
+    source_windows_seconds: dict[str, tuple[float, float]],
+) -> tuple[list[dict[str, object]], list[str]]:
+    """Summarize verified immutable manifests without replaying raw payloads."""
+
+    instruments = {
+        "polymarket_clob": (market.up_token_id, market.down_token_id),  # type: ignore[attr-defined]
+        "polymarket_rtds_chainlink": ("btc/usd",),
+        "binance_spot": ("BTCUSDT",),
+        "binance_perp": ("BTCUSDT",),
+        "okx_spot": ("BTC-USDT",),
+        "okx_swap": ("BTC-USDT-SWAP",),
+    }
+    t0_ns = int(market.t0.timestamp() * 1e9)  # type: ignore[attr-defined]
+    summaries: list[dict[str, object]] = []
+    errors: list[str] = []
+    seen_parts: set[str] = set()
+    parts = []
+    for session in evidence_sessions:
+        for part in session.parts:  # type: ignore[attr-defined]
+            identity = part.manifest.data_path
+            if identity in seen_parts:
+                continue
+            seen_parts.add(identity)
+            parts.append(part.manifest)
+
+    for source, offsets in source_windows_seconds.items():
+        expected_instruments = instruments.get(source)
+        if expected_instruments is None:
+            errors.append(f"unsupported_required_source:{source}")
+            continue
+        start_ns = t0_ns + round(offsets[0] * 1_000_000_000)
+        end_ns = t0_ns + round(offsets[1] * 1_000_000_000)
+        for instrument in expected_instruments:
+            matching = tuple(
+                part
+                for part in parts
+                if part.source == source
+                and part.instrument == instrument
+                and part.ingest_version == ingest_version
+                and part.min_available_ts_ns is not None
+                and part.max_available_ts_ns is not None
+                and part.min_available_ts_ns <= end_ns
+                and part.max_available_ts_ns >= start_ns
+            )
+            if not matching:
+                errors.append(f"missing_stream_manifest:{source}:{instrument}")
+                continue
+            gap_count = sum(part.gap_count for part in matching)
+            row_count = sum(part.row_count for part in matching)
+            if gap_count:
+                errors.append(f"stream_manifest_gap:{source}:{instrument}")
+            if row_count <= 0:
+                errors.append(f"empty_stream_manifest:{source}:{instrument}")
+            summaries.append(
+                {
+                    "source": source,
+                    "instrument": instrument,
+                    "part_count": len(matching),
+                    "row_count": row_count,
+                    "gap_count": gap_count,
+                    "min_available_ts_ns": min(int(part.min_available_ts_ns) for part in matching),
+                    "max_available_ts_ns": max(int(part.max_available_ts_ns) for part in matching),
+                }
+            )
+    return sorted(
+        summaries,
+        key=lambda item: (str(item["source"]), str(item["instrument"])),
+    ), errors
 
 
 def _readiness_runtime_status(
@@ -125,7 +197,6 @@ def audit_candidate(
         raise ValueError("readiness candidate rule epoch mismatch")
     if candidate.get("rule_contract_sha256") != rule_contract_sha256(market.rule_epoch):
         raise ValueError("readiness candidate rule contract mismatch")
-    required_sources = tuple(expected_protocol["readiness_required_sources"])
     evidence_payload = tuple(candidate.get("evidence_sessions", ()))
     if coverage_evidence_sha256(evidence_payload) != candidate.get("coverage_evidence_sha256"):
         raise ValueError("readiness coverage evidence hash mismatch")
@@ -168,7 +239,7 @@ def audit_candidate(
             else ["not_audited_after_model_coverage_failure"]
         )
         payload = {
-            "schema_version": "btc-training-readiness-receipt-v1",
+            "schema_version": _RECEIPT_SCHEMA_VERSION,
             "market_slug": market.slug,
             "collector_session_id": candidate["collector_session_id"],
             "evidence_session_ids": [str(item["session_id"]) for item in evidence_payload],
@@ -177,16 +248,19 @@ def audit_candidate(
             "rule_epoch": candidate["rule_epoch"],
             "rule_contract_sha256": candidate["rule_contract_sha256"],
             "protocol_sha256": candidate["protocol_sha256"],
-            "decision_coverage": 0,
-            "eligible_decisions": 0,
+            "scheduled_decisions": len(candidate["decision_offsets_seconds"]),
+            "materialized_decisions": 0,
             "source_summaries": [],
-            "quality_flags": {},
             "errors": errors,
-            "model_feature_ready": False,
+            "raw_training_evidence_ready": False,
             "raw_exit_evidence_ready": False,
             "raw_exit_evidence_errors": exit_errors,
             "ready": False,
-            "readiness_scope": "raw_features_only_labels_and_legacy_probability_not_validated",
+            "feature_materialization": {
+                "status": "deferred_to_offline_research",
+                "required": True,
+            },
+            "readiness_scope": _READINESS_SCOPE,
         }
         payload["receipt_sha256"] = sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -212,34 +286,19 @@ def audit_candidate(
             raise ValueError("readiness session inventory hash mismatch")
         for part in session.parts:
             repository.verify_part(part)
-    decisions = tuple(
-        int(market.t0.timestamp() * 1e9) + seconds * 1_000_000_000
-        for seconds in candidate["decision_offsets_seconds"]
-    )
-    build = build_forward_opening_readiness_observations(
-        raw_data_root=raw_data_root,
-        market=market,
-        start_time=market.t0
-        - timedelta(seconds=project.research_timing.max_feature_lookback_seconds),
-        end_time=market.t0 + timedelta(seconds=project.research_timing.entry_end_seconds),
-        decision_ts_ns=decisions,
-        ingest_version=candidate["ingest_version"],
-        required_venue_sources=tuple(
-            source
-            for source in required_sources
-            if source not in {"polymarket_clob", "polymarket_rtds_chainlink"}
-        ),
-    )
-    flags = Counter(flag for item in build.observations for flag in item.quality_flags)
-    source_rows = {item.raw_source: item.raw_row_count for item in build.source_summaries}
     errors = [candidate["coverage_error"]] if candidate.get("coverage_error") else []
-    if len(build.observations) != 36:
-        errors.append("decision_coverage_not_36")
-    if any(not item.eligible for item in build.observations):
-        errors.append("ineligible_decisions")
-    for source in required_sources:
-        if source_rows.get(source, 0) <= 0:
-            errors.append(f"missing_source:{source}")
+    source_summaries, manifest_errors = _raw_capture_source_summaries(
+        evidence_sessions=evidence_sessions,
+        market=market,
+        ingest_version=str(candidate["ingest_version"]),
+        source_windows_seconds={
+            source: tuple(offsets)  # type: ignore[arg-type]
+            for source, offsets in expected_protocol[
+                "readiness_source_window_offsets_seconds"
+            ].items()
+        },
+    )
+    errors.extend(manifest_errors)
     exit_errors = _audit_raw_exit_evidence(
         raw_data_root=raw_data_root,
         market=market,
@@ -249,7 +308,7 @@ def audit_candidate(
         coverage_error=candidate.get("exit_coverage_error"),
     )
     payload = {
-        "schema_version": "btc-training-readiness-receipt-v1",
+        "schema_version": _RECEIPT_SCHEMA_VERSION,
         "market_slug": market.slug,
         "collector_session_id": candidate["collector_session_id"],
         "evidence_session_ids": [str(item["session_id"]) for item in evidence_payload],
@@ -258,16 +317,19 @@ def audit_candidate(
         "rule_epoch": candidate["rule_epoch"],
         "rule_contract_sha256": candidate["rule_contract_sha256"],
         "protocol_sha256": candidate["protocol_sha256"],
-        "decision_coverage": len(build.observations),
-        "eligible_decisions": sum(item.eligible for item in build.observations),
-        "source_summaries": [asdict(item) for item in build.source_summaries],
-        "quality_flags": dict(sorted(flags.items())),
+        "scheduled_decisions": len(candidate["decision_offsets_seconds"]),
+        "materialized_decisions": 0,
+        "source_summaries": source_summaries,
         "errors": errors,
-        "model_feature_ready": not errors,
+        "raw_training_evidence_ready": not errors,
         "raw_exit_evidence_ready": not exit_errors,
         "raw_exit_evidence_errors": exit_errors,
         "ready": not errors,
-        "readiness_scope": "raw_features_only_labels_and_legacy_probability_not_validated",
+        "feature_materialization": {
+            "status": "deferred_to_offline_research",
+            "required": True,
+        },
+        "readiness_scope": _READINESS_SCOPE,
     }
     payload["receipt_sha256"] = sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()

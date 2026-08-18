@@ -174,18 +174,15 @@ socket; the venue does not document cross-event timestamp monotonicity. Local
 receive time and admission sequence remain the causal order, and a material
 regression inside the book-state lane, explicit disconnect, malformed state, or
 backpressure loss still creates a fail-closed continuity gap.
-Offline readiness audits keep the same manifest, inventory, payload, epoch, and
-gap checks, but model-feature evidence and exit-lifecycle evidence are separate
-proofs. The feature builder reconstructs CLOB state only through the last
-configured decision at `t0+180s`. Full-lifecycle exit readiness scans fixed-size
-Parquet batches for a pre-open book, explicit gaps, and terminal activity; it
-validates the CLOB payload/event/token contract without sorting or rebuilding
-the L2 book. It must never feed the post-decision lifecycle back through the
-feature normalizer. The feature path's DuckDB external sort uses a bounded
-memory budget and materializes one causally sorted temporary Parquet stream;
-PyArrow then consumes it sequentially in small batches. It must not perform
-random row lookups that repeatedly decode the same source row group. One source
-stream is processed at a time. The readiness container
+Offline readiness audits verify immutable inventories, content hashes,
+source/instrument coverage, gaps, rule identity, and the full CLOB lifecycle.
+They deliberately do not materialize model features on the VPS. Full feature
+reconstruction is an offline research job over the same content-addressed raw
+parts and produces its own eligibility receipt. This boundary prevents every
+15-minute market from re-reading and externally sorting a one-hour six-source
+payload inside the small always-on server. Full-lifecycle exit readiness still
+scans fixed-size Parquet batches for a pre-open book, explicit gaps, and
+terminal activity without rebuilding the L2 book. The readiness container
 publishes a heartbeat before and after each candidate so a long audit is visible
 as processing rather than a stale service; an OOM/restart therefore fails closed
 without making the collector unhealthy. The collector health probe allows the
@@ -1120,33 +1117,28 @@ passing full-depth exit-replay receipt are mandatory publication lineage.
 Forward collection writes a persistent, incremental session-coverage index at
 session close. A separate resource-limited readiness service validates closed
 markets without scanning the whole archive or sharing the collector process.
-It reports model-feature readiness through the configured entry horizon and
-exit-replay readiness through the full capture horizon separately. Failed or
+It reports raw training-capture readiness through the configured entry horizon
+and raw exit-evidence readiness through the full capture horizon separately.
+Feature eligibility is reported only by the offline materializer. Failed or
 missing evidence is a machine-readable No-Go, never silently repaired.
 The six required evidence families are Polymarket Up/Down CLOB, Chainlink
 RTDS, Binance Spot, Binance Perpetual, OKX Spot and OKX Swap. The two CLOB
 tokens are one execution family and cannot be removed from exit validation;
 optional venue families may be disabled only by an explicit research profile.
-Readiness folds one source at a time and uses DuckDB's bounded external sort
-for append-only Parquet partitions, spilling to a short-lived directory rather
-than retaining a one-hour payload list in Python memory. The spill directory
-is controlled by `BTC_READINESS_TEMP_DIRECTORY`; missing or unwritable spill
-storage fails closed. Production mounts this path from the host rather than a
-container `tmpfs`, because filesystem-backed spill pages must not count against
-the readiness cgroup memory budget. `BTC_READINESS_TEMP_MAX_GIB` configures
-DuckDB's hard temporary-file limit, `BTC_READINESS_TEMP_MIN_FREE_GIB` reserves
-host disk for the collector, and stale `btc-readiness-sort-*` directories from
-an interrupted worker are removed only after the configured age. Exceeding any
-quota is a machine-readable No-Go; the worker never silently falls back to
-unbounded `/tmp`.
+Readiness walks only the bounded session inventory and manifest set, verifies
+every referenced part hash, and performs a fixed-batch CLOB lifecycle scan.
+It has no payload sort, spill directory, or feature-state cache. The heavier
+DuckDB/PyArrow materializer remains available to local research commands, where
+its output is explicitly separate from the VPS capture receipt.
 Coverage is source-specific: continuous BTC/reference feeds cover their feature
 lookback, the current market's CLOB covers `t0-90s` through `t0+180s`, and exit
 evidence covers CLOB from `t0` through `t1`. Storage-session continuity is
 measured from durable session intervals with a five-second rotation tolerance;
 event silence is not treated as a transport gap because CLOB, OKX and trade
 streams do not guarantee a minimum message frequency. Recorded continuity
-gaps, missing/empty sources, ineligible decision snapshots and stale or absent
-book state still fail closed. Readiness status is scoped to the latest protocol
+gaps and missing/empty sources still fail closed. Ineligible decision snapshots
+or stale book state are detected later by the offline feature receipt, not
+misrepresented as already tested by capture readiness. Readiness status is scoped to the latest protocol
 hash so immutable receipts from an older contract remain historical evidence
 without poisoning the current epoch.
 
