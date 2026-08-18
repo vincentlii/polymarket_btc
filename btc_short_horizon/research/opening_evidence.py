@@ -51,8 +51,12 @@ _POLYMARKET_SOURCE_REGRESSION_REQUIRED_INGEST_VERSIONS = {
     "btc-short-horizon-v17",
 }
 _RAW_SCAN_BATCH_SIZE = 64
-_RAW_LOOKUP_BATCH_SIZE = 64
-_RAW_LOOKUP_CACHE_BATCHES = 16
+# Payload-bearing lookup batches are deliberately much smaller than the
+# metadata scan batches.  CLOB snapshots can be several orders of magnitude
+# larger than the sort key; retaining a large LRU lets Python's allocator keep
+# evicted payload arenas resident until the whole candidate finishes.
+_RAW_LOOKUP_BATCH_SIZE = 8
+_RAW_LOOKUP_CACHE_BATCHES = 2
 _DEFAULT_DUCKDB_MEMORY_LIMIT = "64MB"
 _MIN_DUCKDB_MEMORY_MB = 32
 _MAX_DUCKDB_MEMORY_MB = 256
