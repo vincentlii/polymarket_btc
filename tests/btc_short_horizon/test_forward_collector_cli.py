@@ -331,6 +331,7 @@ async def test_follow_current_rotates_storage_without_restarting_shared_feeds(
     by_slug = {market.slug: market for market in markets}
     clock = [t0]
     outer_stop = asyncio.Event()
+    extended_capture = asyncio.Event()
     wait_calls = 0
 
     class Gamma:
@@ -349,21 +350,22 @@ async def test_follow_current_rotates_storage_without_restarting_shared_feeds(
             }
             self.registered: list[PolymarketSubscriptionWindow] = []
             self.rotations: list[int] = []
+            self.waited_windows: list[PolymarketSubscriptionWindow] = []
             self.start_count = 0
             self.stop_count = 0
             self.running = False
 
         def register_polymarket_subscription_window(
             self, window: PolymarketSubscriptionWindow
-        ) -> bool:
+        ) -> PolymarketSubscriptionWindow:
             assert self.running
             existing = self.windows.get(window.token_ids)
             if existing is not None:
-                assert existing == window
-                return False
+                assert existing.start == window.start
+                return existing
             self.windows[window.token_ids] = window
             self.registered.append(window)
-            return True
+            return window
 
         async def rotate_storage_session(self, *, epoch_id_offset: int) -> str:
             assert self.running
@@ -372,13 +374,14 @@ async def test_follow_current_rotates_storage_without_restarting_shared_feeds(
 
         async def wait_polymarket_subscription_window(
             self,
-            _window: PolymarketSubscriptionWindow,
+            window: PolymarketSubscriptionWindow,
             *,
             stop_event: asyncio.Event,
             timeout_seconds: float,
         ) -> bool:
             assert self.running
             assert timeout_seconds == 30.0
+            self.waited_windows.append(window)
             return not stop_event.is_set()
 
         async def collect_forever(self, *, stop_event: asyncio.Event, **_kwargs: object) -> None:
@@ -404,6 +407,7 @@ async def test_follow_current_rotates_storage_without_restarting_shared_feeds(
         await asyncio.sleep(0)
         wait_calls += 1
         if wait_calls == 1:
+            extended_capture.set()
             clock[0] = markets[1].t0
         else:
             outer_stop.set()
@@ -448,7 +452,7 @@ async def test_follow_current_rotates_storage_without_restarting_shared_feeds(
         binance_futures_public_streams=(),
         rotation_poll_seconds=1.0,
         polymarket_capture_lead_seconds=90.0,
-        opening_handoff_delay_seconds=60.0,
+        opening_handoff_delay_seconds=900.0,
         stop_event=outer_stop,
         readiness_decision_offsets_seconds=tuple(range(5, 181, 5)),
         readiness_protocol_sha256="a" * 64,
@@ -458,6 +462,7 @@ async def test_follow_current_rotates_storage_without_restarting_shared_feeds(
         gamma_client=Gamma(),
         collector_factory=factory,
         now=lambda: clock[0],
+        extended_capture_enabled=extended_capture,
     )
 
     assert len(instances) == 1
@@ -471,6 +476,11 @@ async def test_follow_current_rotates_storage_without_restarting_shared_feeds(
     assert [window.token_ids for window in collector.registered] == [
         (markets[2].up_token_id, markets[2].down_token_id)
     ]
+    assert [window.end for window in collector.waited_windows] == [
+        markets[0].t0 + timedelta(seconds=180),
+        markets[1].t0 + timedelta(seconds=180),
+    ]
+    assert collector.registered[0].end == markets[2].t0 + timedelta(seconds=900)
 
 
 def test_follow_catalog_rejects_same_path_with_conflicting_metadata(tmp_path: Path) -> None:

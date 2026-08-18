@@ -160,7 +160,13 @@ def _readiness_status(runtime_root: Path) -> dict[str, object]:
     try:
         payloads = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
     except (OSError, json.JSONDecodeError):
-        return {"healthy": False, "reason": "invalid_receipt", "receipt_count": len(paths)}
+        return {
+            "healthy": False,
+            "reason": "invalid_receipt",
+            "receipt_count": len(paths),
+            "scope": "raw_capture_integrity_only",
+            "feature_materialization_ready": False,
+        }
     receipts = current_protocol_receipts(payloads)
     errors = [
         item for item in payloads if item.get("schema_version") == "btc-training-readiness-error-v1"
@@ -173,6 +179,8 @@ def _readiness_status(runtime_root: Path) -> dict[str, object]:
         "error_count": len(errors),
         "ready_count": sum(item.get("ready") is True for item in receipts),
         "invalid_markets": invalid,
+        "scope": "raw_capture_integrity_only",
+        "feature_materialization_ready": False,
     }
 
 

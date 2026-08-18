@@ -414,9 +414,11 @@ class ResearchPaperRuntime:
         self._rules: dict[str, dict[str, PaperMarketRules]] = {}
         self._rule_tasks: dict[str, asyncio.Task[None]] = {}
         self._next_rule_retry: dict[str, datetime] = {}
-        self._recent_events: dict[str, deque[RawCollectorEvent]] = defaultdict(
-            lambda: deque(maxlen=20_000)
-        )
+        self._recent_events: dict[str, deque[RawCollectorEvent]] = defaultdict(deque)
+        self._recent_event_count = 0
+        self._recent_event_bytes = 0
+        self._recent_event_max_events = event_buffer.max_events
+        self._recent_event_max_bytes = project.collection.max_pending_bytes
         self._active_slug: str | None = None
         self._next_decision_ns: int | None = None
         self._next_resolution_check = datetime.min.replace(tzinfo=UTC)
@@ -438,6 +440,9 @@ class ResearchPaperRuntime:
         now = datetime.now(UTC)
         registered = tuple(item for item in (market, lookahead) if item is not None)
         retained_slugs = {item.slug for item in registered}
+        retained_tokens = {
+            token_id for item in registered for token_id in (item.up_token_id, item.down_token_id)
+        }
         retired = tuple(item for slug, item in self._markets.items() if slug not in retained_slugs)
         for item in retired:
             self._markets.pop(item.slug, None)
@@ -447,8 +452,11 @@ class ResearchPaperRuntime:
             task = self._rule_tasks.pop(item.slug, None)
             if task is not None and not task.done():
                 task.cancel()
-            self._recent_events.pop(item.up_token_id, None)
-            self._recent_events.pop(item.down_token_id, None)
+            self._discard_recent_events(item.up_token_id)
+            self._discard_recent_events(item.down_token_id)
+        for instrument in tuple(self._recent_events):
+            if instrument not in retained_tokens:
+                self._discard_recent_events(instrument)
         if self._active_slug not in retained_slugs:
             self._active_slug = None
             self._next_decision_ns = None
@@ -571,8 +579,38 @@ class ResearchPaperRuntime:
             self._consume_event(event)
 
     def _consume_event(self, event: RawCollectorEvent) -> None:
-        self._recent_events[event.timing.instrument].append(event)
+        if self._needs_pre_activation_replay(event):
+            size = event.estimated_size_bytes
+            if (
+                self._recent_event_count >= self._recent_event_max_events
+                or self._recent_event_bytes + size > self._recent_event_max_bytes
+            ):
+                raise RuntimeError("preactivation_market_event_buffer_overflow")
+            self._recent_events[event.timing.instrument].append(event)
+            self._recent_event_count += 1
+            self._recent_event_bytes += size
         self.engine.on_event(event)
+
+    def _needs_pre_activation_replay(self, event: RawCollectorEvent) -> bool:
+        if event.timing.source != "polymarket_clob":
+            return False
+        active = self._markets.get(self._active_slug) if self._active_slug is not None else None
+        if active is not None and event.timing.instrument in {
+            active.up_token_id,
+            active.down_token_id,
+        }:
+            return False
+        return any(
+            event.timing.instrument in {market.up_token_id, market.down_token_id}
+            for market in self._markets.values()
+        )
+
+    def _discard_recent_events(self, instrument: str) -> None:
+        events = self._recent_events.pop(instrument, ())
+        self._recent_event_count -= len(events)
+        self._recent_event_bytes -= sum(event.estimated_size_bytes for event in events)
+        if self._recent_event_count < 0 or self._recent_event_bytes < 0:
+            raise RuntimeError("preactivation market buffer accounting underflow")
 
     def _activate_current_market(self, now: datetime) -> None:
         candidates = tuple(
@@ -596,6 +634,8 @@ class ResearchPaperRuntime:
             *self._recent_events[market.up_token_id],
             *self._recent_events[market.down_token_id],
         ]
+        self._discard_recent_events(market.up_token_id)
+        self._discard_recent_events(market.down_token_id)
         for event in sorted(
             events,
             key=lambda item: (
@@ -750,6 +790,10 @@ class ResearchPaperRuntime:
             "event_buffer_pending": self.event_buffer.pending_events,
             "event_buffer_overflowed": self.event_buffer.overflowed,
             "event_buffer_dropped": self.event_buffer.dropped_events,
+            "preactivation_event_count": self._recent_event_count,
+            "preactivation_event_bytes": self._recent_event_bytes,
+            "preactivation_event_max_events": self._recent_event_max_events,
+            "preactivation_event_max_bytes": self._recent_event_max_bytes,
             "execution_assumption": "p99_half_volume_book_first",
             "resolution_errors": self._resolution_errors,
             "recoverable_errors": dict(self._recoverable_errors),

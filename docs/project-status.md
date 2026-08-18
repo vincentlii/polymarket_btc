@@ -1,5 +1,24 @@
 # Project Status
 
+## 2026-08-18 Collector memory and dynamic-window correction
+
+- Production RSS profiling identified the Collector's 2.3 GiB anonymous-memory
+  growth as a Research Paper retention bug, not the durable write buffer or
+  PyArrow file cache. The Paper runtime kept up to 20,000 full raw events for
+  every stable Binance/OKX/Chainlink instrument even though activation replay
+  uses only future Polymarket token evidence.
+- Public-feed payloads are now applied and released immediately. Only registered,
+  not-yet-activated CLOB tokens enter a count-and-byte-bounded pre-activation
+  cache; activation releases them and overflow fails Paper closed. Status now
+  exposes the cache count/bytes and their configured ceilings.
+- A market's first registered CLOB capture window is now immutable. Disk-policy
+  recovery from core `t0+180s` to extended `t0+900s` applies only to a new future
+  market and can no longer crash the Collector by re-registering an existing
+  token pair with a different end time.
+- `max_queue_delay_ms` remains the historical wait to the configured 60-second
+  durable flush, not exchange/network latency. It is not used as a trading-path
+  health signal.
+
 ## 2026-08-18 readiness worker memory and health correction
 
 - Real-candidate verification disproved the earlier in-process external-sort

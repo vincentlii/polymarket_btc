@@ -1280,7 +1280,7 @@ async def test_paper_bootstrap_anchors_to_first_admitted_closed_kline(
     )
     runtime.event_buffer = buffer
     runtime.engine = _engine(tmp_path)
-    runtime._recent_events = defaultdict(lambda: deque(maxlen=20_000))
+    runtime._recent_events = defaultdict(deque)
 
     ready = await runtime._bootstrap_history(stop_event=asyncio.Event())
 
@@ -1582,9 +1582,15 @@ def test_paper_runtime_retires_old_market_books_when_catalog_advances() -> None:
     runtime._recoverable_errors = {f"rules:{previous.slug}": "temporary failure"}
     runtime._active_slug = previous.slug
     runtime._next_decision_ns = T0_NS + 5_000_000_000
-    runtime._recent_events = defaultdict(lambda: deque(maxlen=20_000))
+    runtime._recent_events = defaultdict(deque)
     runtime._recent_events[previous.up_token_id].append(_book(UP, bid="0.40", ask="0.42", second=5))
     runtime._recent_events["BTCUSDT"].append(_closed_binance_kline(second=0))
+    runtime._recent_event_count = 2
+    runtime._recent_event_bytes = sum(
+        event.estimated_size_bytes for events in runtime._recent_events.values() for event in events
+    )
+    runtime._recent_event_max_events = 20_000
+    runtime._recent_event_max_bytes = 64 * 1024 * 1024
     scheduled: list[str] = []
     runtime._schedule_rule_fetch = lambda market, *, now: scheduled.append(market.slug)
 
@@ -1593,8 +1599,59 @@ def test_paper_runtime_retires_old_market_books_when_catalog_advances() -> None:
     assert tuple(runtime._markets) == (current.slug,)
     assert previous.slug not in runtime._rules
     assert previous.up_token_id not in runtime._recent_events
-    assert "BTCUSDT" in runtime._recent_events
+    assert "BTCUSDT" not in runtime._recent_events
     assert runtime._recoverable_errors == {}
     assert runtime._active_slug is None
     assert runtime._next_decision_ns is None
     assert scheduled == [current.slug]
+
+
+def test_paper_runtime_does_not_retain_public_feed_payloads() -> None:
+    class RecordingEngine:
+        def __init__(self) -> None:
+            self.event_count = 0
+
+        def on_event(self, _event) -> None:  # type: ignore[no-untyped-def]
+            self.event_count += 1
+
+    runtime = object.__new__(ResearchPaperRuntime)
+    runtime.engine = RecordingEngine()
+    runtime._markets = {_market().slug: _market()}
+    runtime._active_slug = None
+    runtime._recent_events = defaultdict(deque)
+    runtime._recent_event_count = 0
+    runtime._recent_event_bytes = 0
+    runtime._recent_event_max_events = 20_000
+    runtime._recent_event_max_bytes = 64 * 1024 * 1024
+    event = _closed_binance_kline(second=0)
+
+    for _ in range(20_001):
+        runtime._consume_event(event)
+
+    assert runtime.engine.event_count == 20_001
+    assert "BTCUSDT" not in runtime._recent_events
+    assert runtime._recent_event_count == 0
+    assert runtime._recent_event_bytes == 0
+
+
+def test_paper_runtime_fails_closed_before_preactivation_buffer_drops_book_state() -> None:
+    class RecordingEngine:
+        def on_event(self, _event) -> None:  # type: ignore[no-untyped-def]
+            return
+
+    market = _market()
+    runtime = object.__new__(ResearchPaperRuntime)
+    runtime.engine = RecordingEngine()
+    runtime._markets = {market.slug: market}
+    runtime._active_slug = None
+    runtime._recent_events = defaultdict(deque)
+    runtime._recent_event_count = 0
+    runtime._recent_event_bytes = 0
+    runtime._recent_event_max_events = 1
+    runtime._recent_event_max_bytes = 64 * 1024 * 1024
+
+    runtime._consume_event(_book(UP, bid="0.40", ask="0.42", second=1))
+
+    with pytest.raises(RuntimeError, match="preactivation_market_event_buffer_overflow"):
+        runtime._consume_event(_book(UP, bid="0.41", ask="0.43", second=2))
+    assert runtime._recent_event_count == 1

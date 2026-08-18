@@ -93,13 +93,26 @@ full `book` before the first decision. Polymarket CLOB collection ends at
 remain continuously connected between these bounded CLOB windows, preserving
 the model lookback while removing the dominant raw-storage source.
 `opening_handoff_delay_seconds` defines the end of each market's CLOB capture
-relative to its own `t0`; the baseline remains `t0+215s`. The shared public-feed
-task stays alive across market boundaries; each newly discovered token pair is
-added to a bounded CLOB window manager, while the durable collector session
-rotates after the current CLOB handoff without closing Binance or Chainlink
-sockets. CLI overrides are
+relative to its own `t0`; the baseline retains the full lifecycle through
+`t0+900s`. Under disk pressure only a not-yet-registered future market may be
+shortened to the core `t0+180s` research window. A token pair's first registered
+window is immutable: recovery from core to extended collection never mutates an
+already running socket or changes the deadline used for session rotation. The
+shared public-feed task stays alive across market boundaries; each newly
+discovered token pair is added to a bounded CLOB window manager, while the
+durable collector session rotates after the frozen current CLOB handoff without
+closing Binance or Chainlink sockets. CLI overrides are
 available for a deliberately bounded operator run; do not lower these defaults
 without measuring resulting evidence coverage.
+
+Research Paper consumes every admitted event causally but retains replay
+payloads only for registered Polymarket tokens that have not yet been activated.
+Binance, OKX and Chainlink events are applied immediately and are never copied
+into the pre-activation cache. That cache is bounded by both the configured
+Paper event count and `collection.max_pending_bytes`; overflow fails Paper
+closed before an initial book can be silently discarded. Activation replays and
+then releases both token buffers. Runtime status publishes the current and
+maximum pre-activation event counts and bytes.
 
 Research Paper risk policy is explicit under `[paper_research]`.
 `tail_entry_price_threshold` is a risk-quarantine boundary rather than an alpha

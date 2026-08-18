@@ -472,8 +472,10 @@ async def collect_current_market_windows(
                     name="btc-forward-continuous",
                 )
             else:
-                for window in subscription_windows:
+                subscription_windows = tuple(
                     collector.register_polymarket_subscription_window(window)
+                    for window in subscription_windows
+                )
                 if on_market_active is not None:
                     on_market_active(market, lookahead, collector)
             assert worker is not None

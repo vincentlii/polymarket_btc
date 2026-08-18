@@ -184,6 +184,10 @@ class AdmittedEventBuffer:
         return self._queue.qsize()
 
     @property
+    def max_events(self) -> int:
+        return self._queue.maxsize
+
+    @property
     def overflowed(self) -> bool:
         return self._overflowed
 
@@ -461,8 +465,8 @@ class BtcForwardCollector:
     def register_polymarket_subscription_window(
         self,
         window: PolymarketSubscriptionWindow,
-    ) -> bool:
-        """Schedule one new bounded CLOB pair without reconnecting shared BTC feeds."""
+    ) -> PolymarketSubscriptionWindow:
+        """Schedule a CLOB pair and return its immutable first-registered window."""
 
         if not isinstance(window, PolymarketSubscriptionWindow):
             raise TypeError("window must be a PolymarketSubscriptionWindow")
@@ -471,9 +475,9 @@ class BtcForwardCollector:
         with self._lock:
             existing = self._scheduled_polymarket_windows.get(window.token_ids)
             if existing is not None:
-                if existing != window:
-                    raise ValueError("Polymarket token group already has a different window")
-                return False
+                if existing.start != window.start:
+                    raise ValueError("Polymarket token group already has a different start")
+                return existing
             overlap = set(window.token_ids).intersection(self._polymarket_normalizers)
             if overlap:
                 raise ValueError("Polymarket subscription windows must not reuse token IDs")
@@ -501,7 +505,7 @@ class BtcForwardCollector:
             )
             self._polymarket_window_queue.put_nowait(window)
         self._session_inventory.update_attributes(self._storage_session_attributes())
-        return True
+        return window
 
     async def wait_polymarket_subscription_window(
         self,
@@ -788,7 +792,10 @@ class BtcForwardCollector:
                 )
             ):
                 state, reason = "gap", "required_feed_snapshot_missing"
-            elif source == "polymarket_clob" and not self._polymarket_normalizers[instrument].has_snapshot:
+            elif (
+                source == "polymarket_clob"
+                and not self._polymarket_normalizers[instrument].has_snapshot
+            ):
                 state, reason = "gap", "required_feed_snapshot_missing"
             elif age_seconds is not None and age_seconds < -5.0:
                 state, reason = "future", "required_feed_timestamp_in_future"

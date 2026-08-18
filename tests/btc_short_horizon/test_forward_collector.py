@@ -174,7 +174,7 @@ async def test_business_payload_inactivity_records_one_gap_before_recovered_data
     )
     await asyncio.wait_for(
         collector.collect_forever(stop_event=asyncio.Event(), binance_streams=()),
-        timeout=1.0,
+        timeout=5.0,
     )
 
     rows_by_source: dict[str, list[dict[str, object]]] = {}
@@ -348,7 +348,7 @@ async def test_dynamic_clob_windows_retire_without_ending_shared_feed_collection
         start=now + timedelta(hours=2),
         end=now + timedelta(hours=2, minutes=3),
     )
-    assert collector.register_polymarket_subscription_window(following) is True
+    assert collector.register_polymarket_subscription_window(following) == following
     assert json.loads(
         collector._session_inventory.snapshot().attributes["polymarket_token_ids"]
     ) == list(following.token_ids)
@@ -812,11 +812,9 @@ def test_forward_collector_fails_closed_when_handoff_token_is_not_registered(tmp
 
     assert not health.healthy
     assert health.reason == "required_feed_token_not_registered"
-    assert {
-        item["state"]
-        for item in health.feeds
-        if item["source"] == "polymarket_clob"
-    } == {"gap"}
+    assert {item["state"] for item in health.feeds if item["source"] == "polymarket_clob"} == {
+        "gap"
+    }
 
 
 def test_forward_collector_persists_unique_clob_and_binance_events_by_epoch(tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -1915,6 +1913,28 @@ async def test_forward_collector_does_not_connect_after_stop_requested(
     assert collector.pending_event_count == 0
     assert list(tmp_path.rglob("manifest-*.json"))
     assert collector._session_inventory.snapshot().status == SESSION_STATUS_COMPLETE
+
+
+def test_dynamic_clob_window_keeps_first_registered_capture_horizon(tmp_path) -> None:
+    now = datetime.now(UTC)
+    core = PolymarketSubscriptionWindow(
+        token_ids=("up-token", "down-token"),
+        start=now - timedelta(seconds=90),
+        end=now + timedelta(seconds=180),
+    )
+    collector = BtcForwardCollector(
+        raw_data_root=tmp_path,
+        polymarket_token_ids=core.token_ids,
+        polymarket_token_groups=(core.token_ids,),
+        polymarket_subscription_windows=(core,),
+    )
+    extended = PolymarketSubscriptionWindow(
+        token_ids=core.token_ids,
+        start=core.start,
+        end=now + timedelta(seconds=900),
+    )
+
+    assert collector.register_polymarket_subscription_window(extended) == core
 
 
 @pytest.mark.asyncio

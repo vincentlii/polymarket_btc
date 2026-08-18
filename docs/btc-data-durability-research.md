@@ -1,16 +1,17 @@
 # BTC 前瞻数据持久性与灾难恢复
 
-> v13 容量策略：Polymarket CLOB 只在每个 15m 市场的 `t0-90s` 至
-> `t0+200s` 建立独立连接并保存原始证据；Binance 与 Chainlink 仍连续采集。
-> 这减少的是最大的数据源，不改变 prepared/committed、备份验证或恢复规则。
-> 实际日增量必须在 VPS 连续运行至少 24 小时后重新测量，不能把理论比例当成
-> 容量保证。
+> 当前容量策略：正常状态下 Polymarket CLOB 保存每个 15m 市场从 `t0-90s`
+> 到 `t0+900s` 的完整生命周期；磁盘进入 critical 后，只把尚未注册的未来市场
+> 缩短为 `t0+180s` 核心研究窗口，并暂停 Binance perp/OKX。已经注册的 token
+> pair 保持首次确定的不可变截止时间，防止磁盘恢复时重注册同一 socket。
+> prepared/committed、备份验证和恢复规则始终不变。容量保护不自动删除数据；
+> 实际释放空间仍必须经过外部介质全量回读验证。
 
 ## 结论
 
 `btc-short-horizon-v9` 把前瞻原始数据从“目录里还剩哪些文件”升级为可审计的会话账本。每个 Parquet part 必须经历 `prepared → committed`，采集会话必须经历 `open → complete|failed`；研究读取器以会话清单为权威，因此 part 与相邻 manifest 同时丢失也会被发现。
 
-当前 v13 仍使用同一会话事务，并在每个市场的 `t0+200s` CLOB handoff 完成与
+当前 collector 仍使用同一会话事务，并在每个市场已冻结的 CLOB handoff 完成与
 flush 后轮换 raw session，
 但不会重连连续的 Binance/Chainlink transport。它同时保留独立的
 `runtime/paper/ledger.json` 原子模拟账本。该账本不是原始市场数据、不是实盘
@@ -18,8 +19,9 @@ flush 后轮换 raw session，
 runtime ledger 类别。重启时无法证明仍在场内的模拟 working order 会被保守标为
 `recovery_canceled`，同一市场不会再次创建 placement cycle。
 
-当前分 epoch/variant 的 `ledger.json` 仍是订单、成交、结算和收益的权威账本。
-`paper-v5-stage-integrity` 另使用 `evaluations.sqlite3` 保存高频 planner 评估；它只
+当前分 epoch/variant 的 append-only SQLite ledger 是订单、成交、结算和收益的
+权威账本；旧 `ledger.json` 只作为一次性迁移来源，不再持续写入。
+`evaluations.sqlite3` 保存高频 planner 评估；它只
 用于诊断“评估→合格信号→确认机会”的转化，不是收益账本。备份该 SQLite 文件前
 必须由运行时执行 WAL checkpoint，或同时复制数据库及其 `-wal`/`-shm` 文件；不得
 从仍在写入的数据库单独复制主文件并声称备份完整。
