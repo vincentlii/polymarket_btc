@@ -1,5 +1,7 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 import gc
+from inspect import signature
 import tracemalloc
 
 import pytest
@@ -8,6 +10,12 @@ from btc_short_horizon.data import BTC_15M_MARKET_FAMILY, MarketWindow, TimedMar
 from btc_short_horizon.data.collector import PartitionedRawEventWriter, RawCollectorEvent
 from btc_short_horizon.research.opening_evidence import RawPayloadError
 from scripts.btc_training_readiness_worker import _audit_raw_exit_evidence
+
+
+def test_exit_audit_interface_cannot_reuse_feature_normalizer_output() -> None:
+    """Exit readiness must use its bounded lifecycle scan, not full L2 replay."""
+
+    assert "polymarket_evidence" not in signature(_audit_raw_exit_evidence).parameters
 
 
 def _event(
@@ -119,6 +127,50 @@ def test_raw_exit_readiness_rejects_silent_single_token_loss(tmp_path) -> None:
         collection_policy="extended_t0_plus_900",
         coverage_error=None,
     ) == ["missing_terminal_clob_evidence:down"]
+
+
+def test_raw_exit_readiness_rejects_row_payload_event_type_mismatch(tmp_path) -> None:
+    t0 = datetime(2026, 8, 13, tzinfo=UTC)
+    market = MarketWindow(
+        BTC_15M_MARKET_FAMILY,
+        BTC_15M_MARKET_FAMILY.slug_for(t0),
+        "c",
+        "up",
+        "down",
+        t0,
+        t0 + timedelta(minutes=15),
+        "chainlink-btc-usd-twap-60s-v1",
+        "a" * 64,
+    )
+    mismatched = replace(
+        _event("up", t0 - timedelta(seconds=1), "book"),
+        payload={
+            "event_type": "last_trade_price",
+            "asset_id": "up",
+            "timestamp": int((t0 - timedelta(seconds=1)).timestamp() * 1000),
+            "price": "0.5",
+            "size": "1",
+            "side": "BUY",
+        },
+    )
+    PartitionedRawEventWriter(tmp_path).write(
+        (
+            mismatched,
+            _event("down", t0 - timedelta(seconds=1), "book"),
+            _event("up", market.t1, "book"),
+            _event("down", market.t1, "book"),
+        )
+    )
+
+    with pytest.raises(RawPayloadError, match="payload event_type mismatch"):
+        _audit_raw_exit_evidence(
+            raw_data_root=tmp_path,
+            market=market,
+            ingest_version="v16",
+            capture_lead_seconds=90,
+            collection_policy="extended_t0_plus_900",
+            coverage_error=None,
+        )
 
 
 def test_raw_exit_readiness_memory_is_bounded_by_scan_batch(tmp_path) -> None:

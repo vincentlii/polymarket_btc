@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from inspect import signature
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from btc_short_horizon.data.collector import PartitionedRawEventWriter, RawColle
 from btc_short_horizon.features import opening_feature_schema
 from btc_short_horizon.research.opening_features import (
     ForwardFeatureStateEvent,
+    ForwardOpeningReadinessBuild,
     _feature_event_sort_key,
     build_forward_opening_feature_observations,
     build_forward_opening_readiness_observations,
@@ -403,6 +405,14 @@ def test_bounded_forward_build_matches_retained_event_build(tmp_path: Path) -> N
 
     assert bounded.observations == retained.observations
     assert bounded.source_summaries == retained.source_summaries
+
+
+def test_readiness_feature_interface_cannot_extend_into_exit_lifecycle() -> None:
+    """Model features and full-lifecycle exit evidence are separate proofs."""
+
+    parameters = signature(build_forward_opening_readiness_observations).parameters
+    assert "polymarket_terminal_end_time" not in parameters
+    assert "polymarket_exit_evidence" not in ForwardOpeningReadinessBuild.__dataclass_fields__
 
 
 def test_bounded_forward_build_matches_all_six_source_path(tmp_path: Path) -> None:

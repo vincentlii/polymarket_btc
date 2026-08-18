@@ -224,7 +224,6 @@ def audit_candidate(
         end_time=market.t0 + timedelta(seconds=project.research_timing.entry_end_seconds),
         decision_ts_ns=decisions,
         ingest_version=candidate["ingest_version"],
-        polymarket_terminal_end_time=market.t1,
         required_venue_sources=tuple(
             source
             for source in required_sources
@@ -248,7 +247,6 @@ def audit_candidate(
         capture_lead_seconds=project.collection.polymarket_capture_lead_seconds,
         collection_policy=str(candidate.get("exit_collection_policy")),
         coverage_error=candidate.get("exit_coverage_error"),
-        polymarket_evidence=build.polymarket_exit_evidence,
     )
     payload = {
         "schema_version": "btc-training-readiness-receipt-v1",
@@ -285,7 +283,6 @@ def _audit_raw_exit_evidence(
     capture_lead_seconds: float,
     collection_policy: str,
     coverage_error: object,
-    polymarket_evidence: tuple[object, ...] = (),
 ) -> list[str]:
     if collection_policy != "extended_t0_plus_900":
         return ["not_collected_by_policy"]
@@ -293,25 +290,16 @@ def _audit_raw_exit_evidence(
         return [str(coverage_error)]
     errors: list[str] = []
     t0_ns = int(market.t0.timestamp() * 1e9)  # type: ignore[attr-defined]
-    evidence_by_token = {
-        getattr(item, "token_id", None): item for item in polymarket_evidence
-    }
     for token_id in (market.up_token_id, market.down_token_id):  # type: ignore[attr-defined]
-        evidence = evidence_by_token.get(token_id)
-        if evidence is not None:
-            summaries = {
-                item.event_type: item for item in evidence.event_type_summaries
-            }
-        else:
-            scan = scan_forward_raw_event_metadata(
-                raw_data_root=raw_data_root,
-                source="polymarket_clob",
-                instrument=token_id,
-                start_time=market.t0 - timedelta(seconds=capture_lead_seconds),  # type: ignore[attr-defined]
-                end_time=market.t1,  # type: ignore[attr-defined]
-                ingest_version=ingest_version,
-            )
-            summaries = {item.event_type: item for item in scan.event_types}
+        scan = scan_forward_raw_event_metadata(
+            raw_data_root=raw_data_root,
+            source="polymarket_clob",
+            instrument=token_id,
+            start_time=market.t0 - timedelta(seconds=capture_lead_seconds),  # type: ignore[attr-defined]
+            end_time=market.t1,  # type: ignore[attr-defined]
+            ingest_version=ingest_version,
+        )
+        summaries = {item.event_type: item for item in scan.event_types}
         book = summaries.get("book")
         if book is None or book.min_available_ts_ns > t0_ns:
             errors.append(f"missing_t0_book:{token_id}")

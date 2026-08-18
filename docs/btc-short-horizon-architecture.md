@@ -175,11 +175,15 @@ receive time and admission sequence remain the causal order, and a material
 regression inside the book-state lane, explicit disconnect, malformed state, or
 backpressure loss still creates a fail-closed continuity gap.
 Offline readiness audits keep the same manifest, inventory, payload, epoch, and
-gap checks, but terminal CLOB evidence is folded from fixed-size Parquet batches.
-The worker retains only per-event-type counts and timestamp bounds; it must not
-materialize an entire Up/Down lifecycle beside the six-source feature build.
-Its DuckDB external sort uses a bounded memory budget and a per-query temporary
-directory, with one source stream processed at a time. The readiness container
+gap checks, but model-feature evidence and exit-lifecycle evidence are separate
+proofs. The feature builder reconstructs CLOB state only through the last
+configured decision at `t0+180s`. Full-lifecycle exit readiness scans fixed-size
+Parquet batches for a pre-open book, explicit gaps, and terminal activity; it
+validates the CLOB payload/event/token contract without sorting or rebuilding
+the L2 book. It must never feed the post-decision lifecycle back through the
+feature normalizer. The feature path's DuckDB external sort uses a bounded
+memory budget and a per-query temporary directory, with one source stream
+processed at a time. The readiness container
 publishes a heartbeat before and after each candidate so a long audit is visible
 as processing rather than a stale service; an OOM/restart therefore fails closed
 without making the collector unhealthy. The collector health probe allows the

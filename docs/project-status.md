@@ -8,6 +8,10 @@
   one feature state (and its trade deque) per decision tick or a full raw-event
   tuple. The retained batch builder and the bounded six-source path are covered
   by differential tests, including OKX Spot and Swap snapshots.
+- Model-feature and exit-lifecycle readiness are now separate modules. The
+  feature normalizer stops at `t0+180s`; the remaining 12 minutes are verified
+  by a fixed-batch structural scan that checks payload identity, gaps and
+  terminal activity without rebuilding the complete Up/Down books.
 - The readiness status includes its worker PID, and its container healthcheck
   requires both a fresh healthy status and a live non-zombie process. A stale
   status file can no longer make an OOM-killed/restarted worker appear healthy.

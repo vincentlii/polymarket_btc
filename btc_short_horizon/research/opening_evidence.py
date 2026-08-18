@@ -442,7 +442,16 @@ def scan_forward_raw_event_metadata(
                 and row_ingest_version != expected_ingest_version
             ):
                 continue
-            _payload_mapping(row, path=path, row_index=row_index)
+            event_type = _required_text(row, "event_type", path, row_index)
+            payload = _payload_mapping(row, path=path, row_index=row_index)
+            if source == "polymarket_clob":
+                _validate_polymarket_scan_payload(
+                    payload,
+                    event_type=event_type,
+                    token_id=instrument,
+                    path=path,
+                    row_index=row_index,
+                )
             session_id = _required_text(row, "collector_session_id", path, row_index)
             admission_sequence = _required_int(row, "admission_sequence", path, row_index)
             if row_ingest_version in _POLYMARKET_SOURCE_REGRESSION_REQUIRED_INGEST_VERSIONS:
@@ -453,7 +462,6 @@ def scan_forward_raw_event_metadata(
                         f"at {path}:{row_index}"
                     )
                 seen_admission_sequences.add(admission_identity)
-            event_type = _required_text(row, "event_type", path, row_index)
             summary = event_types.setdefault(
                 event_type,
                 [0, available_ts_ns, available_ts_ns],
@@ -1729,6 +1737,51 @@ def _payload_mapping(
     if not isinstance(payload, Mapping):
         raise RawPayloadError(f"payload_json must contain an object at {path}:{row_index}")
     return payload
+
+
+def _validate_polymarket_scan_payload(
+    payload: Mapping[str, object],
+    *,
+    event_type: str,
+    token_id: str,
+    path: Path,
+    row_index: int,
+) -> None:
+    """Validate token identity without rebuilding the full L2 state."""
+
+    payload_event_type = payload.get("event_type")
+    if payload_event_type != event_type:
+        raise RawPayloadError(
+            f"raw Polymarket payload event_type mismatch at {path}:{row_index}"
+        )
+    if event_type == "continuity_gap":
+        if payload.get("stream_id") != "market":
+            raise RawPayloadError(f"invalid CLOB continuity gap at {path}:{row_index}")
+        reason = payload.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            raise RawPayloadError(f"invalid CLOB continuity gap at {path}:{row_index}")
+        return
+    if event_type == "price_change":
+        changes = payload.get("price_changes")
+        if not isinstance(changes, Sequence) or isinstance(changes, str | bytes):
+            raise RawPayloadError(f"invalid CLOB price_change at {path}:{row_index}")
+        if not any(
+            isinstance(change, Mapping) and change.get("asset_id") == token_id
+            for change in changes
+        ):
+            raise RawPayloadError(
+                f"CLOB price_change does not reference its token at {path}:{row_index}"
+            )
+        return
+    asset_id = payload.get("asset_id")
+    if event_type in {"book", "last_trade_price"} and asset_id != token_id:
+        raise RawPayloadError(
+            f"raw Polymarket payload token mismatch at {path}:{row_index}"
+        )
+    if event_type == "tick_size_change" and asset_id is not None and asset_id != token_id:
+        raise RawPayloadError(
+            f"raw Polymarket payload token mismatch at {path}:{row_index}"
+        )
 
 
 def _validate_token_events(
