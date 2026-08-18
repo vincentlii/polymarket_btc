@@ -12,6 +12,10 @@
   feature normalizer stops at `t0+180s`; the remaining 12 minutes are verified
   by a fixed-batch structural scan that checks payload identity, gaps and
   terminal activity without rebuilding the complete Up/Down books.
+- Each feature source is externally sorted once into a bounded temporary
+  Parquet stream and then read sequentially in eight-row batches. The former
+  random locator path, which repeatedly decoded Parquet row groups and retained
+  Arrow allocator arenas until the container limit, has been removed.
 - The readiness status includes its worker PID, and its container healthcheck
   requires both a fresh healthy status and a live non-zombie process. A stale
   status file can no longer make an OOM-killed/restarted worker appear healthy.

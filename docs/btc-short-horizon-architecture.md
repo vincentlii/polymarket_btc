@@ -182,8 +182,10 @@ Parquet batches for a pre-open book, explicit gaps, and terminal activity; it
 validates the CLOB payload/event/token contract without sorting or rebuilding
 the L2 book. It must never feed the post-decision lifecycle back through the
 feature normalizer. The feature path's DuckDB external sort uses a bounded
-memory budget and a per-query temporary directory, with one source stream
-processed at a time. The readiness container
+memory budget and materializes one causally sorted temporary Parquet stream;
+PyArrow then consumes it sequentially in small batches. It must not perform
+random row lookups that repeatedly decode the same source row group. One source
+stream is processed at a time. The readiness container
 publishes a heartbeat before and after each candidate so a long audit is visible
 as processing rather than a stale service; an OOM/restart therefore fails closed
 without making the collector unhealthy. The collector health probe allows the

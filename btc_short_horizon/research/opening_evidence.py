@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from bisect import bisect_right
-from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -51,12 +49,9 @@ _POLYMARKET_SOURCE_REGRESSION_REQUIRED_INGEST_VERSIONS = {
     "btc-short-horizon-v17",
 }
 _RAW_SCAN_BATCH_SIZE = 64
-# Payload-bearing lookup batches are deliberately much smaller than the
-# metadata scan batches.  CLOB snapshots can be several orders of magnitude
-# larger than the sort key; retaining a large LRU lets Python's allocator keep
-# evicted payload arenas resident until the whole candidate finishes.
-_RAW_LOOKUP_BATCH_SIZE = 8
-_RAW_LOOKUP_CACHE_BATCHES = 2
+# Payload-bearing reads are deliberately much smaller than metadata scans.
+# CLOB snapshots can be several orders of magnitude larger than their sort key.
+_RAW_SORTED_READ_BATCH_SIZE = 8
 _DEFAULT_DUCKDB_MEMORY_LIMIT = "64MB"
 _MIN_DUCKDB_MEMORY_MB = 32
 _MAX_DUCKDB_MEMORY_MB = 256
@@ -1368,6 +1363,7 @@ def _duckdb_sorted_raw_rows(
         raise RawPayloadError(f"cannot inspect readiness scratch filesystem: {scratch_parent}") from exc
     connection = duckdb.connect(database=":memory:")
     temp_directory: tempfile.TemporaryDirectory[str] | None = None
+    sorted_parquet: pq.ParquetFile | None = None
     try:
         temp_directory = tempfile.TemporaryDirectory(
             prefix="btc-readiness-sort-",
@@ -1382,134 +1378,84 @@ def _duckdb_sorted_raw_rows(
         connection.execute("SET preserve_insertion_order=false")
         connection.execute("SET threads=1")
         connection.execute("SET temp_directory=?", [scratch_path])
-        # Sort only the causal key and a physical row locator.  Sorting
-        # payload_json here makes DuckDB retain every large CLOB snapshot in
-        # its sort buffers; payloads are fetched from Parquet after the light
-        # row references have been ordered.
-        query = """
-            SELECT
-                available_ts_ns,
-                coalesce(collector_receive_ts_ns, available_ts_ns) AS __receive_ts_ns,
-                collector_session_id,
-                admission_sequence,
-                event_type,
-                source_ts_ns,
-                sequence_or_hash,
-                filename AS __raw_path,
-                file_row_number AS __raw_row_index
-            FROM read_parquet(?, filename=true, file_row_number=true, union_by_name=true)
-            WHERE available_ts_ns BETWEEN ? AND ?
-            ORDER BY
-                available_ts_ns,
-                coalesce(collector_receive_ts_ns, available_ts_ns),
-                collector_session_id,
-                admission_sequence,
-                CASE WHEN event_type = 'continuity_gap' THEN 0 ELSE 1 END,
-                source_ts_ns,
-                sequence_or_hash,
-                __raw_path,
-                __raw_row_index
+        # Materialize the complete causal stream once under DuckDB's bounded
+        # external-sort budget, then read it sequentially.  The old locator
+        # path repeatedly restarted Parquet row-group decoding for random
+        # eight-row lookups.  Arrow's allocator retained those decompression
+        # arenas until the candidate reached the container limit even though
+        # the Python cache itself was small.
+        sorted_path = Path(scratch_path) / "sorted-raw.parquet"
+        sorted_path_literal = "'" + str(sorted_path).replace("'", "''") + "'"
+        query = f"""
+            COPY (
+                SELECT
+                    source_ts_ns,
+                    collector_receive_ts_ns,
+                    available_ts_ns,
+                    sequence_or_hash,
+                    source,
+                    instrument,
+                    schema_version,
+                    ingest_version,
+                    event_type,
+                    collector_session_id,
+                    epoch_id,
+                    admission_sequence,
+                    payload_json,
+                    filename AS __raw_path,
+                    file_row_number AS __raw_row_index
+                FROM read_parquet(?, filename=true, file_row_number=true, union_by_name=true)
+                WHERE available_ts_ns BETWEEN ? AND ?
+                ORDER BY
+                    available_ts_ns,
+                    coalesce(collector_receive_ts_ns, available_ts_ns),
+                    collector_session_id,
+                    admission_sequence,
+                    CASE WHEN event_type = 'continuity_gap' THEN 0 ELSE 1 END,
+                    source_ts_ns,
+                    sequence_or_hash,
+                    __raw_path,
+                    __raw_row_index
+            ) TO {sorted_path_literal} (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 2048)
         """
-        row_lookup = _RawParquetRowLookup(parts)
-        reader = connection.execute(
+        connection.execute(
             query,
-            [[str(path) for path, _manifest in parts], start_ns, end_ns],
-        ).to_arrow_reader(batch_size=_RAW_SCAN_BATCH_SIZE)
-        for batch in reader:
+            [
+                [str(path) for path, _manifest in parts],
+                start_ns,
+                end_ns,
+            ],
+        )
+        if _directory_size_bytes(scratch_parent) > max_temp_bytes:
+            raise RawPayloadError("sorted readiness stream exceeds its configured quota")
+        if shutil.disk_usage(scratch_parent).free < min_free_bytes:
+            raise RawPayloadError("readiness sort crossed its filesystem free-space reserve")
+        connection.close()
+        connection = None
+        sorted_parquet = pq.ParquetFile(sorted_path)
+        for batch in sorted_parquet.iter_batches(
+            batch_size=_RAW_SORTED_READ_BATCH_SIZE,
+            use_threads=False,
+        ):
             for row in batch.to_pylist():
                 path = Path(str(row.pop("__raw_path")))
                 row_index = int(row.pop("__raw_row_index"))
-                yield path, row_index, row_lookup.get(path, row_index)
+                yield path, row_index, row
     except RawPayloadError:
         raise
     except Exception as exc:
         raise RawPayloadError(f"bounded raw external sort failed: {exc}") from exc
     finally:
-        connection.close()
+        if sorted_parquet is not None:
+            sorted_parquet.close()
+        if connection is not None:
+            connection.close()
         if temp_directory is not None:
             temp_directory.cleanup()
 
 
-class _RawParquetRowLookup:
-    """Fetch sorted raw rows with a bounded payload batch cache.
-
-    A whole Parquet row group can contain thousands of large CLOB payloads.
-    Reading it with ``read_row_group(...).to_pylist()`` recreates the memory
-    spike that the external sort is intended to remove.  The lookup therefore
-    reads only a small batch from the target row group and keeps a bounded LRU
-    of batches.  Manifest, hash, identity, and payload validation still happen
-    in the downstream stream verifier; this changes only physical read
-    granularity.
-    """
-
-    def __init__(self, parts: Sequence[tuple[Path, DataPartitionManifest]]) -> None:
-        self._files = {path: pq.ParquetFile(path) for path, _manifest in parts}
-        self._offsets: dict[Path, tuple[int, ...]] = {}
-        self._cache: OrderedDict[tuple[Path, int, int], list[dict[str, object]]] = OrderedDict()
-        for path, parquet in self._files.items():
-            offsets = [0]
-            for index in range(parquet.num_row_groups):
-                offsets.append(offsets[-1] + parquet.metadata.row_group(index).num_rows)
-            self._offsets[path] = tuple(offsets)
-
-    def get(self, path: Path, row_index: int) -> dict[str, object]:
-        try:
-            parquet = self._files[path]
-            offsets = self._offsets[path]
-        except KeyError as exc:
-            raise RawPayloadError(f"sorted row references an unknown raw part: {path}") from exc
-        if row_index < 0 or row_index >= offsets[-1]:
-            raise RawPayloadError(f"sorted row index is outside raw part bounds: {path}:{row_index}")
-        group = bisect_right(offsets, row_index) - 1
-        local_index = row_index - offsets[group]
-        batch_index = local_index // _RAW_LOOKUP_BATCH_SIZE
-        key = (path, group, batch_index)
-        rows = self._cache.pop(key, None)
-        if rows is None:
-            rows = self._read_batch(
-                parquet=parquet,
-                path=path,
-                group=group,
-                batch_index=batch_index,
-            )
-        self._cache[key] = rows
-        while len(self._cache) > _RAW_LOOKUP_CACHE_BATCHES:
-            self._cache.popitem(last=False)
-        batch_offset = local_index % _RAW_LOOKUP_BATCH_SIZE
-        if batch_offset >= len(rows):
-            raise RawPayloadError(f"raw row lookup failed: {path}:{row_index}")
-        return rows[batch_offset]
-
-    @staticmethod
-    def _read_batch(
-        *,
-        parquet: pq.ParquetFile,
-        path: Path,
-        group: int,
-        batch_index: int,
-    ) -> list[dict[str, object]]:
-        try:
-            for index, batch in enumerate(
-                parquet.iter_batches(
-                    batch_size=_RAW_LOOKUP_BATCH_SIZE,
-                    row_groups=[group],
-                    columns=list(_RAW_COLUMNS),
-                    use_threads=False,
-                )
-            ):
-                if index == batch_index:
-                    return [dict(row) for row in batch.to_pylist()]
-        except (OSError, ValueError, pa.ArrowException) as exc:
-            raise RawPayloadError(
-                f"cannot read raw row batch {path}:{group}:{batch_index}"
-            ) from exc
-        raise RawPayloadError(
-            f"raw row batch is outside row-group bounds: {path}:{group}:{batch_index}"
-        )
-
-
 def _duckdb_memory_limit() -> str:
-    """Return a bounded DuckDB sort budget for the 512 MiB readiness worker.
+    """Return a bounded DuckDB sort budget for the readiness worker.
 
     The external sort must spill to its temporary directory instead of
     competing with Python/Arrow object memory for the entire container limit.
