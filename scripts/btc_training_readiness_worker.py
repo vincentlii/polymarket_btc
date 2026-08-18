@@ -59,6 +59,7 @@ def _readiness_runtime_status(
     last_error: str | None,
     code_revision: str | None,
     processing_candidate: str | None = None,
+    process_id: int | None = None,
 ) -> RuntimeStatus:
     return RuntimeStatus(
         service="training_readiness",
@@ -75,6 +76,7 @@ def _readiness_runtime_status(
             "processing_candidate": processing_candidate,
             "warming": last_candidate is None,
             "expected_status_interval_seconds": _WATCH_INTERVAL_SECONDS,
+            "process_id": process_id,
             "identity": {"code_revision": code_revision},
         },
     )
@@ -371,6 +373,7 @@ def main() -> int:
                     last_error=last_error,
                     code_revision=os.environ.get("BTC_CODE_REVISION"),
                     processing_candidate=processing_candidate,
+                    process_id=os.getpid(),
                 )
             )
 

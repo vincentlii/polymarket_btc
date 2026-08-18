@@ -153,7 +153,7 @@ services:
           create_host_path: false
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "scripts/btc_runtime_healthcheck.py", "--runtime-root", "/app/output/btc_short_horizon/runtime", "--service", "training_readiness", "--max-age-seconds", "150"]
+      test: ["CMD", "python", "scripts/btc_runtime_healthcheck.py", "--runtime-root", "/app/output/btc_short_horizon/runtime", "--service", "training_readiness", "--max-age-seconds", "150", "--require-process"]
       interval: 30s
       timeout: 60s
       retries: 3

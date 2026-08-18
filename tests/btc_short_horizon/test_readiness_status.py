@@ -54,9 +54,11 @@ def test_readiness_runtime_status_declares_its_watch_interval() -> None:
         last_receipt=None,
         last_error=None,
         code_revision="a" * 40,
+        process_id=123,
     )
 
     assert status.details["expected_status_interval_seconds"] == 60.0
+    assert status.details["process_id"] == 123
 
 
 def test_readiness_status_uses_only_the_latest_protocol_epoch(tmp_path) -> None:

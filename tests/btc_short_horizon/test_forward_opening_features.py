@@ -284,6 +284,29 @@ def _binance_book(
     )
 
 
+def _okx_book(
+    *, source: str, at: datetime, bid: str, ask: str, sequence: int = 1
+) -> RawCollectorEvent:
+    instrument = "BTC-USDT" if source == "okx_spot" else "BTC-USDT-SWAP"
+    return _raw_event(
+        at=at,
+        source=source,
+        instrument=instrument,
+        event_type="books_snapshot",
+        payload={
+            "data": [
+                {
+                    "ts": str(int(at.timestamp() * 1_000)),
+                    "seqId": sequence,
+                    "prevSeqId": -1,
+                    "bids": [[bid, "2", "0", "1"]],
+                    "asks": [[ask, "3", "0", "1"]],
+                }
+            ]
+        },
+    )
+
+
 def _chainlink(*, at: datetime, price: float, epoch_id: int = 0) -> RawCollectorEvent:
     return _raw_event(
         at=at,
@@ -377,6 +400,39 @@ def test_bounded_forward_build_matches_retained_event_build(tmp_path: Path) -> N
     bounded = build_forward_opening_readiness_observations(
         **arguments,
     )
+
+    assert bounded.observations == retained.observations
+    assert bounded.source_summaries == retained.source_summaries
+
+
+def test_bounded_forward_build_matches_all_six_source_path(tmp_path: Path) -> None:
+    events = (
+        *_events(),
+        _okx_book(source="okx_spot", at=T0 + timedelta(seconds=2), bid="101", ask="102"),
+        _okx_book(source="okx_swap", at=T0 + timedelta(seconds=2), bid="101", ask="102"),
+    )
+    PartitionedRawEventWriter(tmp_path).write(events)
+    decisions = tuple(
+        int((T0 + timedelta(seconds=offset)).timestamp() * 1_000_000_000)
+        for offset in (1, 2, 3)
+    )
+    arguments = {
+        "raw_data_root": tmp_path,
+        "market": _market(),
+        "start_time": T0 - timedelta(minutes=5),
+        "end_time": T0 + timedelta(seconds=3),
+        "decision_ts_ns": decisions,
+        "ingest_version": INGEST_VERSION,
+        "required_venue_sources": (
+            "binance_spot",
+            "binance_perp",
+            "okx_spot",
+            "okx_swap",
+        ),
+    }
+
+    retained = build_forward_opening_feature_observations(**arguments)
+    bounded = build_forward_opening_readiness_observations(**arguments)
 
     assert bounded.observations == retained.observations
     assert bounded.source_summaries == retained.source_summaries

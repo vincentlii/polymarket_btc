@@ -1,5 +1,20 @@
 # Project Status
 
+## 2026-08-18 readiness worker memory and health correction
+
+- Readiness feature construction now folds the CLOB pair, Chainlink, and each
+  configured BTC venue independently. It retains only the 36 decision-tick
+  components and composes the final observations afterward; it no longer keeps
+  one feature state (and its trade deque) per decision tick or a full raw-event
+  tuple. The retained batch builder and the bounded six-source path are covered
+  by differential tests, including OKX Spot and Swap snapshots.
+- The readiness status includes its worker PID, and its container healthcheck
+  requires both a fresh healthy status and a live non-zombie process. A stale
+  status file can no longer make an OOM-killed/restarted worker appear healthy.
+- This is an execution/memory-safety correction only: feature ordering,
+  availability cutoffs, gap handling, source coverage, and No-Go behavior stay
+  unchanged. No model artifact or trading threshold is promoted by this fix.
+
 ## 2026-08-14 readiness coverage-contract correction
 
 - Readiness now distinguishes durable storage-session continuity from

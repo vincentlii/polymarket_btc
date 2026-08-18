@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 import gc
 from pathlib import Path
+from statistics import median
 
 import pyarrow as pa
 
@@ -22,8 +23,11 @@ from btc_short_horizon.features import (
     BtcBookTop,
     BtcReferencePrice,
     BtcTrade,
+    OpeningReferenceSnapshot,
     OpeningFeatureObservation,
     OpeningFeatureState,
+    OpeningVenueSnapshot,
+    market_probability_from_books,
 )
 from btc_short_horizon.research.opening_evidence import (
     ForwardBookEventLoad,
@@ -273,16 +277,19 @@ def _build_bounded_forward_opening_feature_observations(
     polymarket_source_timestamp_regression_tolerance_seconds: float | None,
     required_venue_sources: tuple[str, ...],
 ) -> ForwardOpeningReadinessBuild:
-    """Build identical decision snapshots while retaining one raw source at a time."""
+    """Build identical decision snapshots with one bounded state per raw source.
 
-    states = tuple(
-        OpeningFeatureState(
-            up_token_id=market.up_token_id,
-            down_token_id=market.down_token_id,
-            required_venue_sources=required_venue_sources,
-        )
-        for _ in decisions
-    )
+    The previous implementation kept one ``OpeningFeatureState`` per decision
+    tick.  Every trade was therefore copied into up to 36 deques, which made a
+    one-hour, six-source readiness candidate exceed the worker memory limit.
+    Each source is now folded once and reduced to 36 component snapshots before
+    the next source is opened.  The final observations are a pure composition of
+    those small components, preserving the causal contract without retaining
+    raw-derived event history.
+    """
+
+    if not decisions:
+        raise ValueError("at least one decision is required")
     if polymarket_terminal_end_time is not None:
         if polymarket_terminal_end_time < end_time:
             raise ValueError("polymarket_terminal_end_time cannot precede feature end_time")
@@ -292,10 +299,29 @@ def _build_bounded_forward_opening_feature_observations(
     tick_size_changed = [False] * len(decisions)
     summaries: list[ForwardFeatureSourceSummary] = []
 
-    def apply_event(event: ForwardFeatureStateEvent) -> None:
-        first_decision = bisect_left(decisions, event.available_ts_ns)
+    def mark_tick(available_ts_ns: int, changed: bool) -> None:
+        if not changed:
+            return
+        first_decision = bisect_left(decisions, available_ts_ns)
         for index in range(first_decision, len(decisions)):
-            state = states[index]
+            tick_size_changed[index] = True
+
+    def feature_consumer(
+        *,
+        state: OpeningFeatureState,
+        snapshot: Callable[[OpeningFeatureState, int], object],
+    ) -> tuple[Callable[[ForwardFeatureStateEvent], None], Callable[[], list[object]]]:
+        snapshots: list[object] = []
+        decision_index = 0
+
+        def consume(event: ForwardFeatureStateEvent) -> None:
+            nonlocal decision_index
+            while (
+                decision_index < len(decisions)
+                and decisions[decision_index] < event.available_ts_ns
+            ):
+                snapshots.append(snapshot(state, decisions[decision_index]))
+                decision_index += 1
             if event.gap_before:
                 state.mark_gap(
                     source=event.state_source,
@@ -303,22 +329,25 @@ def _build_bounded_forward_opening_feature_observations(
                 )
             if event.value is not None:
                 state.update(event.value)
-            tick_size_changed[index] = tick_size_changed[index] or event.tick_size_changed
+            mark_tick(event.available_ts_ns, event.tick_size_changed)
 
-    def apply_source(
-        result: tuple[tuple[ForwardFeatureStateEvent, ...], ForwardFeatureSourceSummary],
-    ) -> None:
-        events, summary = result
-        summaries.append(summary)
-        for event in sorted(events, key=_feature_event_sort_key):
-            apply_event(event)
+        def finish() -> list[object]:
+            nonlocal decision_index
+            while decision_index < len(decisions):
+                snapshots.append(snapshot(state, decisions[decision_index]))
+                decision_index += 1
+            return snapshots
+
+        return consume, finish
 
     def apply_stream(
         *,
         source: str,
         instrument: str,
         decoder: Callable[..., tuple[tuple[ForwardFeatureStateEvent, ...], int]],
-    ) -> None:
+        state: OpeningFeatureState,
+        snapshot: Callable[[OpeningFeatureState, int], object],
+    ) -> list[object]:
         stream = stream_forward_raw_events(
             raw_data_root=raw_data_root,
             source=source,
@@ -337,12 +366,14 @@ def _build_bounded_forward_opening_feature_observations(
 
         state_event_count = 0
 
-        def consume(event: ForwardFeatureStateEvent) -> None:
+        consume, finish = feature_consumer(state=state, snapshot=snapshot)
+
+        def count_and_consume(event: ForwardFeatureStateEvent) -> None:
             nonlocal state_event_count
             state_event_count += 1
-            apply_event(event)
+            consume(event)
 
-        _unused_events, gap_count = decoder(raw_events(), on_event=consume)
+        _unused_events, gap_count = decoder(raw_events(), on_event=count_and_consume)
         summaries.append(
             ForwardFeatureSourceSummary(
                 raw_source=source,
@@ -352,33 +383,43 @@ def _build_bounded_forward_opening_feature_observations(
                 gap_event_count=gap_count,
             )
         )
+        result = finish()
+        _release_source_memory()
+        return result
 
-    clob_gap_count = 0
+    @dataclass(slots=True)
+    class _TokenCollector:
+        decisions: tuple[int, ...]
+        token_id: str
+        snapshots: list[BtcBookTop | None]
+        book: BtcBookTop | None = None
+        decision_index: int = 0
+        gap_count: int = 0
 
-    def consume_clob(state_event: TokenBookStateEvent) -> None:
-        nonlocal clob_gap_count
-        event = ForwardFeatureStateEvent(
-            raw_source="polymarket_clob",
-            state_source="polymarket_clob",
-            state_instrument=state_event.token_id,
-            source_ts_ns=state_event.source_ts_ns,
-            collector_receive_ts_ns=state_event.collector_receive_ts_ns,
-            available_ts_ns=state_event.available_ts_ns,
-            sequence_or_hash=(
-                f"{state_event.token_id}:{state_event.collector_session_id}:"
-                f"{state_event.epoch_id}:{state_event.source_ts_ns}"
-            ),
-            collector_session_id=state_event.collector_session_id,
-            epoch_id=state_event.epoch_id,
-            admission_sequence=state_event.admission_sequence,
-            value=state_event.book,
-            gap_before=state_event.reset_book,
-            tick_size_changed=state_event.tick_size_changed,
-        )
-        clob_gap_count += event.gap_before
-        apply_event(event)
+        def consume(self, event: TokenBookStateEvent) -> None:
+            while (
+                self.decision_index < len(self.decisions)
+                and self.decisions[self.decision_index] < event.available_ts_ns
+            ):
+                self.snapshots.append(self.book)
+                self.decision_index += 1
+            if event.reset_book:
+                self.book = None
+                self.gap_count += 1
+            if event.book is not None:
+                self.book = event.book
+            mark_tick(event.available_ts_ns, event.tick_size_changed)
 
-    clob_loads_list = []
+        def finish(self) -> None:
+            while self.decision_index < len(self.decisions):
+                self.snapshots.append(self.book)
+                self.decision_index += 1
+
+    token_collectors: dict[str, _TokenCollector] = {
+        token_id: _TokenCollector(decisions=decisions, token_id=token_id, snapshots=[])
+        for token_id in (market.up_token_id, market.down_token_id)
+    }
+    clob_loads_list: list[ForwardBookEventLoad] = []
     for token_id in (market.up_token_id, market.down_token_id):
         clob_loads_list.append(
             fold_forward_polymarket_book_events(
@@ -390,9 +431,10 @@ def _build_bounded_forward_opening_feature_observations(
                 expected_source_timestamp_regression_tolerance_seconds=(
                     polymarket_source_timestamp_regression_tolerance_seconds
                 ),
-                on_event=consume_clob,
+                on_event=token_collectors[token_id].consume,
             )
         )
+        token_collectors[token_id].finish()
         _release_source_memory()
     clob_loads = tuple(clob_loads_list)
     if (
@@ -406,15 +448,27 @@ def _build_bounded_forward_opening_feature_observations(
             raw_part_count=sum(item.raw_part_count for item in clob_loads),
             raw_row_count=sum(item.raw_row_count for item in clob_loads),
             state_event_count=sum(item.state_event_count or 0 for item in clob_loads),
-            gap_event_count=clob_gap_count,
+            gap_event_count=sum(item.gap_count for item in token_collectors.values()),
         )
     )
-    apply_stream(
+
+    chainlink_state = OpeningFeatureState(
+        up_token_id=market.up_token_id,
+        down_token_id=market.down_token_id,
+        required_venue_sources=required_venue_sources,
+    )
+    chainlink_snapshots = apply_stream(
         source=_CHAINLINK_RAW_SOURCE,
         instrument=_CHAINLINK_INSTRUMENT,
         decoder=_chainlink_state_events,
+        state=chainlink_state,
+        snapshot=lambda state, decision: state.reference_snapshot(
+            decision_ts_ns=decision,
+            market_window_start_ns=_datetime_to_ns(market.t0),
+        ),
     )
-    _release_source_memory()
+
+    venue_snapshots: dict[str, list[OpeningVenueSnapshot]] = {}
     for source in required_venue_sources:
         instrument = "BTC-USDT" if source == "okx_spot" else (
             "BTC-USDT-SWAP" if source == "okx_swap" else _BTCUSDT
@@ -433,21 +487,140 @@ def _build_bounded_forward_opening_feature_observations(
                 on_event=on_event,
             ))
         )
-        apply_stream(source=source, instrument=instrument, decoder=decoder)
-        _release_source_memory()
+        venue_state = OpeningFeatureState(
+            up_token_id=market.up_token_id,
+            down_token_id=market.down_token_id,
+            required_venue_sources=(source,),
+        )
+        venue_snapshots[source] = apply_stream(
+            source=source,
+            instrument=instrument,
+            decoder=decoder,
+            state=venue_state,
+            snapshot=lambda state, decision, _source=source: state.venue_snapshot(
+                source=_source,
+                decision_ts_ns=decision,
+            ),
+        )
+
+    reference_snapshots = [
+        item for item in chainlink_snapshots if isinstance(item, OpeningReferenceSnapshot)
+    ]
+    if len(reference_snapshots) != len(decisions):
+        raise RuntimeError("Chainlink readiness snapshots are incomplete")
+    typed_venue_snapshots: dict[str, tuple[OpeningVenueSnapshot, ...]] = {}
+    for source, items in venue_snapshots.items():
+        typed = tuple(item for item in items if isinstance(item, OpeningVenueSnapshot))
+        if len(typed) != len(decisions):
+            raise RuntimeError(f"{source} readiness snapshots are incomplete")
+        typed_venue_snapshots[source] = typed
 
     observations: list[OpeningFeatureObservation] = []
     market_start_ns = _datetime_to_ns(market.t0)
-    for index, (decision, state) in enumerate(zip(decisions, states, strict=True)):
-        observation = state.snapshot(
-            decision_ts_ns=decision,
-            market_window_start_ns=market_start_ns,
-        )
-        if tick_size_changed[index]:
-            observation = replace(
-                observation,
-                quality_flags=frozenset((*observation.quality_flags, "tick_changed")),
+    for index, decision in enumerate(decisions):
+        elapsed_seconds = (decision - market_start_ns) / _NANOS_PER_SECOND
+        remaining_seconds = max(0.0, 900.0 - elapsed_seconds)
+        flags: set[str] = set()
+        values: dict[str, float] = dict.fromkeys(chainlink_state.schema.names, 0.0)
+        for source in _SUPPORTED_VENUE_SOURCES:
+            values[f"{source}_trade_age_seconds"] = 86_400.0
+            values[f"{source}_book_age_seconds"] = 86_400.0
+        venue_prices: list[float] = []
+        ages: list[float] = []
+        primary_rv_300 = 0.0
+        for source in required_venue_sources:
+            component = typed_venue_snapshots[source][index]
+            values.update(dict(component.values))
+            flags.update(component.flags)
+            ages.extend(component.ages)
+            if component.latest_price is not None:
+                venue_prices.append(component.latest_price)
+            if source == "binance_spot":
+                primary_rv_300 = component.rv_300
+
+        reference = reference_snapshots[index]
+        if reference.opening is None or reference.latest is None:
+            flags.add("reference_unavailable")
+        else:
+            ages.append(reference.latest_age_seconds or 0.0)
+            if (reference.latest_age_seconds or 0.0) > chainlink_state.chainlink_stale_seconds:
+                flags.add("reference_stale")
+
+        consensus = median(venue_prices) if venue_prices else None
+        if consensus is None:
+            flags.add("consensus_unavailable")
+        p_boundary_up, boundary_return, remaining_sigma, boundary_z = (
+            OpeningFeatureState._boundary_probability(
+                consensus=consensus,
+                opening_reference=(
+                    reference.opening.price if reference.opening is not None else None
+                ),
+                rv_300=primary_rv_300,
+                remaining_seconds=remaining_seconds,
             )
+        )
+        if remaining_sigma <= 0.0:
+            flags.add("volatility_unavailable")
+        up_book = token_collectors[market.up_token_id].snapshots[index]
+        down_book = token_collectors[market.down_token_id].snapshots[index]
+        p_market_mid_up, market_flags = market_probability_from_books(
+            up=up_book,
+            down=down_book,
+            decision_ts_ns=decision,
+        )
+        flags.update(market_flags)
+        dispersion_bps = (
+            0.0
+            if consensus is None or len(venue_prices) < 2
+            else max(abs((price / consensus) - 1.0) for price in venue_prices) * 10_000.0
+        )
+        latest_reference_price = reference.latest.price if reference.latest is not None else None
+        chainlink_basis_bps = (
+            ((consensus / latest_reference_price) - 1.0) * 10_000.0
+            if consensus is not None and latest_reference_price is not None
+            else 0.0
+        )
+        values.update(
+            {
+                "elapsed_seconds": elapsed_seconds,
+                "remaining_seconds": remaining_seconds,
+                "boundary_log_return": boundary_return,
+                "remaining_sigma": remaining_sigma,
+                "boundary_z": boundary_z,
+                "p_boundary_up": p_boundary_up,
+                "consensus_dispersion_bps": dispersion_bps,
+                "chainlink_consensus_basis_bps": chainlink_basis_bps,
+                "data_age_seconds": max(ages) if ages else 86_400.0,
+                "has_data_gap": 1.0
+                if any(
+                    component.gap
+                    for components in typed_venue_snapshots.values()
+                    for component in components
+                )
+                else 0.0,
+            }
+        )
+        if (
+            any(
+                component.gap
+                for components in typed_venue_snapshots.values()
+                for component in components
+            )
+            or reference.gap
+        ):
+            flags.add("gap")
+        observation = OpeningFeatureObservation(
+            market_window_start_ns=market_start_ns,
+            ts_event=decision,
+            ts_init=decision,
+            feature_schema_hash=chainlink_state.schema.hash,
+            values=chainlink_state.schema.vector_from(values),
+            p_boundary_up=p_boundary_up,
+            p_market_mid_up=p_market_mid_up,
+            quality_flags=frozenset(
+                (*flags, "tick_changed") if tick_size_changed[index] else flags
+            ),
+        )
         observations.append(observation)
     return ForwardOpeningReadinessBuild(
         observations=tuple(observations),

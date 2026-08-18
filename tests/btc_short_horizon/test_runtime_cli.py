@@ -17,6 +17,7 @@ from scripts.btc_forward_runtime import (
 from scripts.btc_runtime_control import main as runtime_control_main
 from scripts.btc_runtime_dashboard import parse_args as parse_dashboard_args
 from scripts.btc_runtime_healthcheck import main as runtime_healthcheck_main
+from scripts.btc_runtime_healthcheck import _process_is_alive
 from scripts.btc_vps_preflight import main as vps_preflight_main
 from scripts.btc_vps_preflight import _compose_revision, _git_revision
 
@@ -160,6 +161,50 @@ def test_runtime_healthcheck_cli_fails_closed_then_accepts_fresh_status(tmp_path
     )
 
     assert runtime_healthcheck_main(["--runtime-root", root]) == 0
+
+
+def test_process_liveness_rejects_missing_and_zombie_processes(tmp_path) -> None:
+    proc_root = tmp_path / "proc"
+    alive_status = proc_root / "123" / "status"
+    alive_status.parent.mkdir(parents=True)
+    alive_status.write_text("Name:\tworker\nState:\tR (running)\n", encoding="utf-8")
+    zombie_status = proc_root / "124" / "status"
+    zombie_status.parent.mkdir(parents=True)
+    zombie_status.write_text("Name:\tworker\nState:\tZ (zombie)\n", encoding="utf-8")
+
+    assert _process_is_alive(123, proc_root=proc_root)
+    assert not _process_is_alive(124, proc_root=proc_root)
+    assert not _process_is_alive(125, proc_root=proc_root)
+
+
+def test_runtime_healthcheck_can_require_a_live_service_process(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(UTC)
+    RuntimeStatusStore(tmp_path).write(
+        RuntimeStatus(
+            service="training_readiness",
+            mode="offline_incremental",
+            state="running",
+            healthy=True,
+            started_at=now,
+            updated_at=now,
+            details={"process_id": 123},
+        )
+    )
+    monkeypatch.setattr("scripts.btc_runtime_healthcheck._process_is_alive", lambda _pid: False)
+    args = [
+        "--runtime-root",
+        str(tmp_path),
+        "--service",
+        "training_readiness",
+        "--require-process",
+    ]
+    assert runtime_healthcheck_main(args) == 1
+
+    monkeypatch.setattr("scripts.btc_runtime_healthcheck._process_is_alive", lambda _pid: True)
+    assert runtime_healthcheck_main(args) == 0
 
 
 def test_vps_preflight_cli_persists_target_host_evidence(
