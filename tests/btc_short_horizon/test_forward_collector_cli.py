@@ -30,11 +30,14 @@ from scripts.btc_forward_collector import (
 import scripts.btc_forward_collector as forward_collector_module
 
 
-def test_forward_collector_cli_builds_btc_only_collector_from_explicit_token_ids() -> None:
+def test_forward_collector_cli_builds_btc_only_collector_from_explicit_token_ids(
+    tmp_path: Path,
+) -> None:
+    config_path = _config_with_raw_root(tmp_path)
     args = parse_args(
         [
             "--config",
-            "configs/btc_short_horizon/baseline.toml",
+            str(config_path),
             "--token-id",
             "up-token",
             "--token-id",
@@ -90,6 +93,8 @@ def test_forward_collector_cli_resolves_tokens_from_validated_catalog(tmp_path) 
     )
     args = parse_args(
         [
+            "--config",
+            str(_config_with_raw_root(tmp_path / "raw")),
             "--market-catalog",
             str(catalog_path),
             "--market-slug",
@@ -100,6 +105,19 @@ def test_forward_collector_cli_resolves_tokens_from_validated_catalog(tmp_path) 
     collector = build_collector(args)
 
     assert collector.token_ids == ("up-token", "down-token")
+
+
+def _config_with_raw_root(raw_root: Path) -> Path:
+    template = Path("configs/btc_short_horizon/baseline.toml").read_text(encoding="utf-8")
+    config_path = raw_root.parent / f"{raw_root.name}-baseline.toml"
+    config_path.write_text(
+        template.replace(
+            'raw_data_root = "../../data/btc_short_horizon"',
+            f'raw_data_root = "{raw_root.as_posix()}"',
+        ),
+        encoding="utf-8",
+    )
+    return config_path
 
 
 def test_follow_current_rotates_from_exact_gamma_catalog_and_persists_metadata(tmp_path) -> None:  # type: ignore[no-untyped-def]

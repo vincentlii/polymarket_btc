@@ -38,6 +38,7 @@ from btc_short_horizon.live.dashboard_state import (
 from btc_short_horizon.live.append_only_ledger import AppendOnlyLedgerRepository
 from btc_short_horizon.live.direction_health import DirectionEvidenceStore
 from btc_short_horizon.live.gateway import PaperOrderGateway
+from btc_short_horizon.live.opening_features import LiveOpeningFeatureAdapter
 from btc_short_horizon.live.paper_execution import (
     PaperExecutionConfig,
     PaperExecutionSimulator,
@@ -57,6 +58,7 @@ from btc_short_horizon.strategy import (
     ConsecutiveSignalConfirmation,
     EdgeStableSignalConfirmation,
     MakerStrategyConfig,
+    OpeningStage,
     OrderPlan,
     OutcomeBooks,
     SideBook,
@@ -212,6 +214,16 @@ class PaperEvaluationObservation:
             slippage_stress=_optional_number(value.get("slippage_stress"), "slippage_stress"),
             latency_stress=_optional_number(value.get("latency_stress"), "latency_stress"),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ModelCounterfactual:
+    """One no-order executable-price observation for a model comparison."""
+
+    model_role: str
+    model_version: str
+    stage: OpeningStage
+    plan: TakerOrderPlan
 
 
 @dataclass(slots=True)
@@ -868,6 +880,9 @@ class ResearchPaperEngine:
         evidence_target_markets: int,
         dashboard_primary_model_id: str | None = None,
         dashboard_dependency_model_id: str | None = None,
+        dashboard_gate_state: GateState = GateState.RUNNING,
+        live_feature_sources: tuple[str, ...] | None = None,
+        research_execution_authorized: bool = True,
     ) -> None:
         if not callable(predictor) or not model_id:
             raise ValueError("predictor and model_id are required")
@@ -877,6 +892,11 @@ class ResearchPaperEngine:
         self.model_id = model_id
         self.dashboard_primary_model_id = dashboard_primary_model_id or model_id
         self.dashboard_dependency_model_id = dashboard_dependency_model_id
+        self.dashboard_gate_state = GateState(dashboard_gate_state)
+        self.live_feature_sources = live_feature_sources
+        if not isinstance(research_execution_authorized, bool):
+            raise ValueError("research_execution_authorized must be bool")
+        self.research_execution_authorized = research_execution_authorized
         self.maker_config = maker_config
         self.variant = variant
         self.ledger_store = ledger_store
@@ -923,6 +943,8 @@ class ResearchPaperEngine:
         self._gapped_tokens: set[str] = set()
         self._tick_changed_tokens: set[str] = set()
         self._binance_gap = False
+        self._live_features: LiveOpeningFeatureAdapter | None = None
+        self._feature_adapters: dict[str, LiveOpeningFeatureAdapter] = {}
         if variant.confirmation_policy == "edge_stable":
             self._confirmation = EdgeStableSignalConfirmation(
                 required_signals=variant.confirmation_signals,
@@ -941,6 +963,7 @@ class ResearchPaperEngine:
         self._latest_prediction: OpeningMispricingPrediction | None = None
         self._signal_observations: list[PaperSignalObservation] = []
         self._last_evaluation: PaperEvaluationObservation | None = None
+        self._last_counterfactuals: tuple[ModelCounterfactual, ...] = ()
         self._confirmation_stage: str | None = None
         if restored is None or changed:
             self._persist()
@@ -952,6 +975,10 @@ class ResearchPaperEngine:
     @property
     def last_evaluation(self) -> PaperEvaluationObservation | None:
         return self._last_evaluation
+
+    @property
+    def last_counterfactuals(self) -> tuple[ModelCounterfactual, ...]:
+        return self._last_counterfactuals
 
     @property
     def active_model_id(self) -> str:
@@ -995,6 +1022,23 @@ class ResearchPaperEngine:
     def set_kline_history(self, history: BinanceKlineHistory) -> None:
         self.kline_history = history
 
+    def prepare_markets(self, markets: tuple[MarketWindow, ...]) -> None:
+        if self.live_feature_sources is None:
+            return
+        retained = {market.slug for market in markets}
+        self._feature_adapters = {
+            slug: adapter for slug, adapter in self._feature_adapters.items() if slug in retained
+        }
+        for market in markets:
+            self._feature_adapters.setdefault(
+                market.slug,
+                LiveOpeningFeatureAdapter(
+                    up_token_id=market.up_token_id,
+                    down_token_id=market.down_token_id,
+                    required_venue_sources=self.live_feature_sources,
+                ),
+            )
+
     def activate_market(
         self,
         market: MarketWindow,
@@ -1022,6 +1066,10 @@ class ResearchPaperEngine:
         self.market = market
         self.rules = frozen_rules
         self._normalizers = {token: PolymarketL2Normalizer(token_id=token) for token in expected}
+        self._live_features = self._feature_adapters.get(market.slug)
+        if self.live_feature_sources is not None and self._live_features is None:
+            self.prepare_markets((market,))
+            self._live_features = self._feature_adapters[market.slug]
         self._last_books.clear()
         self._gapped_tokens.clear()
         self._tick_changed_tokens.clear()
@@ -1035,6 +1083,8 @@ class ResearchPaperEngine:
     def on_event(self, event: RawCollectorEvent) -> None:
         event_ts_ns = int(event.timing.available_ts.timestamp() * 1_000_000_000)
         self._advance_execution_before(event_ts_ns)
+        for adapter in self._feature_adapters.values():
+            adapter.on_event(event)
         if event.event_type == "continuity_gap":
             if event.timing.instrument in self._normalizers:
                 self._gapped_tokens.add(event.timing.instrument)
@@ -1181,6 +1231,7 @@ class ResearchPaperEngine:
         prediction: OpeningMispricingPrediction | None = None,
     ) -> str:
         self._last_evaluation = None
+        self._last_counterfactuals = ()
         if not self.variant.enabled:
             return "paused_variant"
         if self.market is None:
@@ -1246,9 +1297,37 @@ class ResearchPaperEngine:
             self._confirmation.reset()
             self._signal_observations.clear()
             return safety_reason
+        self._last_counterfactuals = self._model_counterfactuals(
+            prediction=prediction,
+            books=books,
+            stage_rule=stage_rule,
+            now_ts_ns=now_ts_ns,
+        )
         robust_candidate: RobustExecutableCost | None = None
         market_anchor_up: float | None = None
         if self.variant.opportunity_policy == "robust_independent_taker":
+            if not self.research_execution_authorized:
+                self._last_evaluation = PaperEvaluationObservation(
+                    variant_id=self.variant.variant_id,
+                    evaluation_id=f"{self.market.slug}:{now_ts_ns}",
+                    market_slug=self.market.slug,
+                    decision_ts_ns=now_ts_ns,
+                    entry_regime=stage_rule.stage.value,
+                    price_bucket="unavailable",
+                    reason="model_research_gate_no_go",
+                    selected_side=None,
+                    fair_probability=(
+                        prediction.market_relative_p_up
+                        if prediction.market_relative_p_up is not None
+                        else prediction.p_up
+                    ),
+                    executable_vwap=None,
+                    net_edge=None,
+                    model_version=(
+                        prediction.market_relative_model_version or prediction.model_version
+                    ),
+                )
+                return "model_research_gate_no_go"
             if (
                 prediction.market_relative_p_up is None
                 or prediction.market_relative_p_up_lower is None
@@ -1647,6 +1726,68 @@ class ResearchPaperEngine:
         self._persist()
         return "submitted"
 
+    def _model_counterfactuals(
+        self,
+        *,
+        prediction: OpeningMispricingPrediction,
+        books: OutcomeBooks,
+        stage_rule: StageRule,
+        now_ts_ns: int,
+    ) -> tuple[ModelCounterfactual, ...]:
+        """Evaluate point probabilities without creating or mutating an order."""
+
+        assert self.market is not None
+        candidates = [
+            ("legacy_1_0", prediction.model_version, prediction.p_up),
+        ]
+        if (
+            prediction.market_relative_model_version is not None
+            and prediction.market_relative_p_up is not None
+        ):
+            candidates.append(
+                (
+                    "market_relative_2_0",
+                    prediction.market_relative_model_version,
+                    prediction.market_relative_p_up,
+                )
+            )
+        observations: list[ModelCounterfactual] = []
+        for model_role, model_version, p_up in candidates:
+            decision = plan_independent_taker_order(
+                market_slug=self.market.slug,
+                p_boundary_up=prediction.p_boundary_up,
+                p_up=p_up,
+                books=books,
+                fee_rate_by_side={
+                    TokenSide.UP: self.rules[self.market.up_token_id].taker_fee_rate,
+                    TokenSide.DOWN: self.rules[self.market.down_token_id].taker_fee_rate,
+                },
+                max_shares=self.maker_config.max_shares,
+                minimum_net_edge=max(
+                    self.variant.minimum_taker_net_edge,
+                    stage_rule.minimum_net_edge,
+                ),
+                slippage_buffer=self.variant.slippage_buffer,
+                model_uncertainty_buffer=0.0,
+                available_balance=self.starting_balance,
+                decision_ts_ns=now_ts_ns,
+                minimum_price=max(
+                    self.tail_entry_price_threshold,
+                    stage_rule.minimum_price,
+                ),
+                maximum_price=stage_rule.maximum_price,
+            )
+            if decision.plan is not None:
+                observations.append(
+                    ModelCounterfactual(
+                        model_role=model_role,
+                        model_version=model_version,
+                        stage=stage_rule.stage,
+                        plan=decision.plan,
+                    )
+                )
+        return tuple(observations)
+
     def _evaluation_from_taker_decision(
         self,
         *,
@@ -1858,8 +1999,12 @@ class ResearchPaperEngine:
             run_mode="research_paper",
             strategy=StrategyCycle(
                 stage=StrategyStage.PAPER,
-                gate_state=GateState.RUNNING,
-                next_action="继续积累实时模拟成交；正式 Maker Go 仍需悲观 BookReplay 与 Canary。",
+                gate_state=self.dashboard_gate_state,
+                next_action=(
+                    "当前模型为 No-Go Paper 对照；继续积累严格 OOS 证据，不得用于实盘。"
+                    if self.dashboard_gate_state is GateState.NO_GO
+                    else "继续积累实时模拟成交；未通过 sealed holdout 前不得进入 Canary。"
+                ),
                 model_id=self.dashboard_primary_model_id,
                 challenger_model_id=self.dashboard_dependency_model_id,
                 progress_label="已完成模拟市场",
@@ -2089,6 +2234,14 @@ class ResearchPaperEngine:
         up_meta = self._last_books[self.market.up_token_id]
         down_meta = self._last_books[self.market.down_token_id]
         data_age = max(now_ts_ns - up_meta[1], now_ts_ns - down_meta[1]) / 1e9
+        feature_observation = (
+            None
+            if self._live_features is None
+            else self._live_features.snapshot(
+                decision_ts_ns=now_ts_ns,
+                market_window_start_ns=int(self.market.t0.timestamp() * 1_000_000_000),
+            )
+        )
         observation = OpeningMarketObservation(
             market_slug=self.market.slug,
             decision_ts_ns=now_ts_ns,
@@ -2101,6 +2254,27 @@ class ResearchPaperEngine:
             has_data_gap=bool(self._gapped_tokens) or self._binance_gap,
             structure_valid=True,
             tick_unchanged=not self._tick_changed_tokens,
+            opening_feature_schema_hash=(
+                None if feature_observation is None else feature_observation.feature_schema_hash
+            ),
+            opening_feature_values=(
+                None if feature_observation is None else feature_observation.values
+            ),
+            opening_feature_quality_flags=(
+                frozenset() if feature_observation is None else feature_observation.quality_flags
+            ),
+            up_book=(
+                books.up.best_bid,
+                books.up.best_ask,
+                books.up.bids[0].size,
+                books.up.asks[0].size,
+            ),
+            down_book=(
+                books.down.best_bid,
+                books.down.best_ask,
+                books.down.bids[0].size,
+                books.down.asks[0].size,
+            ),
         )
         return self.predictor(self.market, self.kline_history, observation)
 
@@ -2486,6 +2660,10 @@ class ResearchPaperPortfolio:
         for engine in self.engines:
             engine.kline_history = history
 
+    def prepare_markets(self, markets: tuple[MarketWindow, ...]) -> None:
+        for engine in self.engines:
+            engine.prepare_markets(markets)
+
     def activate_market(
         self,
         market: MarketWindow,
@@ -2519,6 +2697,26 @@ class ResearchPaperPortfolio:
                 pass
             else:
                 self.direction_store.append_prediction(prediction, stage=stage)
+                self.direction_store.append_comparison_prediction(
+                    market_slug=prediction.market_slug,
+                    decision_ts_ns=prediction.trigger_ts_ns,
+                    model_role="legacy_1_0",
+                    model_version=prediction.model_version,
+                    stage=stage,
+                    p_up=prediction.p_up,
+                )
+                if (
+                    prediction.market_relative_model_version is not None
+                    and prediction.market_relative_p_up is not None
+                ):
+                    self.direction_store.append_comparison_prediction(
+                        market_slug=prediction.market_slug,
+                        decision_ts_ns=prediction.trigger_ts_ns,
+                        model_role="market_relative_2_0",
+                        model_version=prediction.market_relative_model_version,
+                        stage=stage,
+                        p_up=prediction.market_relative_p_up,
+                    )
         primary_records_before = len(self.primary.records)
         primary_result = self.primary.decide(
             now_ts_ns=now_ts_ns,
@@ -2527,6 +2725,13 @@ class ResearchPaperPortfolio:
         evaluations: list[PaperEvaluationObservation] = []
         if self.primary.last_evaluation is not None:
             evaluations.append(self.primary.last_evaluation)
+        for counterfactual in self.primary.last_counterfactuals:
+            self.direction_store.append_counterfactual(
+                model_role=counterfactual.model_role,
+                model_version=counterfactual.model_version,
+                stage=counterfactual.stage,
+                plan=counterfactual.plan,
+            )
         primary_opportunity_created = len(self.primary.records) > primary_records_before
         results = {self.primary.variant.variant_id: primary_result}
         for engine in self.engines:

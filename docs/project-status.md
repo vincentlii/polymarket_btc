@@ -1,5 +1,79 @@
 # Project Status
 
+## 2026-08-24 1.0 / 2.0 no-order forward comparison
+
+- The early-only runtime now records frozen Legacy 1.0 and market-relative 2.0
+  as separate forward-OOS probability streams. An observation-only 2.0
+  artifact remains execution-disabled and cannot create simulated or real
+  orders.
+- Each model may create at most one no-order counterfactual FAK opportunity per
+  market. It uses the same admitted dual-token book, visible ask ladder, fee
+  snapshot, five-share cap, price band, stage edge floor and slippage stress.
+- After settlement the dashboard reports each model's direction mix, accuracy,
+  Brier/log loss, hypothetical wins, PnL and EV. Counterfactual results never
+  enter order/fill counts, account equity or realized PnL.
+
+## 2026-08-19 BTC 15m profitability research branch
+
+- Created independent branch `codex/btc-v10-profitability-upgrade` from stable
+  revision `f8d42a5d0c044b5bca4c2e08ff326887e4910a3f`; the deployed VPS branch and
+  the separate pre-open Alpha Master research line are unchanged.
+- Current Paper configuration is early-only. Legacy 1x5, later stages and
+  repeated 2x/3x confirmations are disabled; their historical ledgers remain
+  readable through immutable SQLite snapshot publication. The v2 1x5 route
+  remains the primary observer, but a model with a research `No-Go` gate records
+  evaluations only and cannot create simulated orders.
+- Added common `core`, `flow` and `enriched` feature profiles. Core uses exact
+  causal dual-token BBO plus the Legacy probability anchor; larger profiles
+  require their actual venue sources and fail closed when evidence is missing.
+- Added BTC-only PMXT v2 filtering, causal BBO reconstruction, frozen anchored
+  dataset IO, three-stage development OOF and Paper-only artifact tooling.
+  Imported historical rows are development-only; the fresh sealed-forward
+  boundary is 2026-08-20 UTC.
+- The verified PMXT overlap is concentrated in 2026-07-01 through 2026-07-08.
+  The explicitly non-promotable quick-development screen therefore uses a
+  3-day train, 1-day calibration, 1-day test/step, 4h15m embargo and a 1-day
+  untouched tail. It is for candidate screening; the formal
+  90/21/14/28-day protocol is not weakened.
+- Development selection now evaluates five Logistic and 12 controlled
+  LightGBM variants per stage. Every research metric follows the 1x5 contract:
+  only the earliest executable opportunity per market can trade, while model
+  ranking uses cost-after-execution return per eligible market. Probability
+  uncertainty is market-first and tie-safe, so repeated snapshots cannot
+  create false confidence.
+- Historical execution evidence applies the same one-second dual-token BBO
+  freshness gate and configured per-stage net-edge thresholds as Paper. A
+  missing later snapshot removes that decision, not an otherwise causal early
+  market. Stage fitting and reported point metrics rebalance within each market,
+  so uneven snapshot coverage cannot create a direction or calibration bias.
+- Model selection distinguishes a statistically promotable champion from a
+  Paper-only development leader. The latter still requires non-negative
+  log-loss/Brier improvement, positive cost-after-execution return, balanced
+  Up/Down opportunities and a valid leaf audit; it never opens the sealed
+  holdout or becomes Canary/live eligible.
+- The first real overlap run is complete: 689 of 704 PMXT markets pass the
+  one-second causal BBO gate and produce 24,220 snapshots. Early Core Logistic
+  improves point log loss by 0.00121 and Brier by 0.00297 versus `q_pm`, but 65
+  point-probability opportunities earn only +0.76 cents/share and their
+  market-block 95% lower bound is -9.39 cents. Only six survive model
+  uncertainty and those lose money. The 35--90s result has just 11 point
+  opportunities and no independent day/week support; 95--180s degrades
+  probability accuracy and selects Down 71 of 74 times. No stage passes.
+- The bounded search of five Logistic and 12 LightGBM variants per stage also
+  yields no Paper leader. A separate `trade_flow` ablation adds existing causal
+  Binance Spot 5/15-second return, volatility and taker-flow features; it
+  worsens early point net EV from +0.76 to -0.21 cents and does not rescue the
+  later stages. That family is frozen instead of promoted.
+- The current conclusion is an explicit No-Go, not an implicit promise that
+  more tuning will create profit. Collection should continue to add independent
+  dates; this development slice must not produce an execution-enabled artifact.
+  An explicitly observation-only artifact may emit paired diagnostics, while
+  runtime execution remains fail-closed unless a future artifact passes the
+  Paper experiment gate or the full sealed promotion contract.
+- Full raw-derived Maker/exit L2 replay and Canary remain deliberately deferred
+  until the user-approved later phase. No model from this branch has been
+  committed, deployed, or promoted.
+
 ## 2026-08-18 Collector memory and dynamic-window correction
 
 - Production RSS profiling identified the Collector's 2.3 GiB anonymous-memory

@@ -5,13 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
-from math import log
 from typing import Mapping, Sequence
 
 import numpy as np
 
 from btc_short_horizon.features import FeatureSchema, opening_feature_schema
-from btc_short_horizon.features.events import BtcBookTop, BtcTrade
+from btc_short_horizon.features.events import BtcBookTop
 from btc_short_horizon.features.market_relative import (
     DualTokenBookSnapshot,
     market_relative_feature_schema_v2,
@@ -25,53 +24,98 @@ from btc_short_horizon.research.walk_forward import ResearchSample
 class MarketRelativeV2FactorFamily(StrEnum):
     ANCHOR = "anchor"
     PM_DUAL_TOKEN = "pm_dual_token"
-    BINANCE_FLOW_BOOK = "binance_flow_book"
-    OKX_FLOW_BOOK = "okx_flow_book"
+    BINANCE_SPOT_TRADE_FLOW = "binance_spot_trade_flow"
+    BINANCE_SPOT_FLOW_BOOK = "binance_spot_flow_book"
+    BINANCE_PERP_FLOW_BOOK = "binance_perp_flow_book"
+    OKX_SPOT_FLOW_BOOK = "okx_spot_flow_book"
+    OKX_SWAP_FLOW_BOOK = "okx_swap_flow_book"
     CROSS_VENUE = "cross_venue"
+
+
+def market_relative_v2_profile_families(
+    profile: str,
+) -> tuple[MarketRelativeV2FactorFamily, ...]:
+    if profile == "core":
+        return (
+            MarketRelativeV2FactorFamily.ANCHOR,
+            MarketRelativeV2FactorFamily.PM_DUAL_TOKEN,
+        )
+    if profile == "flow":
+        return (
+            MarketRelativeV2FactorFamily.ANCHOR,
+            MarketRelativeV2FactorFamily.PM_DUAL_TOKEN,
+            MarketRelativeV2FactorFamily.BINANCE_SPOT_FLOW_BOOK,
+        )
+    if profile == "trade_flow":
+        return (
+            MarketRelativeV2FactorFamily.ANCHOR,
+            MarketRelativeV2FactorFamily.PM_DUAL_TOKEN,
+            MarketRelativeV2FactorFamily.BINANCE_SPOT_TRADE_FLOW,
+        )
+    if profile == "enriched":
+        return tuple(
+            value
+            for value in MarketRelativeV2FactorFamily
+            if value is not MarketRelativeV2FactorFamily.BINANCE_SPOT_TRADE_FLOW
+        )
+    raise ValueError("market-relative feature profile must be core, trade_flow, flow, or enriched")
+
+
+def market_relative_v2_required_venue_sources(profile: str) -> tuple[str, ...]:
+    families = market_relative_v2_profile_families(profile)
+    return tuple(
+        source
+        for source in ("binance_spot", "binance_perp", "okx_spot", "okx_swap")
+        if any(source in _FAMILY_SOURCES.get(family, ()) for family in families)
+    )
 
 
 _V2_NAMES = market_relative_feature_schema_v2().names
 _FAMILY_NAMES: dict[MarketRelativeV2FactorFamily, tuple[str, ...]] = {
     MarketRelativeV2FactorFamily.ANCHOR: _V2_NAMES[:7],
     MarketRelativeV2FactorFamily.PM_DUAL_TOKEN: _V2_NAMES[7:],
-    MarketRelativeV2FactorFamily.BINANCE_FLOW_BOOK: tuple(
-        f"{source}_{suffix}"
-        for source in ("binance_spot", "binance_perp")
-        for suffix in (
-            "return_1s",
-            "return_5s",
-            "return_15s",
-            "flow_1s",
-            "flow_5s",
-            "flow_15s",
-            "book_imbalance",
-            "microprice_distance",
-            "spread_bps",
-        )
+    MarketRelativeV2FactorFamily.BINANCE_SPOT_TRADE_FLOW: (
+        "binance_spot_return_5s",
+        "binance_spot_rv_5s",
+        "binance_spot_flow_5s",
+        "binance_spot_return_15s",
+        "binance_spot_rv_15s",
+        "binance_spot_flow_15s",
     ),
-    MarketRelativeV2FactorFamily.OKX_FLOW_BOOK: tuple(
-        f"{source}_{suffix}"
-        for source in ("okx_spot", "okx_swap")
-        for suffix in (
-            "return_1s",
-            "return_5s",
-            "return_15s",
-            "flow_1s",
-            "flow_5s",
-            "flow_15s",
-            "book_imbalance",
-            "microprice_distance",
-            "spread_bps",
+    **{
+        family: tuple(
+            f"{source}_{suffix}"
+            for suffix in (
+                "return_1s",
+                "return_5s",
+                "return_15s",
+                "flow_1s",
+                "flow_5s",
+                "flow_15s",
+                "book_imbalance",
+                "microprice_distance",
+                "spread_bps",
+            )
         )
-    ),
+        for family, source in (
+            (MarketRelativeV2FactorFamily.BINANCE_SPOT_FLOW_BOOK, "binance_spot"),
+            (MarketRelativeV2FactorFamily.BINANCE_PERP_FLOW_BOOK, "binance_perp"),
+            (MarketRelativeV2FactorFamily.OKX_SPOT_FLOW_BOOK, "okx_spot"),
+            (MarketRelativeV2FactorFamily.OKX_SWAP_FLOW_BOOK, "okx_swap"),
+        )
+    },
     MarketRelativeV2FactorFamily.CROSS_VENUE: (
         "consensus_dispersion_bps",
         "chainlink_consensus_basis_bps",
     ),
 }
 _FAMILY_SOURCES: dict[MarketRelativeV2FactorFamily, tuple[str, ...]] = {
-    MarketRelativeV2FactorFamily.BINANCE_FLOW_BOOK: ("binance_spot", "binance_perp"),
-    MarketRelativeV2FactorFamily.OKX_FLOW_BOOK: ("okx_spot", "okx_swap"),
+    MarketRelativeV2FactorFamily.ANCHOR: (),
+    MarketRelativeV2FactorFamily.BINANCE_SPOT_TRADE_FLOW: ("binance_spot",),
+    MarketRelativeV2FactorFamily.BINANCE_SPOT_FLOW_BOOK: ("binance_spot",),
+    MarketRelativeV2FactorFamily.BINANCE_PERP_FLOW_BOOK: ("binance_perp",),
+    MarketRelativeV2FactorFamily.OKX_SPOT_FLOW_BOOK: ("okx_spot",),
+    MarketRelativeV2FactorFamily.OKX_SWAP_FLOW_BOOK: ("okx_swap",),
     MarketRelativeV2FactorFamily.CROSS_VENUE: (
         "binance_spot",
         "binance_perp",
@@ -111,6 +155,35 @@ def market_relative_v2_research_schema(
         version="btc-market-relative-research-v2:" + "+".join(value.value for value in normalized),
         names=names,
     )
+
+
+def market_relative_v2_feature_values(
+    *,
+    opening_values: Mapping[str, float],
+    direction_p_up: float,
+    market_p_up: float,
+    elapsed_seconds: float,
+    btc_data_age_seconds: float,
+    up: DualTokenBookSnapshot,
+    down: DualTokenBookSnapshot,
+    families: Sequence[MarketRelativeV2FactorFamily],
+) -> dict[str, float]:
+    """Build the shared offline/live feature mapping from one causal opening snapshot."""
+
+    values = dict(opening_values)
+    values.update(
+        market_relative_feature_values_v2(
+            direction_p_up=direction_p_up,
+            boundary_p_up=float(opening_values["p_boundary_up"]),
+            market_p_up=market_p_up,
+            elapsed_seconds=elapsed_seconds,
+            btc_data_age_seconds=btc_data_age_seconds,
+            up=up,
+            down=down,
+        )
+    )
+    schema = market_relative_v2_research_schema(families)
+    return {name: float(values[name]) for name in schema.names}
 
 
 def materialize_market_relative_v2(
@@ -170,20 +243,16 @@ def materialize_market_relative_v2(
     for observation in observations:
         opening_values = dict(zip(opening_schema.names, observation.values, strict=True))
         up, down = snapshots[observation.ts_event]
-        v2_values = market_relative_feature_values_v2(
+        all_values = market_relative_v2_feature_values(
+            opening_values=opening_values,
             direction_p_up=float(direction_p_up_by_decision[observation.ts_event]),
-            boundary_p_up=observation.p_boundary_up,
             market_p_up=observation.p_market_mid_up,
             elapsed_seconds=opening_values["elapsed_seconds"],
             btc_data_age_seconds=opening_values["data_age_seconds"],
             up=up,
             down=down,
+            families=normalized,
         )
-        high_frequency = _high_frequency_values(
-            raw_build=raw_build,
-            decision_ts_ns=observation.ts_event,
-        )
-        all_values = {**opening_values, **v2_values, **high_frequency}
         vectors.append(tuple(all_values[name] for name in research_schema.names))
         samples.append(
             ResearchSample(
@@ -266,58 +335,6 @@ def _snapshot(book: BtcBookTop) -> DualTokenBookSnapshot:
     return DualTokenBookSnapshot(book.bid, book.ask, book.bid_size, book.ask_size)
 
 
-def _high_frequency_values(
-    *, raw_build: ForwardOpeningFeatureBuild, decision_ts_ns: int
-) -> dict[str, float]:
-    events = tuple(
-        event for event in raw_build.input_events if event.available_ts_ns <= decision_ts_ns
-    )
-    result: dict[str, float] = {}
-    latest_prices: list[float] = []
-    for source in ("binance_spot", "binance_perp", "okx_spot", "okx_swap"):
-        source_events = tuple(event for event in events if event.state_source == source)
-        trades = tuple(event.value for event in source_events if isinstance(event.value, BtcTrade))
-        books = tuple(event.value for event in source_events if isinstance(event.value, BtcBookTop))
-        latest = trades[-1].price if trades else None
-        if latest is not None:
-            latest_prices.append(latest)
-        for seconds in (1, 5, 15):
-            cutoff = decision_ts_ns - seconds * 1_000_000_000
-            window = tuple(trade for trade in trades if trade.available_ts_ns >= cutoff)
-            result[f"{source}_return_{seconds}s"] = (
-                log(latest / window[0].price) if latest is not None and window else 0.0
-            )
-            notional = sum(trade.price * trade.quantity for trade in window)
-            signed = sum(
-                trade.price * trade.quantity * (1.0 if trade.aggressor_side == "buy" else -1.0)
-                for trade in window
-                if trade.aggressor_side in {"buy", "sell"}
-            )
-            result[f"{source}_flow_{seconds}s"] = signed / notional if notional else 0.0
-        book = books[-1] if books else None
-        if book is None:
-            result[f"{source}_book_imbalance"] = 0.0
-            result[f"{source}_microprice_distance"] = 0.0
-            result[f"{source}_spread_bps"] = 0.0
-        else:
-            total = book.bid_size + book.ask_size
-            midpoint = (book.bid + book.ask) / 2.0
-            microprice = (book.ask * book.bid_size + book.bid * book.ask_size) / total
-            result[f"{source}_book_imbalance"] = (book.bid_size - book.ask_size) / total
-            result[f"{source}_microprice_distance"] = microprice / midpoint - 1.0
-            result[f"{source}_spread_bps"] = (book.ask - book.bid) / midpoint * 10_000.0
-    if latest_prices:
-        consensus = float(np.median(latest_prices))
-        result["consensus_dispersion_bps"] = (
-            max(abs(price / consensus - 1.0) for price in latest_prices) * 10_000.0
-        )
-    else:
-        result["consensus_dispersion_bps"] = 0.0
-    # This value is already calculated causally from Chainlink and venue state by
-    # OpeningFeatureState. It remains zero only when that evidence is unavailable.
-    return result
-
-
 def _datetime_ns(value: int) -> datetime:
     return datetime.fromtimestamp(value / 1_000_000_000, tz=UTC)
 
@@ -326,6 +343,9 @@ __all__ = [
     "MarketRelativeV2Coverage",
     "MarketRelativeV2DatasetBuild",
     "MarketRelativeV2FactorFamily",
+    "market_relative_v2_feature_values",
+    "market_relative_v2_profile_families",
+    "market_relative_v2_required_venue_sources",
     "market_relative_v2_research_schema",
     "materialize_market_relative_v2",
 ]

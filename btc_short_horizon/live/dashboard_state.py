@@ -345,6 +345,109 @@ class DirectionStageSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class DirectionModelPerformance:
+    """Resolved forward-OOS probability and no-order counterfactual performance."""
+
+    model_role: str
+    model_version: str
+    paired_market_count: int
+    prediction_count: int
+    predicted_up_count: int
+    predicted_down_count: int
+    accuracy: float | None
+    brier: float | None
+    log_loss: float | None
+    counterfactual_opportunity_count: int
+    counterfactual_resolved_count: int
+    counterfactual_up_count: int
+    counterfactual_down_count: int
+    counterfactual_win_count: int
+    counterfactual_pnl: float
+    counterfactual_ev_per_opportunity: float | None
+
+    def __post_init__(self) -> None:
+        _require_identifier(self.model_role, "direction model role")
+        _require_text(self.model_version, "direction model version")
+        for name in (
+            "paired_market_count",
+            "prediction_count",
+            "predicted_up_count",
+            "predicted_down_count",
+            "counterfactual_opportunity_count",
+            "counterfactual_resolved_count",
+            "counterfactual_up_count",
+            "counterfactual_down_count",
+            "counterfactual_win_count",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        if self.predicted_up_count + self.predicted_down_count != self.paired_market_count:
+            raise ValueError("model direction counts must equal paired markets")
+        if (
+            self.counterfactual_up_count + self.counterfactual_down_count
+            != self.counterfactual_opportunity_count
+        ):
+            raise ValueError("counterfactual direction counts must equal opportunities")
+        if self.counterfactual_resolved_count > self.counterfactual_opportunity_count:
+            raise ValueError("resolved counterfactuals cannot exceed opportunities")
+        if self.counterfactual_win_count > self.counterfactual_resolved_count:
+            raise ValueError("counterfactual wins cannot exceed resolved opportunities")
+        for name in ("accuracy", "brier"):
+            value = getattr(self, name)
+            if value is not None and (not isfinite(value) or not 0.0 <= value <= 1.0):
+                raise ValueError(f"{name} must be in [0, 1] when provided")
+        _optional_nonnegative(self.log_loss, "log_loss")
+        _finite(self.counterfactual_pnl, "counterfactual_pnl")
+        _optional_finite(
+            self.counterfactual_ev_per_opportunity,
+            "counterfactual_ev_per_opportunity",
+        )
+
+    def to_json(self) -> dict[str, object]:
+        return {name: getattr(self, name) for name in self.__dataclass_fields__}
+
+    @classmethod
+    def from_json(cls, raw: object) -> DirectionModelPerformance:
+        value = _mapping(raw, "direction model performance")
+        return cls(
+            model_role=_text(value.get("model_role"), "model_role"),
+            model_version=_text(value.get("model_version"), "model_version"),
+            paired_market_count=_integer(value.get("paired_market_count"), "paired_market_count"),
+            prediction_count=_integer(value.get("prediction_count"), "prediction_count"),
+            predicted_up_count=_integer(value.get("predicted_up_count"), "predicted_up_count"),
+            predicted_down_count=_integer(
+                value.get("predicted_down_count"), "predicted_down_count"
+            ),
+            accuracy=_optional_float(value.get("accuracy"), "accuracy"),
+            brier=_optional_float(value.get("brier"), "brier"),
+            log_loss=_optional_float(value.get("log_loss"), "log_loss"),
+            counterfactual_opportunity_count=_integer(
+                value.get("counterfactual_opportunity_count"),
+                "counterfactual_opportunity_count",
+            ),
+            counterfactual_resolved_count=_integer(
+                value.get("counterfactual_resolved_count"),
+                "counterfactual_resolved_count",
+            ),
+            counterfactual_up_count=_integer(
+                value.get("counterfactual_up_count"), "counterfactual_up_count"
+            ),
+            counterfactual_down_count=_integer(
+                value.get("counterfactual_down_count"), "counterfactual_down_count"
+            ),
+            counterfactual_win_count=_integer(
+                value.get("counterfactual_win_count"), "counterfactual_win_count"
+            ),
+            counterfactual_pnl=_float(value.get("counterfactual_pnl"), "counterfactual_pnl"),
+            counterfactual_ev_per_opportunity=_optional_float(
+                value.get("counterfactual_ev_per_opportunity"),
+                "counterfactual_ev_per_opportunity",
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class DirectionHealthSnapshot:
     scope: str
     coverage_started_at: datetime
@@ -360,6 +463,7 @@ class DirectionHealthSnapshot:
     calibration_z: float | None
     bias_state: str
     stage_summaries: tuple[DirectionStageSummary, ...] = ()
+    model_summaries: tuple[DirectionModelPerformance, ...] = ()
 
     def __post_init__(self) -> None:
         _require_identifier(self.scope, "direction health scope")
@@ -393,6 +497,7 @@ class DirectionHealthSnapshot:
         _optional_probability(self.mean_p_up, "mean_p_up")
         _optional_finite(self.calibration_z, "calibration_z")
         object.__setattr__(self, "stage_summaries", tuple(self.stage_summaries))
+        object.__setattr__(self, "model_summaries", tuple(self.model_summaries))
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -410,6 +515,7 @@ class DirectionHealthSnapshot:
             "calibration_z": self.calibration_z,
             "bias_state": self.bias_state,
             "stage_summaries": [item.to_json() for item in self.stage_summaries],
+            "model_summaries": [item.to_json() for item in self.model_summaries],
         }
 
     @classmethod
@@ -438,6 +544,10 @@ class DirectionHealthSnapshot:
             stage_summaries=tuple(
                 DirectionStageSummary.from_json(item)
                 for item in _sequence(value.get("stage_summaries", ()), "stage_summaries")
+            ),
+            model_summaries=tuple(
+                DirectionModelPerformance.from_json(item)
+                for item in _sequence(value.get("model_summaries", ()), "model_summaries")
             ),
         )
 

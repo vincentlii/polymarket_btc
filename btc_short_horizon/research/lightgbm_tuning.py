@@ -90,13 +90,20 @@ def residual_logistic_grid(*, random_seed: int = 17) -> tuple[LightGBMSearchCand
 
 
 def residual_lightgbm_grid(*, random_seed: int = 17) -> tuple[LightGBMSearchCandidate, ...]:
+    """Return a 12-candidate low-capacity residual grid.
+
+    Together with the five Logistic controls this stays well below the frozen
+    64-variant development budget while still crossing tree capacity, leaf
+    support, and learning rate.
+    """
+
     candidates: list[LightGBMSearchCandidate] = []
-    for (leaves, depth), min_child, learning_rate, estimators in product(
-        ((3, 2), (7, 3), (15, 4), (31, 5)),
-        (100, 200, 500, 1_000),
+    for (leaves, depth), min_child, learning_rate in product(
+        ((3, 2), (7, 3), (15, 4)),
+        (200, 500),
         (0.01, 0.03),
-        (1_000, 2_000),
     ):
+        estimators = 1_500
         candidates.append(
             LightGBMSearchCandidate(
                 name=(

@@ -22,7 +22,7 @@ from btc_short_horizon.data.collector import RawCollectorEvent
 from btc_short_horizon.data.forward import AdmittedEventBuffer
 from btc_short_horizon.execution_timing import CLOB_DELAYED_TAKER_SERVER_MS
 from btc_short_horizon.data.gamma import GammaMarketClient
-from btc_short_horizon.live.dashboard_state import DashboardSnapshotStore
+from btc_short_horizon.live.dashboard_state import DashboardSnapshotStore, GateState
 from btc_short_horizon.live.paper_execution import PaperExecutionConfig, PaperMarketRules
 from btc_short_horizon.live.research_paper import (
     PaperLedgerStore,
@@ -39,6 +39,14 @@ from btc_short_horizon.models.market_relative import (
     market_relative_runtime_feature_schema,
     market_relative_runtime_feature_values,
 )
+from btc_short_horizon.features import opening_feature_schema
+from btc_short_horizon.features.market_relative import DualTokenBookSnapshot
+from btc_short_horizon.research.market_relative_v2 import (
+    market_relative_v2_feature_values,
+    market_relative_v2_profile_families,
+    market_relative_v2_required_venue_sources,
+    market_relative_v2_research_schema,
+)
 from btc_short_horizon.models.market_relative_artifacts import MarketRelativeArtifactStore
 from btc_short_horizon.research.binance_history import fetch_binance_spot_kline_history
 from btc_short_horizon.research.opening_proxy import (
@@ -53,6 +61,14 @@ from btc_short_horizon.strategy import StagePolicyConfig
 
 def _runtime_identity() -> dict[str, str | None]:
     return {"code_revision": os.environ.get("BTC_CODE_REVISION")}
+
+
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 _CLOB_HOST = "https://clob.polymarket.com"
@@ -163,22 +179,44 @@ class PublicPaperRulesClient:
 class MarketRelativePaperAdapter:
     """Attach a separate Paper-only residual interval to a Legacy prediction."""
 
-    def __init__(self, *, directory: Path, expected_rule_epoch: str) -> None:
-        schema = market_relative_runtime_feature_schema()
+    def __init__(
+        self,
+        *,
+        directory: Path,
+        expected_rule_epoch: str,
+        feature_profile: str | None = None,
+    ) -> None:
+        self.feature_profile = feature_profile
+        self.families = (
+            () if feature_profile is None else market_relative_v2_profile_families(feature_profile)
+        )
+        schema = (
+            market_relative_runtime_feature_schema()
+            if feature_profile is None
+            else market_relative_v2_research_schema(self.families)
+        )
         self.model, self.metadata = MarketRelativeArtifactStore.load(
             directory=directory,
             expected_schema_hash=schema.hash,
             expected_rule_epoch=expected_rule_epoch,
         )
 
-    def attach(self, prediction: OpeningMispricingPrediction) -> OpeningMispricingPrediction:
-        values = market_relative_runtime_feature_values(
-            direction_p_up=prediction.p_up,
-            boundary_p_up=prediction.p_boundary_up,
-            market_p_up=prediction.p_market_mid_up,
-            elapsed_seconds=prediction.elapsed_seconds,
-            btc_data_age_seconds=prediction.data_age_seconds,
+    @property
+    def required_venue_sources(self) -> tuple[str, ...]:
+        return (
+            ()
+            if self.feature_profile is None
+            else market_relative_v2_required_venue_sources(self.feature_profile)
         )
+
+    def attach(
+        self,
+        prediction: OpeningMispricingPrediction,
+        observation: object | None = None,
+    ) -> OpeningMispricingPrediction:
+        values = self._feature_values(prediction=prediction, observation=observation)
+        if values is None:
+            return prediction
         vector = np.asarray([self.model.schema.vector_from(values)], dtype=float)
         interval = self.model.predict_probability_intervals(
             vector,
@@ -191,6 +229,60 @@ class MarketRelativePaperAdapter:
             market_relative_p_up=interval.up_point,
             market_relative_p_up_lower=interval.up_lower,
             market_relative_p_up_upper=interval.up_upper,
+        )
+
+    def _feature_values(
+        self,
+        *,
+        prediction: OpeningMispricingPrediction,
+        observation: object | None,
+    ) -> dict[str, float] | None:
+        if self.feature_profile is None:
+            return market_relative_runtime_feature_values(
+                direction_p_up=prediction.p_up,
+                boundary_p_up=prediction.p_boundary_up,
+                market_p_up=prediction.p_market_mid_up,
+                elapsed_seconds=prediction.elapsed_seconds,
+                btc_data_age_seconds=prediction.data_age_seconds,
+            )
+        feature_hash = getattr(observation, "opening_feature_schema_hash", None)
+        feature_vector = getattr(observation, "opening_feature_values", None)
+        feature_flags = getattr(observation, "opening_feature_quality_flags", frozenset())
+        up_book = getattr(observation, "up_book", None)
+        down_book = getattr(observation, "down_book", None)
+        if up_book is None or down_book is None:
+            return None
+        if not self.required_venue_sources:
+            opening_values = {"p_boundary_up": prediction.p_boundary_up}
+            return market_relative_v2_feature_values(
+                opening_values=opening_values,
+                direction_p_up=prediction.p_up,
+                market_p_up=prediction.p_market_mid_up,
+                elapsed_seconds=prediction.elapsed_seconds,
+                btc_data_age_seconds=prediction.data_age_seconds,
+                up=DualTokenBookSnapshot(*up_book),
+                down=DualTokenBookSnapshot(*down_book),
+                families=self.families,
+            )
+        schema = opening_feature_schema()
+        if (
+            feature_hash != schema.hash
+            or feature_vector is None
+            or feature_flags
+            or up_book is None
+            or down_book is None
+        ):
+            return None
+        opening_values = dict(zip(schema.names, feature_vector, strict=True))
+        return market_relative_v2_feature_values(
+            opening_values=opening_values,
+            direction_p_up=prediction.p_up,
+            market_p_up=prediction.p_market_mid_up,
+            elapsed_seconds=prediction.elapsed_seconds,
+            btc_data_age_seconds=prediction.data_age_seconds,
+            up=DualTokenBookSnapshot(*up_book),
+            down=DualTokenBookSnapshot(*down_book),
+            families=self.families,
         )
 
 
@@ -228,6 +320,7 @@ class ModelPaperPredictor:
             else MarketRelativePaperAdapter(
                 directory=market_relative_model_directory,
                 expected_rule_epoch=project.model_rule_epoch,
+                feature_profile=project.paper_research.market_relative_feature_profile,
             )
         )
         self.is_rule_epoch_transition_proxy = project.model_rule_epoch != project.rule_epoch
@@ -255,6 +348,45 @@ class ModelPaperPredictor:
         return None if self._market_relative is None else self._market_relative.metadata.model_id
 
     @property
+    def market_relative_required_venue_sources(self) -> tuple[str, ...]:
+        return () if self._market_relative is None else self._market_relative.required_venue_sources
+
+    @property
+    def market_relative_gate_state(self) -> GateState:
+        if self._market_relative is None:
+            return GateState.NO_GO
+        config = self._market_relative.metadata.config
+        return (
+            GateState.GO
+            if config.get("runtime_promotion_eligible") is True
+            and config.get("sealed_holdout_evaluated") is True
+            and config.get("multiple_comparison_gate_passed") is True
+            else GateState.NO_GO
+        )
+
+    @property
+    def market_relative_paper_execution_enabled(self) -> bool:
+        if self._market_relative is None:
+            return False
+        config = self._market_relative.metadata.config
+        paper_experiment = (
+            config.get("paper_experiment_gate_passed") is True
+            and config.get("paper_experiment_only") is True
+            and config.get("runtime_promotion_eligible") is False
+            and config.get("sealed_holdout_evaluated") is False
+            and config.get("multiple_comparison_gate_passed") is False
+            and _is_sha256(config.get("selection_receipt_sha256"))
+        )
+        return bool(
+            paper_experiment
+            or (
+                config.get("runtime_promotion_eligible") is True
+                and config.get("sealed_holdout_evaluated") is True
+                and config.get("multiple_comparison_gate_passed") is True
+            )
+        )
+
+    @property
     def ledger_model_identity(self) -> dict[str, object]:
         return {
             "base_model_id": self.metadata.model_id,
@@ -264,6 +396,11 @@ class ModelPaperPredictor:
                 None
                 if self._market_relative is None
                 else self._market_relative.metadata.model_sha256
+            ),
+            "market_relative_model_rule_epoch": (
+                None
+                if self._market_relative is None
+                else self._market_relative.metadata.config.get("rule_epoch")
             ),
         }
 
@@ -290,7 +427,7 @@ class ModelPaperPredictor:
         return (
             prediction
             if self._market_relative is None
-            else self._market_relative.attach(prediction)
+            else self._market_relative.attach(prediction, observation)
         )
 
 
@@ -357,6 +494,21 @@ def build_research_paper_portfolio(
                     if variant.opportunity_policy == "robust_independent_taker"
                     and getattr(predictor, "market_relative_model_id", None) is not None
                     else None
+                ),
+                dashboard_gate_state=(
+                    getattr(predictor, "market_relative_gate_state", GateState.NO_GO)
+                    if variant.opportunity_policy == "robust_independent_taker"
+                    else GateState.NO_GO
+                ),
+                live_feature_sources=(
+                    getattr(predictor, "market_relative_required_venue_sources", None) or None
+                    if variant.opportunity_policy == "robust_independent_taker"
+                    else None
+                ),
+                research_execution_authorized=(
+                    bool(getattr(predictor, "market_relative_paper_execution_enabled", False))
+                    if variant.opportunity_policy == "robust_independent_taker"
+                    else True
                 ),
             )
             for variant in project.paper_execution_variants
@@ -463,6 +615,9 @@ class ResearchPaperRuntime:
         for item in registered:
             self._markets[item.slug] = item
             self._schedule_rule_fetch(item, now=now)
+        engine = getattr(self, "engine", None)
+        if engine is not None:
+            engine.prepare_markets(registered)
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         try:

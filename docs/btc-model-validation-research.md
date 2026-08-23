@@ -66,10 +66,11 @@ version 1 artifact 不得静默用于 version 2 shadow/live。它仍可保留为
 materialized dataset 的市场序列必须与请求 catalog 的精确、按时间排序 slug 序列一致；仅有相同 market count 不足以证明使用了相同日期或市场。
 
 实时 `Research Paper` 只允许加载通过上述 schema hash 与 protocol v2 检查的固定
-artifact，并使用与训练/回放相同的五秒 cadence 和两次连续信号确认。它不会重新
-训练、调参或自动晋级模型。当前 artifact 仍标为 `Research Proxy`：Paper 的虚拟
-PnL 可以产生新的 forward OOS 诊断证据，但不能补足少于 2,500 个 sealed holdout
-市场、缺失的因果 Polymarket baseline，也不能替代正式 queue/latency BookReplay。
+artifact，并使用与训练/回放相同的五秒 cadence。当前 1x5 合约在首次合格信号后
+最多尝试一次；它不会重新训练、调参或自动晋级模型。研究门槛为 `No-Go` 的 artifact
+只能记录预测与拒绝原因，不能生成模拟订单。未来显式通过 Paper experiment gate
+或完整 sealed promotion contract 的 artifact 才能开启对应 Paper 执行。Paper 的
+虚拟 PnL 也不能替代正式 queue/latency BookReplay。
 
 ## Chainlink TWAP epoch compatibility
 
@@ -97,8 +98,9 @@ beta and eligible isotonic mappings; a mapping replaces identity only when both
 weighted log loss and Brier improve on the disjoint calibration partition.
 
 The bounded development family contains five residual Logistic candidates and
-64 low-capacity residual LightGBM candidates. Ranking uses median per-window
-score, leaf audits count unique markets rather than snapshot rows, and one
+12 pre-registered low-capacity residual LightGBM candidates. Ranking uses the
+median cost-after-execution return per eligible market, not conditional profit
+per trade. Leaf audits count unique markets rather than snapshot rows, and one
 Bonferroni family correction is applied before candidate ranking. Shared-stage
 and independent-stage comparisons require identical market slugs. Promotion
 also requires positive paired log-loss/Brier and robust executable-edge lower
@@ -123,6 +125,72 @@ contains at least the configured number of independent markets; the default is
 required and observed minima. A future replacement for the uniform Paper-only
 uncertainty radius must use OOF market units and UTC day/week blocks; snapshot
 bootstrap is not eligible for `p_lower`.
+
+The current 1x5 contract allows at most one placement per BTC 15-minute market.
+Development OOF therefore keeps only the earliest executable decision in each
+market and treats later qualifying snapshots as diagnostics. Direction balance,
+opportunity counts, net EV and block confidence bounds all use that same
+one-market/one-trade population. Calibration uncertainty first collapses
+repeated snapshots to markets, then forms forecast-quantile bins without
+splitting tied probabilities and uses Wilson bounds for finite-market error.
+Point estimates and stage-specific fit weights also aggregate within market
+before comparing markets. Missing or stale later snapshots therefore cannot
+give a better-covered market extra statistical votes.
+Probability losses use the calibrated point forecast, while executable orders
+use the fitted probability interval's conservative side bound, matching Paper.
+Receipts report how many point-probability opportunities were removed by model
+uncertainty. They also report point-opportunity net EV and market/day/week lower
+bounds as explicitly non-executable diagnostics. Those rows distinguish weak
+point forecasts from finite-sample uncertainty, but never become Paper trades.
+
+Historical market-relative development has four explicit feature profiles.
+`core` needs only the frozen Legacy probability plus causal Polymarket Up/Down
+BBO; `trade_flow` adds only the historical/live-common Binance Spot 5/15-second
+return, volatility and taker-flow fields; `flow` adds Binance Spot flow/book
+evidence; `enriched` additionally needs
+Binance Perpetual and OKX Spot/Swap. Missing sources exclude a market rather
+than being imputed. Historical PMXT extraction is BTC-condition-only and keeps
+source and receive timestamps. All rows before the configured fresh forward
+boundary are development evidence even if an older artifact called part of
+them “sealed”; they cannot satisfy the new sealed-forward gate.
+
+Historical execution candidates apply the same configured BBO stale threshold
+and stage minimum net-edge threshold as Paper. A market is eligible when at
+least one enabled-stage decision has a causal, fresh dual-token BBO. Invalid
+individual decisions are excluded and counted; requiring all 36 observations
+would incorrectly reject usable early 1x5 evidence because of an unrelated
+later gap.
+
+The selection receipt names both a formal promotion champion and, when one
+exists, a Paper-only development leader. A Paper leader may lack adjusted
+confidence because the public overlap is short, but it must still have
+non-negative point log-loss and Brier improvement versus `q_pm`, positive
+cost-after-execution return, acceptable direction balance and a passing unique-
+market leaf gate. Formal promotion continues to require every adjusted lower
+bound and the sealed-forward protocol.
+
+Because the causal Legacy-OOF/PMXT intersection is currently short, the
+`quick-development` screen uses 3-day train, 1-day calibration, 1-day
+non-overlapping test/step, 4h15m embargo and a 1-day untouched tail. This is an
+exploratory No-Go/continue-research profile only. The formal 90/21/14/28-day
+profile remains unchanged and is the only profile eligible for later promotion.
+
+### No-order forward comparison
+
+A development champion that fails the Paper gate may be serialized only with
+`observation_only=true`. Runtime loading preserves its probabilities while
+`market_relative_paper_execution_enabled` stays false. This permits paired
+forward comparison against frozen Legacy 1.0 without weakening execution
+safety.
+
+For each model and market, the first qualifying point-probability FAK plan is
+stored as no-order counterfactual evidence. It uses the admitted visible ask
+ladder, fee snapshot, configured price band, five-share cap, stage edge floor
+and slippage stress. No order state machine is invoked. Final counterfactual
+PnL is payout minus executable notional minus taker fee and remains separate
+from simulated and account PnL. Probability accuracy, Brier and log loss use
+the first valid comparison prediction per market/model, so repeated five-second
+decisions do not become fake independent samples.
 
 ## 验收标准
 

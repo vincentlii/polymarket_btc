@@ -15,6 +15,7 @@ from btc_short_horizon.research.lightgbm_tuning import (
     residual_lightgbm_grid,
     residual_logistic_grid,
 )
+from btc_short_horizon.research.walk_forward import WalkForwardConfig
 from btc_short_horizon.strategy import OpeningStage
 from btc_short_horizon.strategy import StagePolicyConfig
 
@@ -31,6 +32,7 @@ class CandidateDevelopmentEvidence:
     objective_p_values: Mapping[str, float]
     oof_market_count: int
     minimum_leaf_unique_market_count: int | None = None
+    direction_balance_gate_passed: bool = True
     sealed_sample_count: int = 0
 
     def __post_init__(self) -> None:
@@ -61,6 +63,8 @@ class CandidateDevelopmentEvidence:
             raise ValueError("candidate evidence requires independent OOF markets")
         if self.sealed_sample_count != 0:
             raise ValueError("sealed holdout cannot participate in development selection")
+        if not isinstance(self.direction_balance_gate_passed, bool):
+            raise ValueError("direction_balance_gate_passed must be bool")
 
 
 CandidateEvaluator = Callable[
@@ -118,6 +122,17 @@ def select_market_relative_models(
                 and evidence.objective_p_values[name] <= adjusted_alpha
                 for name in ("log_loss", "brier", "net_ev")
             )
+            median_execution_score = median(
+                float(fold["execution_score"]) for fold in evidence.fold_metrics
+            )
+            paper_experiment_gate = bool(
+                leaf_gate
+                and evidence.direction_balance_gate_passed
+                and median_execution_score > 0.0
+                and evidence.objective_improvements["log_loss"] >= 0.0
+                and evidence.objective_improvements["brier"] >= 0.0
+                and evidence.objective_improvements["net_ev"] > 0.0
+            )
             evaluated.append(
                 {
                     "name": candidate.name,
@@ -128,13 +143,13 @@ def select_market_relative_models(
                     "objective_improvements": dict(evidence.objective_improvements),
                     "objective_lower_bounds": dict(evidence.objective_lower_bounds),
                     "objective_p_values": dict(evidence.objective_p_values),
-                    "median_fold_execution_score": median(
-                        float(fold["execution_score"]) for fold in evidence.fold_metrics
-                    ),
+                    "median_fold_execution_score": median_execution_score,
                     "oof_market_count": evidence.oof_market_count,
                     "minimum_leaf_unique_market_count": (evidence.minimum_leaf_unique_market_count),
                     "leaf_gate_passed": leaf_gate,
                     "multiple_comparison_gate_passed": multiple_gate,
+                    "direction_balance_gate_passed": evidence.direction_balance_gate_passed,
+                    "paper_experiment_gate_passed": paper_experiment_gate,
                 }
             )
         logistic = [value for value in evaluated if value["kind"] == "logistic"]
@@ -145,9 +160,12 @@ def select_market_relative_models(
             if value["kind"] == "lightgbm"
             and value["leaf_gate_passed"]
             and value["multiple_comparison_gate_passed"]
+            and value["direction_balance_gate_passed"]
             and _rank(value) > _rank(best_logistic)
         ]
         champion = max(eligible_lgb, key=_rank) if eligible_lgb else best_logistic
+        paper_candidates = [value for value in evaluated if value["paper_experiment_gate_passed"]]
+        paper_leader = max(paper_candidates, key=_rank) if paper_candidates else None
         stages[stage.value] = {
             "candidate_count": len(evaluated),
             "bonferroni_test_count": bonferroni_test_count,
@@ -156,6 +174,21 @@ def select_market_relative_models(
             "champion_name": champion["name"],
             "champion_config_sha256": champion["config_sha256"],
             "champion_config": champion["config"],
+            "selection_gate_passed": bool(
+                champion["multiple_comparison_gate_passed"]
+                and champion["direction_balance_gate_passed"]
+                and champion["leaf_gate_passed"]
+            ),
+            "paper_experiment_gate_passed": paper_leader is not None,
+            "paper_experiment_leader_name": (
+                paper_leader["name"] if paper_leader is not None else None
+            ),
+            "paper_experiment_config_sha256": (
+                paper_leader["config_sha256"] if paper_leader is not None else None
+            ),
+            "paper_experiment_config": (
+                paper_leader["config"] if paper_leader is not None else None
+            ),
             "candidates": evaluated,
         }
 
@@ -202,7 +235,10 @@ def make_oof_candidate_evaluator(
     minimum_trade_edge: float,
     minimum_order_size: float,
     tail_quarantine_price: float,
+    minimum_side_opportunities: int = 30,
+    maximum_side_share: float = 0.80,
     stage_policy: StagePolicyConfig | None = None,
+    split_config: WalkForwardConfig | None = None,
 ) -> CandidateEvaluator:
     """Adapt the real anchored OOF runner to the selection contract."""
 
@@ -230,7 +266,10 @@ def make_oof_candidate_evaluator(
                 minimum_trade_edge=minimum_trade_edge,
                 minimum_order_size=minimum_order_size,
                 tail_quarantine_price=tail_quarantine_price,
+                minimum_side_opportunities=minimum_side_opportunities,
+                maximum_side_share=maximum_side_share,
                 stage_policy=stage_policy,
+                split_config=split_config,
             )
         stage_receipt = cache[cache_key][stage.value]
         if not isinstance(stage_receipt, Mapping):
@@ -256,6 +295,7 @@ def make_oof_candidate_evaluator(
             objective_p_values=p_values,
             oof_market_count=int(stage_receipt["oof_market_count"]),
             minimum_leaf_unique_market_count=stage_receipt.get("minimum_leaf_unique_market_count"),
+            direction_balance_gate_passed=bool(stage_receipt["direction_balance"]["gate_passed"]),
         )
 
     return evaluate

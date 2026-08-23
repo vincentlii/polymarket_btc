@@ -34,7 +34,12 @@ from btc_short_horizon.research.market_relative_model_selection import (  # noqa
 from btc_short_horizon.research.exit_replay import fee_rule_sha256  # noqa: E402
 from btc_short_horizon.research.market_relative_v2 import (  # noqa: E402
     MarketRelativeV2FactorFamily,
+    market_relative_v2_profile_families,
+    market_relative_v2_required_venue_sources,
     materialize_market_relative_v2,
+)
+from btc_short_horizon.research.market_relative_dataset_io import (  # noqa: E402
+    save_anchored_direction_dataset,
 )
 from btc_short_horizon.research.market_relative_workflow import (  # noqa: E402
     evaluate_research_workflow,
@@ -58,8 +63,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--raw-data-root", type=Path)
     parser.add_argument("--legacy-probabilities-json", type=Path, required=True)
     parser.add_argument("--output-json", type=Path, required=True)
+    parser.add_argument("--dataset-output", type=Path)
     parser.add_argument(
         "--family", action="append", choices=[value.value for value in MarketRelativeV2FactorFamily]
+    )
+    parser.add_argument(
+        "--profile", choices=("core", "trade_flow", "flow", "enriched"), default="core"
     )
     parser.add_argument("--minimum-eligible-markets", type=int)
     parser.add_argument("--bootstrap-resamples", type=int, default=5_000)
@@ -77,6 +86,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--fee-exponent", type=int, required=True)
     parser.add_argument("--minimum-order-size", type=float, default=5.0)
     parser.add_argument("--tail-quarantine-price", type=float)
+    parser.add_argument("--minimum-side-opportunities", type=int, default=30)
+    parser.add_argument("--maximum-side-share", type=float, default=0.80)
     parser.add_argument(
         "--model-search", choices=("none", "logistic", "bounded"), default="bounded"
     )
@@ -120,6 +131,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise ValueError("--minimum-order-size must be finite and > 0")
     if not isfinite(tail_quarantine_price) or not 0.0 < tail_quarantine_price < 0.5:
         raise ValueError("--tail-quarantine-price must be finite and in (0, 0.5)")
+    if args.minimum_side_opportunities < 1:
+        raise ValueError("--minimum-side-opportunities must be >= 1")
+    if not isfinite(args.maximum_side_share) or not 0.5 < args.maximum_side_share < 1.0:
+        raise ValueError("--maximum-side-share must be in (0.5, 1)")
     if args.minimum_markets_per_leaf < 1:
         raise ValueError("--minimum-markets-per-leaf must be >= 1")
     if not isfinite(args.familywise_alpha) or not 0.0 < args.familywise_alpha < 1.0:
@@ -127,25 +142,40 @@ def main(argv: Sequence[str] | None = None) -> int:
     fee_hash = fee_rule_sha256(args.fee_rate, args.fee_exponent)
     if args.output_json.exists():
         raise FileExistsError(f"output already exists: {args.output_json}")
+    if args.dataset_output is not None and args.dataset_output.exists():
+        raise FileExistsError(f"dataset output already exists: {args.dataset_output}")
     probability_bytes = args.legacy_probabilities_json.read_bytes()
     probabilities_by_market = json.loads(probability_bytes)
     if not isinstance(probabilities_by_market, dict):
         raise ValueError("Legacy probabilities must be a slug -> decision_ns -> probability object")
-    families = tuple(
-        MarketRelativeV2FactorFamily(value)
-        for value in (args.family or [value.value for value in MarketRelativeV2FactorFamily])
+    families = (
+        tuple(MarketRelativeV2FactorFamily(value) for value in args.family)
+        if args.family
+        else market_relative_v2_profile_families(args.profile)
     )
-    required_venues = ["binance_spot", "binance_perp"]
-    if any(
-        family
-        in {MarketRelativeV2FactorFamily.OKX_FLOW_BOOK, MarketRelativeV2FactorFamily.CROSS_VENUE}
-        for family in families
-    ):
-        required_venues.extend(("okx_spot", "okx_swap"))
+    required_venues = (
+        market_relative_v2_required_venue_sources(args.profile)
+        if not args.family
+        else tuple(
+            dict.fromkeys(
+                source
+                for source, family in (
+                    ("binance_spot", MarketRelativeV2FactorFamily.BINANCE_SPOT_TRADE_FLOW),
+                    ("binance_spot", MarketRelativeV2FactorFamily.BINANCE_SPOT_FLOW_BOOK),
+                    ("binance_perp", MarketRelativeV2FactorFamily.BINANCE_PERP_FLOW_BOOK),
+                    ("okx_spot", MarketRelativeV2FactorFamily.OKX_SPOT_FLOW_BOOK),
+                    ("okx_swap", MarketRelativeV2FactorFamily.OKX_SWAP_FLOW_BOOK),
+                )
+                if family in families or MarketRelativeV2FactorFamily.CROSS_VENUE in families
+            )
+        )
+    )
     records = []
     errors: dict[str, str] = {}
     for market in read_market_catalog(args.market_catalog).windows():
         if market.resolution is None or market.resolution.value == "void":
+            continue
+        if market.t0 >= config.paper_research.sealed_forward_start:
             continue
         supplied = probabilities_by_market.get(market.slug)
         if not isinstance(supplied, dict):
@@ -236,14 +266,37 @@ def main(argv: Sequence[str] | None = None) -> int:
             minimum_trade_edge=args.minimum_trade_edge,
             minimum_order_size=args.minimum_order_size,
             tail_quarantine_price=tail_quarantine_price,
+            minimum_side_opportunities=args.minimum_side_opportunities,
+            maximum_side_share=args.maximum_side_share,
             stage_policy=config.stage_policy,
         ),
     )
     model_selection: dict[str, object] = {"status": "not_requested", "mode": "none"}
     selected_datasets = datasets_by_ablation.get(full_key, ())
+    dataset_sha256: str | None = None
+    selected_dataset = None
+    if selected_datasets:
+        selected_dataset = _merge(selected_datasets)
+        if args.dataset_output is not None:
+            dataset_sha256 = save_anchored_direction_dataset(
+                path=args.dataset_output,
+                dataset=selected_dataset,
+                lineage={
+                    "profile": args.profile if not args.family else "custom",
+                    "families": [value.value for value in families],
+                    "catalog_sha256": _hash(args.market_catalog),
+                    "project_config_sha256": _hash(args.config),
+                    "legacy_probabilities_sha256": sha256(probability_bytes).hexdigest(),
+                    "rule_epoch": next(iter(rule_epochs), None),
+                    "rule_contract_sha256": (
+                        None if not rule_epochs else rule_contract_sha256(next(iter(rule_epochs)))
+                    ),
+                    "sealed_forward_start": config.paper_research.sealed_forward_start.isoformat(),
+                },
+            )
     if args.model_search != "none" and selected_datasets:
         try:
-            selected_dataset = _merge(selected_datasets)
+            assert selected_dataset is not None
             model_selection = select_market_relative_models(
                 stage_inputs={stage: selected_dataset for stage in OpeningStage},
                 evaluate_candidate=make_oof_candidate_evaluator(
@@ -254,6 +307,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     minimum_trade_edge=args.minimum_trade_edge,
                     minimum_order_size=args.minimum_order_size,
                     tail_quarantine_price=tail_quarantine_price,
+                    minimum_side_opportunities=args.minimum_side_opportunities,
+                    maximum_side_share=args.maximum_side_share,
                     stage_policy=config.stage_policy,
                 ),
                 mode=args.model_search,
@@ -272,12 +327,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         "status": workflow.status,
         "failed_stage": workflow.failed_stage,
         "families": [value.value for value in families],
+        "profile": args.profile if not args.family else "custom",
         "coverage": coverage,
         "errors": errors,
         "ablations": workflow.ablations,
         "exit_replay": {"status": "not_requested", "artifact_sha256": None},
         "promotion": workflow.promotion,
         "model_selection": model_selection,
+        "dataset_artifact": {
+            "path": None if args.dataset_output is None else str(args.dataset_output),
+            "sha256": dataset_sha256,
+            "market_count": (
+                0
+                if selected_dataset is None
+                else len({sample.group_id for sample in selected_dataset.dataset.samples})
+            ),
+        },
         "research_contract": {
             "minimum_independent_markets_required": minimum_eligible_markets,
             "tail_quarantine_price": tail_quarantine_price,
@@ -285,9 +350,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             "bootstrap_resamples": args.bootstrap_resamples,
             "random_seed": args.random_seed,
             "fee_rule_hash": fee_hash,
+            "minimum_side_opportunities": args.minimum_side_opportunities,
+            "maximum_side_share": args.maximum_side_share,
+            "sealed_forward_start": config.paper_research.sealed_forward_start.isoformat(),
         },
         "input_hashes": {
             "catalog": _hash(args.market_catalog),
+            "project_config": _hash(args.config),
             "legacy_probabilities": sha256(probability_bytes).hexdigest(),
         },
         "rule_fingerprints": [

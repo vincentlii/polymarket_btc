@@ -1,7 +1,7 @@
 rule_epoch = "chainlink-btc-usd-twap-60s-v1"
 model_rule_epoch = "chainlink-btc-usd-point-v1"
 allow_rule_epoch_transition_proxy = true
-paper_execution_epoch = "paper-v10-multisource-readiness"
+paper_execution_epoch = "paper-v11-profitability-early-only"
 
 data_sources = [
   "local:../../data/pmxt_raw",
@@ -12,6 +12,8 @@ data_sources = [
 [paper_research]
 tail_entry_price_threshold = 0.35
 evidence_target_markets = 300
+market_relative_feature_profile = "core"
+sealed_forward_start = 2026-08-20T00:00:00Z
 
 [paths]
 raw_data_root = "../../data/btc_short_horizon"
@@ -57,7 +59,7 @@ end_seconds = 90.0
 minimum_net_edge = 0.035
 minimum_price = 0.20
 maximum_price = 0.80
-enabled = true
+enabled = false
 
 [[stage_policy.rules]]
 id = "mid_early_95s_to_180s"
@@ -66,7 +68,7 @@ end_seconds = 180.0
 minimum_net_edge = 0.03
 minimum_price = 0.20
 maximum_price = 0.80
-enabled = true
+enabled = false
 
 [collection]
 flush_size = 50000
@@ -123,7 +125,7 @@ label = "Independent FAK 1x5s Legacy"
 mode = "immediate_fak"
 maker_work_seconds = 0.0
 primary = false
-enabled = true
+enabled = false
 minimum_taker_net_edge = 0.03
 slippage_buffer = 0.005
 model_uncertainty_buffer = 0.03
@@ -134,7 +136,7 @@ maximum_edge_decay = 0.0
 
 [[paper_execution_variants]]
 id = "independent_fak_1x5s_2_0"
-label = "Independent FAK 1x5s 2.0 Paper"
+label = "Independent FAK 1x5s 2.0 No-Go Paper"
 mode = "immediate_fak"
 maker_work_seconds = 0.0
 primary = true

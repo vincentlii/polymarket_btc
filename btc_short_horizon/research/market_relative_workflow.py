@@ -59,6 +59,8 @@ def evaluate_research_workflow(
     selected = receipts[selected_ablation]
     if selected.get("status") != "complete":  # type: ignore[union-attr]
         failed_stage = str(selected.get("failed_stage", "data_audit"))  # type: ignore[union-attr]
+    elif _has_failed_direction_balance(selected["stage_oof"]):  # type: ignore[index]
+        failed_stage = "direction_balance"
     elif _has_nonpositive_lower_bound(selected["stage_oof"]):  # type: ignore[index]
         failed_stage = "p_lower"
     else:
@@ -69,6 +71,20 @@ def evaluate_research_workflow(
         ablations=receipts,
         promotion={"status": "blocked", "reason": "sealed_holdout_receipt_required"},
     )
+
+
+def _has_failed_direction_balance(stage_receipt: object) -> bool:
+    if not isinstance(stage_receipt, Mapping) or not stage_receipt:
+        raise ValueError("stage receipt must be a non-empty mapping")
+    for evidence in stage_receipt.values():
+        if not isinstance(evidence, Mapping):
+            raise ValueError("stage evidence must be a mapping")
+        balance = evidence.get("direction_balance")
+        if not isinstance(balance, Mapping) or not isinstance(balance.get("gate_passed"), bool):
+            raise ValueError("stage evidence requires a direction-balance gate")
+        if balance["gate_passed"] is not True:
+            return True
+    return False
 
 
 def _has_nonpositive_lower_bound(stage_receipt: object) -> bool:

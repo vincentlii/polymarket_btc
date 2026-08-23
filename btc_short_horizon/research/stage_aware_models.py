@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import numpy as np
+
 from btc_short_horizon.data import BTC_15M_MARKET_FAMILY
 from btc_short_horizon.models import DirectionModelConfig
 from btc_short_horizon.research.pipeline import DirectionDataset, WalkForwardModelRun
@@ -43,7 +45,16 @@ def select_stage_dataset(
     if not indices:
         raise ValueError(f"dataset has no samples for stage {stage.value}")
     matrix = dataset.vectors[list(indices)]
-    weights = dataset.sample_weights[list(indices)] if dataset.sample_weights is not None else None
+    weights = None
+    if dataset.sample_weights is not None:
+        counts: dict[str, int] = {}
+        for index in indices:
+            group_id = dataset.samples[index].group_id
+            counts[group_id] = counts.get(group_id, 0) + 1
+        weights = np.asarray(
+            [1.0 / counts[dataset.samples[index].group_id] for index in indices],
+            dtype=float,
+        )
     return DirectionDataset(
         samples=tuple(dataset.samples[index] for index in indices),
         vectors=matrix,

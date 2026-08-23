@@ -5,7 +5,8 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
-from math import isfinite
+from math import isfinite, sqrt
+from statistics import NormalDist
 
 import lightgbm as lgb
 import numpy as np
@@ -69,7 +70,7 @@ def fit_market_relative_lightgbm(
     validation_labels: np.ndarray,
     validation_market_up_probability: np.ndarray,
     schema: FeatureSchema,
-    probability_uncertainty_radius: float,
+    probability_uncertainty_radius: float | None,
     num_leaves: int,
     max_depth: int,
     min_child_samples: int,
@@ -79,6 +80,8 @@ def fit_market_relative_lightgbm(
     random_seed: int,
     train_weights: np.ndarray | None = None,
     validation_weights: np.ndarray | None = None,
+    validation_market_ids: Sequence[str] | None = None,
+    uncertainty_confidence: float = 0.95,
 ) -> FittedMarketRelativeLightGBM:
     """Fit residual trees from a PM logit init score on a disjoint validation set."""
 
@@ -133,11 +136,100 @@ def fit_market_relative_lightgbm(
         valid_sets=(valid,),
         callbacks=(lgb.early_stopping(early_stopping_rounds, verbose=False),),
     )
+    radius = (
+        probability_uncertainty_radius
+        if probability_uncertainty_radius is not None
+        else empirical_market_uncertainty_radius(
+            predictions=relative_probability(
+                validation_anchor,
+                np.asarray(
+                    booster.predict(
+                        validation,
+                        raw_score=True,
+                        num_iteration=booster.best_iteration,
+                    ),
+                    dtype=float,
+                ),
+            ),
+            labels=validation_target,
+            market_ids=validation_market_ids,
+            confidence=uncertainty_confidence,
+        )
+    )
     return FittedMarketRelativeLightGBM(
         booster=booster,
         schema=schema,
-        probability_uncertainty_radius=probability_uncertainty_radius,
+        probability_uncertainty_radius=radius,
     )
+
+
+def empirical_market_uncertainty_radius(
+    *,
+    predictions: np.ndarray,
+    labels: np.ndarray,
+    market_ids: Sequence[str] | None,
+    confidence: float = 0.95,
+) -> float:
+    """Conservative calibration radius over independent markets.
+
+    Outcome residuals contain irreducible Bernoulli noise and therefore must
+    not be interpreted as uncertainty in the estimated probability.  This
+    routine first collapses repeated snapshots to independent markets, then
+    bounds each adaptive calibration bin with a Wilson interval.  The maximum
+    distance from the bin's mean forecast to that interval is the runtime
+    probability radius.
+    """
+
+    probability = _probabilities(predictions)
+    target = np.asarray(labels, dtype=float)
+    if (
+        target.ndim != 1
+        or len(target) != len(probability)
+        or not np.isfinite(target).all()
+        or not set(target.tolist()).issubset({0.0, 1.0})
+    ):
+        raise ValueError("uncertainty labels must be binary and prediction-aligned")
+    if not isfinite(confidence) or not 0.5 < confidence < 1.0:
+        raise ValueError("uncertainty confidence must be in (0.5, 1)")
+    if market_ids is None:
+        market_ids = tuple(str(index) for index in range(len(probability)))
+    if len(market_ids) != len(probability) or any(not value for value in market_ids):
+        raise ValueError("uncertainty market IDs must align with predictions")
+    grouped: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    for market_id, predicted, observed in zip(market_ids, probability, target, strict=True):
+        grouped[str(market_id)].append((float(predicted), float(observed)))
+    market_rows = sorted(
+        (
+            float(np.mean([item[0] for item in values])),
+            float(np.mean([item[1] for item in values])),
+        )
+        for values in grouped.values()
+    )
+    bin_count = max(1, min(10, len(market_rows) // 30))
+    market_forecasts = np.asarray([row[0] for row in market_rows])
+    market_outcomes = np.asarray([row[1] for row in market_rows])
+    edges = np.unique(np.quantile(market_forecasts, np.linspace(0.0, 1.0, bin_count + 1)[1:-1]))
+    assignments = np.digitize(market_forecasts, edges, right=True)
+    z_value = NormalDist().inv_cdf(0.5 + confidence / 2.0)
+    radius = 0.0
+    for bin_index in sorted(set(assignments.tolist())):
+        selected = assignments == bin_index
+        forecasts = market_forecasts[selected]
+        outcomes = market_outcomes[selected]
+        forecast = float(np.mean(forecasts))
+        observed = float(np.mean(outcomes))
+        lower, upper = _wilson_interval(observed=observed, count=len(outcomes), z=z_value)
+        radius = max(radius, abs(forecast - lower), abs(upper - forecast))
+    return float(np.clip(radius, 1e-6, 0.499999))
+
+
+def _wilson_interval(*, observed: float, count: int, z: float) -> tuple[float, float]:
+    denominator = 1.0 + z * z / count
+    center = (observed + z * z / (2.0 * count)) / denominator
+    half_width = (
+        z * sqrt((observed * (1.0 - observed) + z * z / (4.0 * count)) / count) / denominator
+    )
+    return max(0.0, center - half_width), min(1.0, center + half_width)
 
 
 def minimum_leaf_unique_market_count(
@@ -232,6 +324,7 @@ def _logit(probabilities: np.ndarray) -> np.ndarray:
 __all__ = [
     "FittedMarketRelativeLightGBM",
     "fit_market_relative_lightgbm",
+    "empirical_market_uncertainty_radius",
     "minimum_leaf_unique_market_count",
     "require_minimum_leaf_unique_markets",
 ]

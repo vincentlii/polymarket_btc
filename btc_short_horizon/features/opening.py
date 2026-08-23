@@ -175,9 +175,7 @@ class OpeningFeatureState:
         state.last_available_ts_ns = 0
         state.gap = True
 
-    def venue_snapshot(
-        self, *, source: str, decision_ts_ns: int
-    ) -> OpeningVenueSnapshot:
+    def venue_snapshot(self, *, source: str, decision_ts_ns: int) -> OpeningVenueSnapshot:
         values, flags, latest_price, rv_300, ages = self._venue_values(
             source=source,
             decision_ts_ns=decision_ts_ns,
@@ -249,7 +247,7 @@ class OpeningFeatureState:
             if source in self.required_venue_sources:
                 flags.update(source_flags)
                 ages.extend(source_ages)
-            if price is not None:
+            if source in self.required_venue_sources and price is not None:
                 venue_prices.append(price)
             if source == "binance_spot":
                 primary_rv_300 = rv_300

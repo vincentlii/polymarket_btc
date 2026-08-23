@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -39,11 +40,13 @@ def test_baseline_config_is_path_relative_and_has_explicit_queue_scenarios() -> 
     assert config.collection.opening_handoff_delay_seconds == 900.0
     assert config.paper_research.tail_entry_price_threshold == 0.35
     assert config.paper_research.evidence_target_markets == 300
+    assert config.paper_research.market_relative_feature_profile == "core"
+    assert config.paper_research.sealed_forward_start == datetime(2026, 8, 20, tzinfo=UTC)
     assert config.collection.ingest_version == "btc-short-horizon-v17"
     assert config.rule_epoch == "chainlink-btc-usd-twap-60s-v1"
     assert config.model_rule_epoch == "chainlink-btc-usd-point-v1"
     assert config.allow_rule_epoch_transition_proxy is True
-    assert config.paper_execution_epoch == "paper-v10-multisource-readiness"
+    assert config.paper_execution_epoch == "paper-v11-profitability-early-only"
     variants = {variant.variant_id: variant for variant in config.paper_execution_variants}
     assert set(variants) == {
         "independent_fak_1x5s",
@@ -52,14 +55,13 @@ def test_baseline_config_is_path_relative_and_has_explicit_queue_scenarios() -> 
     assert [
         variant.variant_id for variant in config.paper_execution_variants if variant.enabled
     ] == [
-        "independent_fak_1x5s",
         "independent_fak_1x5s_2_0",
     ]
     assert variants["independent_fak_1x5s"].label == "Independent FAK 1x5s Legacy"
     assert variants["independent_fak_1x5s"].mode == "immediate_fak"
     assert variants["independent_fak_1x5s"].confirmation_signals == 1
     assert variants["independent_fak_1x5s"].primary is False
-    assert variants["independent_fak_1x5s_2_0"].label == "Independent FAK 1x5s 2.0 Paper"
+    assert variants["independent_fak_1x5s_2_0"].label == "Independent FAK 1x5s 2.0 No-Go Paper"
     assert variants["independent_fak_1x5s_2_0"].mode == "immediate_fak"
     assert variants["independent_fak_1x5s_2_0"].confirmation_signals == 1
     assert variants["independent_fak_1x5s_2_0"].opportunity_policy == "robust_independent_taker"
@@ -70,6 +72,7 @@ def test_baseline_config_is_path_relative_and_has_explicit_queue_scenarios() -> 
         "price_discovery_35s_to_90s",
         "mid_early_95s_to_180s",
     ]
+    assert [rule.enabled for rule in config.stage_policy.rules] == [True, False, False]
     formal = tuple(scenario for scenario in config.scenarios if scenario.formal_grid_component)
     assert len(formal) == 4
     assert all(scenario.execution.queue_position for scenario in formal)
@@ -153,7 +156,7 @@ def test_paper_execution_epoch_cannot_escape_the_ledger_root(tmp_path: Path) -> 
     path = tmp_path / "unsafe-epoch.toml"
     path.write_text(
         baseline.replace(
-            'paper_execution_epoch = "paper-v10-multisource-readiness"',
+            'paper_execution_epoch = "paper-v11-profitability-early-only"',
             'paper_execution_epoch = "../paper-v3-independent-fak"',
         ),
         encoding="utf-8",
@@ -178,9 +181,9 @@ def test_project_config_rejects_invalid_enabled_primary(
 ) -> None:
     baseline = Path("configs/btc_short_horizon/baseline.toml").read_text(encoding="utf-8")
     changed = baseline.replace(
-        'id = "independent_fak_1x5s_2_0"\nlabel = "Independent FAK 1x5s 2.0 Paper"\nmode = "immediate_fak"\nmaker_work_seconds = 0.0\nprimary = true\nenabled = true',
+        'id = "independent_fak_1x5s_2_0"\nlabel = "Independent FAK 1x5s 2.0 No-Go Paper"\nmode = "immediate_fak"\nmaker_work_seconds = 0.0\nprimary = true\nenabled = true',
         (
-            'id = "independent_fak_1x5s_2_0"\nlabel = "Independent FAK 1x5s 2.0 Paper"\nmode = "immediate_fak"\nmaker_work_seconds = 0.0'
+            'id = "independent_fak_1x5s_2_0"\nlabel = "Independent FAK 1x5s 2.0 No-Go Paper"\nmode = "immediate_fak"\nmaker_work_seconds = 0.0'
             f"\nprimary = {str(primary).lower()}\nenabled = {str(enabled).lower()}"
         ),
         1,
@@ -195,7 +198,7 @@ def test_project_config_rejects_invalid_enabled_primary(
 def test_project_config_rejects_multiple_enabled_primaries(tmp_path: Path) -> None:
     baseline = Path("configs/btc_short_horizon/baseline.toml").read_text(encoding="utf-8")
     changed = baseline.replace(
-        'id = "independent_fak_1x5s"\nlabel = "Independent FAK 1x5s Legacy"\nmode = "immediate_fak"\nmaker_work_seconds = 0.0\nprimary = false\nenabled = true',
+        'id = "independent_fak_1x5s"\nlabel = "Independent FAK 1x5s Legacy"\nmode = "immediate_fak"\nmaker_work_seconds = 0.0\nprimary = false\nenabled = false',
         'id = "independent_fak_1x5s"\nlabel = "Independent FAK 1x5s Legacy"\nmode = "immediate_fak"\nmaker_work_seconds = 0.0\nprimary = true\nenabled = true',
         1,
     )

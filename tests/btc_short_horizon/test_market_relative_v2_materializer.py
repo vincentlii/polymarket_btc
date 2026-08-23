@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from math import log
 
 from btc_short_horizon.features import (
     BtcBookTop,
@@ -10,6 +11,8 @@ from btc_short_horizon.features import (
 )
 from btc_short_horizon.research.market_relative_v2 import (
     MarketRelativeV2FactorFamily,
+    market_relative_v2_profile_families,
+    market_relative_v2_required_venue_sources,
     materialize_market_relative_v2,
 )
 from btc_short_horizon.research.opening_features import (
@@ -82,7 +85,25 @@ def _trade(
 def _build(decision: int) -> ForwardOpeningFeatureBuild:
     schema = opening_feature_schema()
     values = {name: 0.0 for name in schema.names}
-    values.update(elapsed_seconds=5.0, remaining_seconds=895.0, data_age_seconds=0.1)
+    values.update(
+        elapsed_seconds=5.0,
+        remaining_seconds=895.0,
+        data_age_seconds=0.1,
+        p_boundary_up=0.58,
+    )
+    for source, price in (
+        ("binance_spot", 100.0),
+        ("binance_perp", 101.0),
+        ("okx_spot", 102.0),
+        ("okx_swap", 103.0),
+    ):
+        for seconds in (1, 5, 15):
+            values[f"{source}_return_{seconds}s"] = log((price + 1.0) / price)
+            values[f"{source}_flow_{seconds}s"] = (price - (price + 1.0) * 2.0) / (
+                price + (price + 1.0) * 2.0
+            )
+        values[f"{source}_book_imbalance"] = 0.5
+    values["consensus_dispersion_bps"] = 1.5 / 102.5 * 10_000.0
     events = [
         _book("polymarket_clob", "up", bid=0.49, ask=0.51, ts=decision - 1),
         _book("polymarket_clob", "down", bid=0.48, ask=0.50, ts=decision - 1),
@@ -169,6 +190,18 @@ def test_v2_materializer_builds_causal_dual_token_dataset() -> None:
     assert "pm_complement_ask_excess" in result.dataset.schema.names
 
 
+def test_v2_profiles_keep_historical_core_separate_from_forward_flow() -> None:
+    assert market_relative_v2_required_venue_sources("core") == ()
+    assert market_relative_v2_required_venue_sources("trade_flow") == ("binance_spot",)
+    assert market_relative_v2_required_venue_sources("flow") == ("binance_spot",)
+    assert market_relative_v2_profile_families("core") == (
+        MarketRelativeV2FactorFamily.ANCHOR,
+        MarketRelativeV2FactorFamily.PM_DUAL_TOKEN,
+    )
+    trade_flow = market_relative_v2_profile_families("trade_flow")
+    assert trade_flow[-1] is MarketRelativeV2FactorFamily.BINANCE_SPOT_TRADE_FLOW
+
+
 def test_v2_materializer_fails_closed_with_explicit_missing_source_coverage() -> None:
     decision = 1_800_000_005_000_000_000
     build = _build(decision)
@@ -181,13 +214,10 @@ def test_v2_materializer_fails_closed_with_explicit_missing_source_coverage() ->
                 item for item in build.source_summaries if not item.raw_source.startswith("okx")
             ),
         ),
-        (MarketRelativeV2FactorFamily.OKX_FLOW_BOOK,),
+        (MarketRelativeV2FactorFamily.OKX_SPOT_FLOW_BOOK,),
     )
     assert result.dataset is None
-    assert result.coverage.excluded_reasons == (
-        "missing_source:okx_spot",
-        "missing_source:okx_swap",
-    )
+    assert result.coverage.excluded_reasons == ("missing_source:okx_spot",)
 
 
 def test_v2_multisource_features_use_available_events_and_ignore_future() -> None:
@@ -209,8 +239,10 @@ def test_v2_multisource_features_use_available_events_and_ignore_future() -> Non
             source_summaries=build.source_summaries,
         ),
         (
-            MarketRelativeV2FactorFamily.BINANCE_FLOW_BOOK,
-            MarketRelativeV2FactorFamily.OKX_FLOW_BOOK,
+            MarketRelativeV2FactorFamily.BINANCE_SPOT_FLOW_BOOK,
+            MarketRelativeV2FactorFamily.BINANCE_PERP_FLOW_BOOK,
+            MarketRelativeV2FactorFamily.OKX_SPOT_FLOW_BOOK,
+            MarketRelativeV2FactorFamily.OKX_SWAP_FLOW_BOOK,
             MarketRelativeV2FactorFamily.CROSS_VENUE,
         ),
     )

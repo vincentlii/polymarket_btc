@@ -924,36 +924,24 @@ def test_independent_maker_reuses_1x5_filter_and_works_until_market_end(tmp_path
     assert not maker.requires_settlement_trade_evidence(market.slug)
 
 
-def test_baseline_portfolio_contains_only_the_two_enabled_1x_variants(tmp_path) -> None:
+def test_baseline_portfolio_observes_no_go_primary_without_placing_orders(tmp_path) -> None:
     project = load_btc_project_config(Path("configs/btc_short_horizon/baseline.toml"))
-    enabled_variant_ids = {
-        "independent_fak_1x5s",
-        "independent_fak_1x5s_2_0",
-    }
-    disabled_variant_ids = {
-        "independent_maker_1x5s_market_end",
-        "independent_fak_2x5s",
-        "independent_fak_stable_3x5s",
-    }
+    enabled_variant_ids = {"independent_fak_1x5s_2_0"}
 
     class Predictor:
         model_id = "proxy-model"
         market_relative_model_id = "market-relative-v1"
-        include_interval = False
+        market_relative_paper_execution_enabled = False
 
         def __call__(self, market, history, observation):  # type: ignore[no-untyped-def]
             prediction = _prediction(observation)
-            return (
-                replace(
-                    prediction,
-                    market_relative_model_version="market-relative-v1",
-                    market_relative_feature_schema_hash="c" * 64,
-                    market_relative_p_up=0.20,
-                    market_relative_p_up_lower=0.15,
-                    market_relative_p_up_upper=0.25,
-                )
-                if self.include_interval
-                else prediction
+            return replace(
+                prediction,
+                market_relative_model_version="market-relative-v1",
+                market_relative_feature_schema_hash="c" * 64,
+                market_relative_p_up=0.20,
+                market_relative_p_up_lower=0.15,
+                market_relative_p_up_upper=0.25,
             )
 
     predictor = Predictor()
@@ -964,43 +952,51 @@ def test_baseline_portfolio_contains_only_the_two_enabled_1x_variants(tmp_path) 
         starting_balance=1_000.0,
     )
     assert [engine.variant.variant_id for engine in portfolio.engines] == [
-        "independent_fak_1x5s",
         "independent_fak_1x5s_2_0",
     ]
     assert portfolio.primary.variant.variant_id == "independent_fak_1x5s_2_0"
     initial_ledgers = tuple(
         tmp_path.glob(f"paper/epochs/{project.paper_execution_epoch}/variants/*/ledger.sqlite3")
     )
-    assert len(initial_ledgers) == 2
+    assert len(initial_ledgers) == 1
     assert not tuple(
         tmp_path.glob(f"paper/epochs/{project.paper_execution_epoch}/variants/*/ledger.json")
     )
     portfolio.activate_market(_market(), rules={UP: _rules(UP), DOWN: _rules(DOWN)})
     portfolio.on_event(_book(UP, bid="0.40", ask="0.42", second=5))
     portfolio.on_event(_book(DOWN, bid="0.56", ask="0.58", second=5))
-    assert portfolio.decide(now_ts_ns=T0_NS + 5_500_000_000) == "probability_interval_unavailable"
-    assert (
-        portfolio.last_decisions["independent_fak_1x5s_2_0"] == "probability_interval_unavailable"
+    assert portfolio.decide(now_ts_ns=T0_NS + 5_500_000_000) == "model_research_gate_no_go"
+    assert portfolio.last_decisions["independent_fak_1x5s_2_0"] == "model_research_gate_no_go"
+    assert portfolio.records == ()
+    assert portfolio.primary.last_counterfactuals[0].model_role == "legacy_1_0"
+    assert portfolio.primary.last_counterfactuals[1].model_role == "market_relative_2_0"
+    portfolio.on_event(_book(UP, bid="0.39", ask="0.41", second=10))
+    portfolio.on_event(_book(DOWN, bid="0.57", ask="0.59", second=10))
+    assert portfolio.decide(now_ts_ns=T0_NS + 10_500_000_000) == "model_research_gate_no_go"
+    portfolio.settle(
+        market_slug=_market().slug,
+        outcome=MarketOutcome.UP,
+        label_available_ts_ns=int(_market().t1.timestamp() * 1_000_000_000),
     )
-    predictor.include_interval = True
-    portfolio.on_event(_book(UP, bid="0.40", ask="0.42", second=10))
-    portfolio.on_event(_book(DOWN, bid="0.56", ask="0.58", second=10))
-    assert portfolio.decide(now_ts_ns=T0_NS + 10_500_000_000) == "submitted"
-    assert portfolio.last_decisions["independent_fak_1x5s_2_0"] == "submitted"
-    legacy = next(item for item in portfolio.records if item.variant_id == "independent_fak_1x5s")
-    challenger = next(
-        item for item in portfolio.records if item.variant_id == "independent_fak_1x5s_2_0"
-    )
-    assert legacy.side == "up"
-    assert challenger.side == "down"
-    assert legacy.model_version == "proxy-model"
-    assert challenger.model_version == "market-relative-v1"
     portfolio.checkpoint_evaluations()
 
     snapshot = portfolio.dashboard_snapshot(now=T0 + timedelta(seconds=6))
 
-    assert {record.variant_id for record in portfolio.records} == enabled_variant_ids
+    assert portfolio.records == ()
     assert snapshot.performance is not None
+    assert snapshot.performance.order_count == 0
+    assert snapshot.performance.fill_count == 0
+    assert snapshot.performance.direction_health is not None
+    model_summaries = {
+        item.model_role: item for item in snapshot.performance.direction_health.model_summaries
+    }
+    assert set(model_summaries) == {"legacy_1_0", "market_relative_2_0"}
+    assert model_summaries["legacy_1_0"].counterfactual_resolved_count == 1
+    assert model_summaries["legacy_1_0"].prediction_count == 1
+    assert model_summaries["legacy_1_0"].counterfactual_pnl == pytest.approx(2.9)
+    assert model_summaries["market_relative_2_0"].counterfactual_resolved_count == 1
+    assert model_summaries["market_relative_2_0"].prediction_count == 1
+    assert model_summaries["market_relative_2_0"].counterfactual_pnl == pytest.approx(-2.9)
     assert snapshot.strategy.model_id == "market-relative-v1"
     assert snapshot.strategy.challenger_model_id == "proxy-model"
     assert {
@@ -1011,10 +1007,10 @@ def test_baseline_portfolio_contains_only_the_two_enabled_1x_variants(tmp_path) 
         for item in snapshot.performance.variant_summaries
         if item.variant_id == "independent_fak_1x5s_2_0"
     )
-    assert dict(robust_summary.rejection_counts) == {"probability_interval_unavailable": 1}
-    assert robust_summary.mean_gross_edge is not None
-    assert robust_summary.mean_fee_per_share is not None
-    assert robust_summary.mean_net_edge is not None
+    assert dict(robust_summary.rejection_counts) == {"model_research_gate_no_go": 2}
+    assert robust_summary.mean_gross_edge is None
+    assert robust_summary.mean_fee_per_share is None
+    assert robust_summary.mean_net_edge is None
     assert portfolio.requires_settlement_trade_evidence(_market().slug) is False
 
     epoch_root = tmp_path / "paper" / "epochs" / project.paper_execution_epoch
@@ -1024,8 +1020,6 @@ def test_baseline_portfolio_contains_only_the_two_enabled_1x_variants(tmp_path) 
             row[0] for row in connection.execute("SELECT DISTINCT variant_id FROM evaluations")
         }
     assert persisted_evaluation_variants == enabled_variant_ids
-    frozen_rules = (epoch_root / "rules" / f"{_market().slug}.json").read_text(encoding="utf-8")
-    assert all(variant_id not in frozen_rules for variant_id in disabled_variant_ids)
 
 
 def test_replay_final_decision_horizon_ignores_disabled_maker_variants() -> None:

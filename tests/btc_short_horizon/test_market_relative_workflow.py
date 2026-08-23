@@ -25,7 +25,12 @@ def _merge(values):  # type: ignore[no-untyped-def]
 
 def _stages(lower: float):
     return lambda _dataset: {
-        stage: {unit: {"lower_bound": lower} for unit in ("market", "day", "week")}
+        stage: {
+            "direction_balance": {"gate_passed": True},
+            "p_lower": {
+                "legacy": {unit: {"lower_bound": lower} for unit in ("market", "day", "week")}
+            },
+        }
         for stage in ("early", "price_discovery", "mid_early")
     }
 
@@ -73,10 +78,11 @@ def test_candidate_worse_than_q_pm_is_no_go_but_all_positive_objectives_reach_pr
     def stages(lower: float):
         return lambda _dataset: {
             stage: {
+                "direction_balance": {"gate_passed": True},
                 "p_lower": {
                     objective: {unit: {"lower_bound": lower} for unit in ("market", "day", "week")}
                     for objective in ("brier", "log_loss", "net_ev")
-                }
+                },
             }
             for stage in ("early", "price_discovery", "mid_early")
         }
@@ -98,3 +104,24 @@ def test_candidate_worse_than_q_pm_is_no_go_but_all_positive_objectives_reach_pr
 
     assert worse.failed_stage == "p_lower"
     assert better.failed_stage == "promotion"
+
+
+def test_workflow_blocks_directionally_concentrated_selection_before_p_lower() -> None:
+    result = evaluate_research_workflow(
+        datasets_by_ablation={"relative": (_dataset("a"),)},
+        selected_ablation="relative",
+        minimum_eligible_markets=1,
+        merge_datasets=_merge,
+        evaluate_stages=lambda _dataset: {
+            stage: {
+                "direction_balance": {"gate_passed": stage != "early"},
+                "p_lower": {
+                    objective: {unit: {"lower_bound": 0.01} for unit in ("market", "day", "week")}
+                    for objective in ("brier", "log_loss", "net_ev")
+                },
+            }
+            for stage in ("early", "price_discovery", "mid_early")
+        },
+    )
+
+    assert result.failed_stage == "direction_balance"

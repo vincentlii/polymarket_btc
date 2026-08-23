@@ -46,3 +46,31 @@ def test_select_stage_dataset_preserves_group_identity() -> None:
 
     assert len(selected.samples) == 1
     assert selected.samples[0].group_id == slug
+
+
+def test_select_stage_dataset_rebalances_each_market_within_stage() -> None:
+    start = datetime(2026, 7, 27, tzinfo=UTC)
+    rows = ((start, 5), (start, 10), (start + timedelta(minutes=15), 5))
+    samples = tuple(
+        ResearchSample(
+            sample_id=(
+                f"{BTC_15M_MARKET_FAMILY.slug_for(t0)}@"
+                f"{int((t0 + timedelta(seconds=offset)).timestamp() * 1e9)}"
+            ),
+            feature_ts=t0 + timedelta(seconds=offset),
+            label_available_ts=t0 + timedelta(minutes=15),
+            label=index % 2,
+            group_id=BTC_15M_MARKET_FAMILY.slug_for(t0),
+        )
+        for index, (t0, offset) in enumerate(rows)
+    )
+    dataset = DirectionDataset(
+        samples=samples,
+        vectors=np.ones((3, 1)),
+        schema=FeatureSchema(version="weighted-test", names=("x",)),
+        sample_weights=np.asarray((0.1, 0.1, 0.8)),
+    )
+
+    selected = select_stage_dataset(dataset, stage=OpeningStage.EARLY)
+
+    assert selected.sample_weights.tolist() == [0.5, 0.5, 1.0]

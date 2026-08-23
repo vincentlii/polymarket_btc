@@ -4,17 +4,19 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import UTC, datetime
-from math import sqrt
+from math import isfinite, log, sqrt
 from pathlib import Path
 import sqlite3
 
 from btc_short_horizon.data import MarketOutcome, MarketWindow
 from btc_short_horizon.live.dashboard_state import (
     DirectionHealthSnapshot,
+    DirectionModelPerformance,
     DirectionStageSummary,
 )
 from btc_short_horizon.models.opening_mispricing import OpeningMispricingPrediction
 from btc_short_horizon.strategy.stage_policy import OpeningStage
+from btc_short_horizon.strategy.types import TakerOrderPlan
 
 
 _MINIMUM_BIAS_SAMPLE = 100
@@ -49,6 +51,37 @@ class DirectionEvidenceStore:
                 stage TEXT NOT NULL,
                 p_up REAL NOT NULL,
                 PRIMARY KEY (market_slug, decision_ts_ns, model_version),
+                FOREIGN KEY (market_slug) REFERENCES markets(market_slug)
+            ) WITHOUT ROWID;
+
+            CREATE TABLE IF NOT EXISTS comparison_predictions (
+                market_slug TEXT NOT NULL,
+                decision_ts_ns INTEGER NOT NULL,
+                model_role TEXT NOT NULL,
+                model_version TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                p_up REAL NOT NULL,
+                PRIMARY KEY (market_slug, model_role),
+                FOREIGN KEY (market_slug) REFERENCES markets(market_slug)
+            ) WITHOUT ROWID;
+
+            CREATE TABLE IF NOT EXISTS counterfactuals (
+                market_slug TEXT NOT NULL,
+                model_role TEXT NOT NULL,
+                model_version TEXT NOT NULL,
+                evidence_type TEXT NOT NULL CHECK (
+                    evidence_type = 'counterfactual_point_fak_no_order'
+                ),
+                decision_ts_ns INTEGER NOT NULL,
+                stage TEXT NOT NULL,
+                side TEXT NOT NULL,
+                fair_probability REAL NOT NULL,
+                shares REAL NOT NULL,
+                executable_vwap REAL NOT NULL,
+                filled_notional REAL NOT NULL,
+                taker_fees REAL NOT NULL,
+                net_edge REAL NOT NULL,
+                PRIMARY KEY (market_slug, model_role),
                 FOREIGN KEY (market_slug) REFERENCES markets(market_slug)
             ) WITHOUT ROWID;
             """
@@ -113,6 +146,111 @@ class DirectionEvidenceStore:
                     raise ValueError("immutable direction prediction conflict")
         except sqlite3.IntegrityError as exc:
             raise ValueError("direction prediction requires a registered market") from exc
+
+    def append_comparison_prediction(
+        self,
+        *,
+        market_slug: str,
+        decision_ts_ns: int,
+        model_role: str,
+        model_version: str,
+        stage: OpeningStage | str,
+        p_up: float,
+    ) -> None:
+        if not market_slug or not model_role or not model_version:
+            raise ValueError("comparison prediction identifiers are required")
+        if (
+            isinstance(decision_ts_ns, bool)
+            or not isinstance(decision_ts_ns, int)
+            or decision_ts_ns < 0
+        ):
+            raise ValueError("decision_ts_ns must be a non-negative integer")
+        if isinstance(p_up, bool) or not isfinite(p_up) or not 0.0 < p_up < 1.0:
+            raise ValueError("p_up must be finite and in (0, 1)")
+        stage_value = OpeningStage(stage).value
+        values = (
+            market_slug,
+            decision_ts_ns,
+            model_role,
+            model_version,
+            stage_value,
+            p_up,
+        )
+        try:
+            with self._connection:
+                cursor = self._connection.execute(
+                    """
+                    INSERT OR IGNORE INTO comparison_predictions
+                        (market_slug, decision_ts_ns, model_role, model_version, stage, p_up)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    values,
+                )
+                if cursor.rowcount:
+                    return
+                existing = self._connection.execute(
+                    """
+                    SELECT 1
+                    FROM comparison_predictions
+                    WHERE market_slug = ? AND model_role = ?
+                    """,
+                    (market_slug, model_role),
+                ).fetchone()
+                if existing is None:
+                    raise RuntimeError("comparison prediction insert was not persisted")
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("comparison prediction requires a registered market") from exc
+
+    def append_counterfactual(
+        self,
+        *,
+        model_role: str,
+        model_version: str,
+        stage: OpeningStage | str,
+        plan: TakerOrderPlan,
+    ) -> bool:
+        if not model_role or not model_version:
+            raise ValueError("counterfactual model identifiers are required")
+        stage_value = OpeningStage(stage).value
+        existing = self._connection.execute(
+            """
+            SELECT 1 FROM counterfactuals
+            WHERE market_slug = ? AND model_role = ?
+            """,
+            (plan.market_slug, model_role),
+        ).fetchone()
+        if existing is not None:
+            return False
+        values = (
+            plan.market_slug,
+            model_role,
+            model_version,
+            "counterfactual_point_fak_no_order",
+            plan.created_ts_ns,
+            stage_value,
+            plan.side.value,
+            plan.p_fair,
+            plan.total_size,
+            plan.executable_vwap,
+            plan.filled_notional,
+            plan.taker_fees,
+            plan.net_edge_per_share,
+        )
+        try:
+            with self._connection:
+                self._connection.execute(
+                    """
+                    INSERT INTO counterfactuals
+                        (market_slug, model_role, model_version, evidence_type,
+                         decision_ts_ns, stage, side, fair_probability, shares,
+                         executable_vwap, filled_notional, taker_fees, net_edge)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    values,
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("counterfactual requires a registered market") from exc
+        return True
 
     def settle(
         self,
@@ -213,7 +351,127 @@ class DirectionEvidenceStore:
             calibration_z=overall[6],
             bias_state=overall[7],
             stage_summaries=stages,
+            model_summaries=self._model_summaries(outcomes),
         )
+
+    def _model_summaries(
+        self,
+        outcomes: dict[str, object],
+    ) -> tuple[DirectionModelPerformance, ...]:
+        prediction_rows = tuple(
+            self._connection.execute(
+                """
+                SELECT market_slug, model_role, model_version, p_up
+                FROM comparison_predictions ORDER BY decision_ts_ns
+                """
+            )
+        )
+        grouped: dict[tuple[str, str, str], list[float]] = defaultdict(list)
+        prediction_counts: dict[tuple[str, str], int] = defaultdict(int)
+        for market_slug, model_role, model_version, p_up in prediction_rows:
+            key = (str(model_role), str(model_version))
+            grouped[(str(market_slug), *key)].append(float(p_up))
+            prediction_counts[key] += 1
+        probabilities: dict[tuple[str, str], dict[str, float]] = defaultdict(dict)
+        for (market_slug, model_role, model_version), values in grouped.items():
+            probabilities[(model_role, model_version)][market_slug] = sum(values) / len(values)
+
+        trial_rows = tuple(
+            self._connection.execute(
+                """
+                SELECT market_slug, model_role, model_version, side, shares,
+                       filled_notional, taker_fees
+                FROM counterfactuals ORDER BY decision_ts_ns
+                """
+            )
+        )
+        trials: dict[tuple[str, str], list[tuple[str, str, float, float, float]]] = defaultdict(
+            list
+        )
+        for market_slug, role, version, side, shares, notional, fees in trial_rows:
+            trials[(str(role), str(version))].append(
+                (str(market_slug), str(side), float(shares), float(notional), float(fees))
+            )
+
+        summaries: list[DirectionModelPerformance] = []
+        for key in sorted(set(probabilities) | set(trials)):
+            role, version = key
+            paired = tuple(
+                (probability, str(outcomes[market_slug]))
+                for market_slug, probability in probabilities.get(key, {}).items()
+                if outcomes.get(market_slug) in {MarketOutcome.UP.value, MarketOutcome.DOWN.value}
+            )
+            labels = tuple(
+                1.0 if outcome == MarketOutcome.UP.value else 0.0 for _, outcome in paired
+            )
+            predicted_up = sum(probability >= 0.5 for probability, _ in paired)
+            accuracy = (
+                None
+                if not paired
+                else sum(
+                    (probability >= 0.5) == bool(label)
+                    for (probability, _), label in zip(paired, labels, strict=True)
+                )
+                / len(paired)
+            )
+            brier = (
+                None
+                if not paired
+                else sum(
+                    (probability - label) ** 2
+                    for (probability, _), label in zip(paired, labels, strict=True)
+                )
+                / len(paired)
+            )
+            log_loss = (
+                None
+                if not paired
+                else -sum(
+                    label * log(min(max(probability, 1e-15), 1.0 - 1e-15))
+                    + (1.0 - label) * log(1.0 - min(max(probability, 1e-15), 1.0 - 1e-15))
+                    for (probability, _), label in zip(paired, labels, strict=True)
+                )
+                / len(paired)
+            )
+            model_trials = trials.get(key, [])
+            resolved_trials = tuple(
+                row
+                for row in model_trials
+                if outcomes.get(row[0]) in {MarketOutcome.UP.value, MarketOutcome.DOWN.value}
+            )
+            pnl = sum(
+                (shares if side == str(outcomes[market_slug]).lower() else 0.0) - notional - fees
+                for market_slug, side, shares, notional, fees in resolved_trials
+            )
+            wins = sum(
+                side == str(outcomes[market_slug]).lower()
+                for market_slug, side, _shares, _notional, _fees in resolved_trials
+            )
+            summaries.append(
+                DirectionModelPerformance(
+                    model_role=role,
+                    model_version=version,
+                    paired_market_count=len(paired),
+                    prediction_count=prediction_counts.get(key, 0),
+                    predicted_up_count=predicted_up,
+                    predicted_down_count=len(paired) - predicted_up,
+                    accuracy=accuracy,
+                    brier=brier,
+                    log_loss=log_loss,
+                    counterfactual_opportunity_count=len(model_trials),
+                    counterfactual_resolved_count=len(resolved_trials),
+                    counterfactual_up_count=sum(side == "up" for _slug, side, *_ in model_trials),
+                    counterfactual_down_count=sum(
+                        side == "down" for _slug, side, *_ in model_trials
+                    ),
+                    counterfactual_win_count=wins,
+                    counterfactual_pnl=pnl,
+                    counterfactual_ev_per_opportunity=(
+                        None if not resolved_trials else pnl / len(resolved_trials)
+                    ),
+                )
+            )
+        return tuple(summaries)
 
     def checkpoint(self) -> None:
         self._connection.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()

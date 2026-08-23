@@ -735,24 +735,21 @@ default freshness limit.
 The forward runtime can run one credential-free `ResearchPaperRuntime` beside
 the durable collector. It consumes only events that already passed collector
 admission, reconstructs both token books, evaluates the pinned model at the
-same five-second cadence as replay, requires the shared two-signal confirmation,
-and permits one placement cycle per market. Working orders continue to be
+same five-second cadence as replay, and permits at most one placement cycle per
+market. Working orders continue to be
 revalued through `entry_end + max_work`; stale/gapped data, probability decay,
 rule changes and expiry request a simulated cancel, with fills still possible
 during the configured cancel latency.
 
-Execution epoch `paper-v10-multisource-readiness` enables exactly two
-immediate-FAK variants:
-the one-signal `independent_fak_1x5s` legacy control and the one-signal
-`independent_fak_1x5s_2_0` challenger. They write isolated variant ledgers.
-It supersedes v9 without rewriting its ledgers and binds each active ledger to
-the full model hashes, rule epochs, variant configuration and execution stress
-configuration. The 2.0 route is the Paper primary only and loads an artifact explicitly marked
-ineligible for Canary/live promotion; Legacy 1x5s runs simultaneously as its
-control. The artifact's 3-cent probability radius is the route's sole model-
-uncertainty deduction. Maker, 2x5, and 3x5 variants are absent from the active
-baseline. Their old ledgers remain readable history, while generic execution
-primitives remain available to isolated replay research.
+Execution epoch `paper-v11-profitability-early-only` enables only the one-signal
+`independent_fak_1x5s_2_0` primary observer. Legacy 1x5s, Maker, 2x5 and 3x5
+variants are disabled; all older epoch and variant ledgers remain readable.
+The active ledger is bound to the full model hashes, rule epochs, variant
+configuration and execution stress configuration. A model with a research
+`No-Go` gate continues to emit evaluation evidence but cannot create simulated
+orders. Paper execution becomes available only when the loaded artifact
+explicitly passes the Paper experiment gate or the full sealed promotion
+contract; neither path grants Canary/live eligibility by itself.
 
 The v9 collector expands durable CLOB capture through all 15 minutes. The
 historical disabled market-end maker path remains read-only evidence. Once Gamma
@@ -779,7 +776,7 @@ markets can report `mbf=1000` while `fd.to=true`, and the official fee contract
 still states that makers are never charged. The Paper gateway cannot send
 network requests and no credential is loaded.
 
-`paper/ledger.json` is a separate atomic simulated ledger. It persists planned
+The per-variant append-only SQLite ledger is a separate simulated ledger. It persists planned
 notional, partial/cancel-race fills, settlement and virtual cash/equity. The
 dashboard labels every value as simulated; this evidence is useful for runtime
 and strategy iteration but cannot satisfy the formal Maker Go gate. A Paper
@@ -1120,12 +1117,57 @@ The current exit CLI consumes operator-supplied ladders and is explicitly
 non-promotable. Publication fails closed until a raw-derived full-depth
 producer with verifiable session/part lineage exists.
 
-Development selection is bounded to five Logistic and 64 LightGBM candidates
+Development selection is bounded to five Logistic and 12 LightGBM candidates
 per stage. Candidates reuse the same walk-forward folds, rank on median
-fold-level cost-after-execution EV, and LightGBM may replace Logistic only when
+fold-level cost-after-execution return per eligible market, and LightGBM may replace Logistic only when
 all log-loss, Brier and net-EV tests pass the Bonferroni-adjusted familywise
 threshold. The selection receipt, the three selected config hashes and a
 passing full-depth exit-replay receipt are mandatory publication lineage.
+
+## v11 Profitability Research Boundary
+
+The active research branch isolates post-open BTC 15-minute market-relative
+probability research from the pre-open Alpha Master strategy. Current Paper
+configuration enables only the v2 1x5 observer; the Legacy 1x5 execution route,
+2x/3x confirmation and later-stage routes remain disabled historical evidence.
+Legacy 1.0 remains available only as a probability dependency/control in the
+no-order comparison. Each enabled route may place at most the earliest
+qualifying order in one market. Offline OOF, model ranking, direction balance
+and Paper execution share that one-market/one-order contract.
+
+The v2 `core` feature adapter is the common offline/live seam. It combines the
+frozen Legacy `p_up` and boundary probability with causally admitted Up/Down
+BBO, sizes, spread, complement and age. It does not require Binance or OKX.
+`trade_flow` is the lightweight causal ablation shared by historical
+one-second Kline-derived evidence and live observations. It adds Binance Spot
+5/15-second return, volatility and taker flow without pretending historical L2
+exists. `flow` adds Binance Spot trade and book state, while `enriched` adds
+Perpetual and OKX. Larger profiles make their sources mandatory and fail closed
+on schema, age or gap mismatch. No unavailable venue feature is replaced with
+zero or a stale value.
+
+The no-order forward comparison is an observability path, not an execution
+variant. `ResearchPaperEngine` evaluates Legacy 1.0 and the loaded 2.0 point
+probability against the same current ask ladder, then persists only an
+immutable counterfactual in `direction.sqlite3`. The
+`(market_slug, model_role)` key enforces one earliest qualifying opportunity
+per market/model. Settlement computes hypothetical PnL; the path never calls
+the gateway or simulator and never changes order, fill, cash, equity or
+realized-PnL fields. Observation-only artifacts remain blocked by the normal
+runtime Paper gate.
+
+PMXT history is filtered remotely by exact ASCII condition ID and bounded time,
+then stored as content-hashed hourly Parquet. Local reconstruction replays
+receive-time order and emits BBO only when both tokens are valid at a decision.
+The extractor retries transient archive I/O and reuses an hour only after its
+manifest, requested windows, row count and SHA-256 verify. This is development
+data acquisition; it does not change the runtime collector or a deployed model.
+
+The fresh sealed-forward boundary is configuration, not an old artifact split.
+All imported pre-boundary Legacy/PMXT rows are development-only. Artifacts from
+this branch remain Paper-only and fail closed for Canary/live until the frozen
+candidate later passes the independent sealed-forward protocol. Raw-derived
+full-depth Maker/exit replay and minimum-size Canary are explicitly deferred.
 
 Forward collection writes a persistent, incremental session-coverage index at
 session close. A separate resource-limited readiness service validates closed

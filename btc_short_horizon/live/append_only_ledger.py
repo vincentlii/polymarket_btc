@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 import sqlite3
 from typing import Mapping
+from uuid import uuid4
 
 
 SCHEMA_VERSION = 1
+READ_ONLY_SNAPSHOT_NAME = "ledger.snapshot.sqlite3"
 
 
 def _canonical(value: object) -> str:
@@ -86,6 +89,7 @@ class AppendOnlyLedgerRepository:
         )
         self._connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         self._connection.commit()
+        self._publish_read_only_snapshot()
 
     def _validate_schema(self) -> None:
         version = int(self._connection.execute("PRAGMA user_version").fetchone()[0])
@@ -226,6 +230,7 @@ class AppendOnlyLedgerRepository:
                 (self.execution_epoch, self.variant_id, snapshot_id, reason),
             )
         self._connection.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        self._publish_read_only_snapshot()
         return snapshot_id
 
     def latest(self) -> dict[str, object] | None:
@@ -263,6 +268,7 @@ class AppendOnlyLedgerRepository:
                 (self.execution_epoch, self.variant_id, snapshot_id, f"rollback:{snapshot_id}"),
             )
         self._connection.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        self._publish_read_only_snapshot()
 
     def revision_count(self) -> int:
         return int(
@@ -284,8 +290,30 @@ class AppendOnlyLedgerRepository:
         ).fetchone()
         return None if row is None else (int(row[0]), int(row[1]))
 
+    def _publish_read_only_snapshot(self) -> None:
+        """Publish a closed rollback-journal copy for the read-only dashboard mount."""
+
+        if self._read_only:
+            return
+        target = self.path.with_name(READ_ONLY_SNAPSHOT_NAME)
+        staging = target.with_name(f".{target.name}.staging-{uuid4().hex}")
+        destination = sqlite3.connect(staging)
+        try:
+            self._connection.backup(destination)
+            destination.execute("PRAGMA journal_mode=DELETE")
+            destination.execute("PRAGMA synchronous=FULL")
+            destination.commit()
+        finally:
+            destination.close()
+        try:
+            with staging.open("r+b") as handle:
+                os.fsync(handle.fileno())
+            os.replace(staging, target)
+        finally:
+            staging.unlink(missing_ok=True)
+
     def close(self) -> None:
         self._connection.close()
 
 
-__all__ = ["AppendOnlyLedgerRepository", "SCHEMA_VERSION"]
+__all__ = ["AppendOnlyLedgerRepository", "READ_ONLY_SNAPSHOT_NAME", "SCHEMA_VERSION"]

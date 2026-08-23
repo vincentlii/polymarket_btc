@@ -2,7 +2,10 @@ from pathlib import Path
 
 import pytest
 
-from btc_short_horizon.live.append_only_ledger import AppendOnlyLedgerRepository
+from btc_short_horizon.live.append_only_ledger import (
+    READ_ONLY_SNAPSHOT_NAME,
+    AppendOnlyLedgerRepository,
+)
 
 
 def _payload(*records: dict[str, object]) -> dict[str, object]:
@@ -88,4 +91,22 @@ def test_read_only_repository_never_creates_or_mutates_files(tmp_path: Path) -> 
         reader.append_snapshot(_payload(_record("one")))
     reader.close()
     assert {item.name: item.stat().st_size for item in tmp_path.iterdir()} == before
+    writer.close()
+
+
+def test_writer_publishes_closed_read_only_snapshot(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    writer = AppendOnlyLedgerRepository(path, execution_epoch="paper-v9", variant_id="primary")
+    writer.append_snapshot(_payload(_record("one")))
+
+    projection = path.with_name(READ_ONLY_SNAPSHOT_NAME)
+    assert projection.is_file()
+    reader = AppendOnlyLedgerRepository(
+        projection,
+        execution_epoch="paper-v9",
+        variant_id="primary",
+        read_only=True,
+    )
+    assert reader.latest()["records"] == [_record("one")]
+    reader.close()
     writer.close()

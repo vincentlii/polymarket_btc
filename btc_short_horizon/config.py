@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from math import isclose, isfinite
 from pathlib import Path
 import tomllib
@@ -212,6 +213,8 @@ class PaperExecutionVariantConfig:
 class PaperResearchConfig:
     tail_entry_price_threshold: float
     evidence_target_markets: int
+    market_relative_feature_profile: str
+    sealed_forward_start: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -353,6 +356,11 @@ def load_btc_project_config(path: Path) -> BtcProjectConfig:
         evidence_target_markets=_positive_int(
             paper_research_section,
             "evidence_target_markets",
+        ),
+        market_relative_feature_profile=_market_relative_feature_profile(paper_research_section),
+        sealed_forward_start=_aware_datetime(
+            paper_research_section,
+            "sealed_forward_start",
         ),
     )
     sources = _data_sources(root, raw)
@@ -653,6 +661,23 @@ def _mapping(raw: Mapping[str, object], name: str) -> Mapping[str, object]:
     value = raw.get(name)
     if not isinstance(value, Mapping):
         raise ValueError(f"[{name}] is required")
+    return value
+
+
+def _market_relative_feature_profile(section: Mapping[str, object]) -> str:
+    profile = _text(section, "market_relative_feature_profile")
+    if profile not in {"core", "trade_flow", "flow", "enriched"}:
+        raise ValueError(
+            "paper_research.market_relative_feature_profile must be 'core', 'trade_flow', "
+            "'flow', or 'enriched'"
+        )
+    return profile
+
+
+def _aware_datetime(section: Mapping[str, object], name: str) -> datetime:
+    value = section.get(name)
+    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{name} must be a timezone-aware TOML datetime")
     return value
 
 

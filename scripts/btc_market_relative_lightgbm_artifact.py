@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from hashlib import sha256
 import json
+from math import isfinite
 from pathlib import Path
 import subprocess
 
@@ -46,7 +47,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--model-id", required=True)
     parser.add_argument("--rule-epoch", required=True)
     parser.add_argument("--maximum-pair-age-seconds", type=float, default=1.0)
-    parser.add_argument("--probability-uncertainty-radius", type=float, default=0.03)
+    parser.add_argument("--probability-uncertainty-radius", type=float)
+    parser.add_argument("--uncertainty-confidence", type=float, default=0.95)
     parser.add_argument("--minimum-markets-per-leaf", type=int, default=100)
     return parser.parse_args(argv)
 
@@ -56,6 +58,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     end_before = datetime.fromisoformat(args.end_before.replace("Z", "+00:00"))
     if end_before.tzinfo is None or end_before.utcoffset() is None:
         raise ValueError("--end-before must include a timezone")
+    if not isfinite(args.uncertainty_confidence) or not 0.5 < args.uncertainty_confidence < 1.0:
+        raise ValueError("--uncertainty-confidence must be in (0.5, 1)")
     labels: dict[str, int] = {}
     for path in args.market_catalog:
         for market in read_market_catalog(path).windows():
@@ -106,6 +110,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         random_seed=17,
         train_weights=weights[train],
         validation_weights=weights[validation],
+        validation_market_ids=tuple(dataset.market_slugs[index] for index in validation),
+        uncertainty_confidence=args.uncertainty_confidence,
     )
     minimum_leaf_markets = require_minimum_leaf_unique_markets(
         leaf_indices=np.asarray(
@@ -139,7 +145,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             "runtime_promotion_eligible": False,
             "sealed_holdout_evaluated": False,
             "multiple_comparison_gate_passed": False,
-            "probability_uncertainty_radius": args.probability_uncertainty_radius,
+            "probability_uncertainty_radius": model.probability_uncertainty_radius,
+            "probability_uncertainty_method": (
+                "operator_override"
+                if args.probability_uncertainty_radius is not None
+                else "market_first_wilson_calibration_envelope"
+            ),
+            "probability_uncertainty_confidence": args.uncertainty_confidence,
             "eligible_market_count": dataset.market_count,
             "training_market_count": len({dataset.market_slugs[index] for index in train}),
             "validation_market_count": len({dataset.market_slugs[index] for index in validation}),

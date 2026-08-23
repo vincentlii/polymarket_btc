@@ -261,6 +261,10 @@ def test_dashboard_html_labels_research_paper_as_simulated_not_account_truth() -
     assert "Research Paper 模拟账本新鲜" in html
     assert "Simulated ledger" in html
     assert "方向健康" in html
+    assert "模型 1.0" in html
+    assert "模型 2.0" in html
+    assert "不提交订单、不计入账户权益" in html
+    assert "counterfactual_pnl" in html
     assert 'id="direction-health"' in html
     assert "自本版本部署起" in html
     assert "成交策略对比" in html
@@ -710,11 +714,14 @@ def test_dashboard_reads_authoritative_sqlite_ledger_without_writing(tmp_path) -
             ],
         }
     )
+    projection = path.with_name("ledger.snapshot.sqlite3")
+    assert projection.is_file()
+    store.close()
+    path.unlink()
     before = {item.name: item.stat().st_size for item in path.parent.iterdir()}
     payload = build_order_history_payload(DashboardConfig(runtime_root=tmp_path), limit=10)
     assert payload["items"][0]["order_id"] == "sqlite-order"
     assert {item.name: item.stat().st_size for item in path.parent.iterdir()} == before
-    store.close()
 
 
 def test_v6_current_snapshot_excludes_rollback_variants_while_history_is_read_only(

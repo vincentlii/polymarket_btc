@@ -6,6 +6,7 @@ from btc_short_horizon.research.lightgbm_tuning import (
     residual_logistic_grid,
 )
 from btc_short_horizon.models.market_relative_lightgbm import (
+    empirical_market_uncertainty_radius,
     fit_market_relative_lightgbm,
     minimum_leaf_unique_market_count,
     require_minimum_leaf_unique_markets,
@@ -36,8 +37,8 @@ def test_residual_grids_are_exact_deterministic_and_do_not_mutate_historical_gri
 
     assert len(logistic) == 5
     assert [item.config.logistic_c for item in logistic] == [0.01, 0.03, 0.1, 0.3, 1.0]
-    assert len(lightgbm) == 64
-    assert len({item.name for item in lightgbm}) == 64
+    assert len(lightgbm) == 12
+    assert len({item.name for item in lightgbm}) == 12
     assert all(item.config.lightgbm_early_stopping_rounds == 100 for item in lightgbm)
     assert [item.name for item in lightgbm] == [item.name for item in residual_lightgbm_grid()]
     assert len(controlled_lightgbm_grid(stage="early_3s_to_30s")) == 18
@@ -105,3 +106,23 @@ def test_market_relative_lightgbm_zero_tree_prediction_keeps_market_anchor() -> 
     )
 
     assert model.predict_up_probability(vectors, anchors) == pytest.approx(anchors)
+
+
+def test_uncertainty_is_market_first_calibration_error_not_bernoulli_residual() -> None:
+    predictions = np.full(100, 0.5)
+    labels = np.tile(np.asarray([0, 1]), 50)
+    markets = tuple(f"m{index}" for index in range(100))
+
+    radius = empirical_market_uncertainty_radius(
+        predictions=predictions,
+        labels=labels,
+        market_ids=markets,
+    )
+    duplicated = empirical_market_uncertainty_radius(
+        predictions=np.repeat(predictions, 5),
+        labels=np.repeat(labels, 5),
+        market_ids=tuple(market for market in markets for _ in range(5)),
+    )
+
+    assert 0.05 < radius < 0.30
+    assert duplicated == pytest.approx(radius)

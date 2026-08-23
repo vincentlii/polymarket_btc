@@ -17,7 +17,10 @@ from urllib.parse import parse_qs, urlparse
 
 from btc_short_horizon.live.dashboard_page import dashboard_html
 from btc_short_horizon.live.dashboard_state import BotDashboardSnapshot, DashboardSnapshotStore
-from btc_short_horizon.live.append_only_ledger import AppendOnlyLedgerRepository
+from btc_short_horizon.live.append_only_ledger import (
+    READ_ONLY_SNAPSHOT_NAME,
+    AppendOnlyLedgerRepository,
+)
 from btc_short_horizon.live.runtime import (
     RuntimeControl,
     RuntimeHealth,
@@ -172,12 +175,24 @@ def _readiness_status(runtime_root: Path) -> dict[str, object]:
         item for item in payloads if item.get("schema_version") == "btc-training-readiness-error-v1"
     ]
     invalid = [item.get("market_slug") for item in receipts if item.get("ready") is not True]
+    latest = receipts[-1] if receipts else None
+    ready_count = sum(item.get("ready") is True for item in receipts)
     return {
-        "healthy": bool(receipts) and not invalid and not errors,
-        "reason": "ok" if receipts and not invalid and not errors else "missing_or_failed_receipt",
+        "healthy": bool(receipts) and not errors,
+        "reason": "ok" if receipts and not errors else "missing_or_invalid_receipt",
+        "evidence_state": (
+            "ready"
+            if latest is not None and latest.get("ready") is True
+            else "collecting"
+            if receipts
+            else "missing"
+        ),
         "receipt_count": len(receipts),
         "error_count": len(errors),
-        "ready_count": sum(item.get("ready") is True for item in receipts),
+        "ready_count": ready_count,
+        "ready_rate": ready_count / len(receipts) if receipts else 0.0,
+        "latest_market_slug": None if latest is None else latest.get("market_slug"),
+        "latest_market_ready": None if latest is None else latest.get("ready"),
         "invalid_markets": invalid,
         "scope": "raw_capture_integrity_only",
         "feature_materialization_ready": False,
@@ -254,7 +269,7 @@ def _read_order_history(
         ledger_paths = _paper_ledger_paths(runtime_root)
         for ledger_path in ledger_paths:
             relative_parts = ledger_path.relative_to(paper_root).parts
-            if ledger_path.name == "ledger.sqlite3":
+            if ledger_path.name in {"ledger.sqlite3", READ_ONLY_SNAPSHOT_NAME}:
                 if len(relative_parts) != 5 or relative_parts[0] != "epochs":
                     raise _OrderHistoryDataError
                 execution_epoch = _data_variant_id(relative_parts[1])
@@ -300,9 +315,7 @@ def _read_order_history(
             else:
                 ledger_variant = _data_variant_id(raw.get("variant_id"))
                 execution_epoch = _data_variant_id(raw.get("execution_epoch"))
-                ledger_filename = (
-                    "ledger.sqlite3" if ledger_path.name == "ledger.sqlite3" else "ledger.json"
-                )
+                ledger_filename = ledger_path.name
                 if relative_parts != (
                     "epochs",
                     execution_epoch,
@@ -369,7 +382,14 @@ def _paper_ledger_paths(runtime_root: Path) -> list[Path]:
         for name in tuple(directory_names):
             if (current / name).is_symlink():
                 raise _OrderHistoryDataError
-        ledger_name = "ledger.sqlite3" if "ledger.sqlite3" in file_names else "ledger.json"
+        ledger_name = next(
+            (
+                name
+                for name in (READ_ONLY_SNAPSHOT_NAME, "ledger.sqlite3", "ledger.json")
+                if name in file_names
+            ),
+            "ledger.json",
+        )
         if ledger_name not in file_names:
             continue
         candidate = current / ledger_name

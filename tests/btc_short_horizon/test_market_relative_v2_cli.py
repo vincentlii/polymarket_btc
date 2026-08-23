@@ -67,10 +67,11 @@ def test_cli_disk_fixture_runs_raw_materialization_to_promotion_block(
         "run_market_relative_stage_oof",
         lambda _dataset, **_kwargs: {
             stage: {
+                "direction_balance": {"gate_passed": True},
                 "p_lower": {
                     objective: {unit: {"lower_bound": 0.01} for unit in ("market", "day", "week")}
                     for objective in ("brier", "log_loss", "net_ev")
-                }
+                },
             }
             for stage in ("early", "price_discovery", "mid_early")
         },
@@ -149,6 +150,8 @@ def _config(raw_root: Path) -> SimpleNamespace:
         paper_research=SimpleNamespace(
             evidence_target_markets=300,
             tail_entry_price_threshold=0.35,
+            market_relative_feature_profile="core",
+            sealed_forward_start=datetime(2026, 8, 20, tzinfo=UTC),
         ),
         stage_policy=StagePolicyConfig.default(),
     )
@@ -163,6 +166,7 @@ def _raw_build(decisions: tuple[int, ...]) -> ForwardOpeningFeatureBuild:
         values.update(
             elapsed_seconds=(decision - decisions[0]) / 1e9 + 5.0,
             remaining_seconds=900.0 - ((decision - decisions[0]) / 1e9 + 5.0),
+            p_boundary_up=0.56,
             data_age_seconds=0.1,
         )
         observations.append(
@@ -204,5 +208,8 @@ def _raw_build(decisions: tuple[int, ...]) -> ForwardOpeningFeatureBuild:
     return ForwardOpeningFeatureBuild(
         observations=tuple(observations),
         input_events=tuple(events),
-        source_summaries=(ForwardFeatureSourceSummary("polymarket_clob", 1, 72, 72, 0),),
+        source_summaries=(
+            ForwardFeatureSourceSummary("polymarket_clob", 1, 72, 72, 0),
+            ForwardFeatureSourceSummary("binance_spot", 1, 36, 36, 0),
+        ),
     )

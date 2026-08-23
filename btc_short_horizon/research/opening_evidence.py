@@ -165,6 +165,11 @@ class OpeningMarketObservation:
     has_data_gap: bool
     structure_valid: bool
     tick_unchanged: bool
+    opening_feature_schema_hash: str | None = None
+    opening_feature_values: tuple[float, ...] | None = None
+    opening_feature_quality_flags: frozenset[str] = frozenset()
+    up_book: tuple[float, float, float, float] | None = None
+    down_book: tuple[float, float, float, float] | None = None
 
     def __post_init__(self) -> None:
         if not self.market_slug:
@@ -179,6 +184,20 @@ class OpeningMarketObservation:
             raise ValueError("book availability timestamps must be non-negative")
         if min(self.up_epoch_id, self.down_epoch_id) < 0:
             raise ValueError("book epochs must be non-negative")
+        if (self.opening_feature_schema_hash is None) != (self.opening_feature_values is None):
+            raise ValueError("opening feature hash and values must be provided together")
+        if self.opening_feature_schema_hash is not None and not self.opening_feature_schema_hash:
+            raise ValueError("opening feature schema hash must not be empty")
+        if any(not item for item in self.opening_feature_quality_flags):
+            raise ValueError("opening feature quality flags must not contain empty values")
+        if (self.up_book is None) != (self.down_book is None):
+            raise ValueError("Up and Down book snapshots must be provided together")
+        for book in (self.up_book, self.down_book):
+            if book is None:
+                continue
+            bid, ask, bid_size, ask_size = book
+            if not 0.0 < bid <= ask < 1.0 or min(bid_size, ask_size) <= 0.0:
+                raise ValueError("opening book snapshots must be finite two-sided BBO values")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1360,7 +1379,9 @@ def _duckdb_sorted_raw_rows(
         if shutil.disk_usage(scratch_parent).free < min_free_bytes:
             raise RawPayloadError("filesystem free space is below the readiness scratch reserve")
     except OSError as exc:
-        raise RawPayloadError(f"cannot inspect readiness scratch filesystem: {scratch_parent}") from exc
+        raise RawPayloadError(
+            f"cannot inspect readiness scratch filesystem: {scratch_parent}"
+        ) from exc
     connection = duckdb.connect(database=":memory:")
     temp_directory: tempfile.TemporaryDirectory[str] | None = None
     sorted_parquet: pq.ParquetFile | None = None
@@ -1585,8 +1606,11 @@ def _cleanup_stale_readiness_scratch(parent: Path) -> None:
         try:
             if child.stat().st_mtime < cutoff:
                 shutil.rmtree(child)
-        except OSError as exc:
-            raise RawPayloadError(f"cannot remove stale readiness scratch: {child}") from exc
+        except OSError:
+            # A different worker, antivirus scan, or an interrupted Windows
+            # process may still hold the directory.  Stale cleanup is
+            # best-effort; the current audit uses a fresh unique directory.
+            continue
 
 
 def _stream_verified_raw_rows(
@@ -1630,8 +1654,7 @@ def _stream_verified_raw_rows(
         key = _raw_payload_sort_key(event)
         if previous_key is not None and key < previous_key:
             raise RawPayloadError(
-                "externally sorted raw events are not in causal order at "
-                f"{path}:{row_index}"
+                f"externally sorted raw events are not in causal order at {path}:{row_index}"
             )
         previous_key = key
         if row_ingest_version in _POLYMARKET_SOURCE_REGRESSION_REQUIRED_INGEST_VERSIONS:
@@ -1697,9 +1720,7 @@ def _validate_polymarket_scan_payload(
 
     payload_event_type = payload.get("event_type")
     if payload_event_type != event_type:
-        raise RawPayloadError(
-            f"raw Polymarket payload event_type mismatch at {path}:{row_index}"
-        )
+        raise RawPayloadError(f"raw Polymarket payload event_type mismatch at {path}:{row_index}")
     if event_type == "continuity_gap":
         if payload.get("stream_id") != "market":
             raise RawPayloadError(f"invalid CLOB continuity gap at {path}:{row_index}")
@@ -1712,8 +1733,7 @@ def _validate_polymarket_scan_payload(
         if not isinstance(changes, Sequence) or isinstance(changes, str | bytes):
             raise RawPayloadError(f"invalid CLOB price_change at {path}:{row_index}")
         if not any(
-            isinstance(change, Mapping) and change.get("asset_id") == token_id
-            for change in changes
+            isinstance(change, Mapping) and change.get("asset_id") == token_id for change in changes
         ):
             raise RawPayloadError(
                 f"CLOB price_change does not reference its token at {path}:{row_index}"
@@ -1721,13 +1741,9 @@ def _validate_polymarket_scan_payload(
         return
     asset_id = payload.get("asset_id")
     if event_type in {"book", "last_trade_price"} and asset_id != token_id:
-        raise RawPayloadError(
-            f"raw Polymarket payload token mismatch at {path}:{row_index}"
-        )
+        raise RawPayloadError(f"raw Polymarket payload token mismatch at {path}:{row_index}")
     if event_type == "tick_size_change" and asset_id is not None and asset_id != token_id:
-        raise RawPayloadError(
-            f"raw Polymarket payload token mismatch at {path}:{row_index}"
-        )
+        raise RawPayloadError(f"raw Polymarket payload token mismatch at {path}:{row_index}")
 
 
 def _validate_token_events(

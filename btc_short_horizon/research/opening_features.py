@@ -460,22 +460,28 @@ def _build_bounded_forward_opening_feature_observations(
 
     venue_snapshots: dict[str, list[OpeningVenueSnapshot]] = {}
     for source in required_venue_sources:
-        instrument = "BTC-USDT" if source == "okx_spot" else (
-            "BTC-USDT-SWAP" if source == "okx_swap" else _BTCUSDT
+        instrument = (
+            "BTC-USDT"
+            if source == "okx_spot"
+            else ("BTC-USDT-SWAP" if source == "okx_swap" else _BTCUSDT)
         )
         decoder = (
-            (lambda events, on_event=None, _source=source: _okx_state_events(
-                events,
-                source=_source,
-                instrument=instrument,
-                on_event=on_event,
-            ))
+            (
+                lambda events, on_event=None, _source=source: _okx_state_events(
+                    events,
+                    source=_source,
+                    instrument=instrument,
+                    on_event=on_event,
+                )
+            )
             if source.startswith("okx_")
-            else (lambda events, on_event=None, _source=source: _binance_state_events(
-                events,
-                source=_source,
-                on_event=on_event,
-            ))
+            else (
+                lambda events, on_event=None, _source=source: _binance_state_events(
+                    events,
+                    source=_source,
+                    on_event=on_event,
+                )
+            )
         )
         venue_state = OpeningFeatureState(
             up_token_id=market.up_token_id,

@@ -20,7 +20,7 @@ def _evidence(*, leaf: int | None = None, sealed: int = 0):
     )
 
 
-def test_bounded_selection_visits_64_lgb_and_5_logistic_per_stage_without_sealed_rows():
+def test_bounded_selection_visits_12_lgb_and_5_logistic_per_stage_without_sealed_rows():
     calls = []
     stage_inputs = {stage: object() for stage in OpeningStage}
 
@@ -39,9 +39,9 @@ def test_bounded_selection_visits_64_lgb_and_5_logistic_per_stage_without_sealed
     for stage in OpeningStage:
         stage_calls = [value for value in calls if value[0] is stage]
         assert sum(value[1] == "logistic" for value in stage_calls) == 5
-        assert sum(value[1] == "lightgbm" for value in stage_calls) == 64
-        assert len({value[2] for value in stage_calls}) == 69
-        assert receipt["stages"][stage.value]["candidate_count"] == 69
+        assert sum(value[1] == "lightgbm" for value in stage_calls) == 12
+        assert len({value[2] for value in stage_calls}) == 17
+        assert receipt["stages"][stage.value]["candidate_count"] == 17
     assert receipt["sealed_holdout_evaluated"] is False
     validate_selection_receipt(receipt)
 
@@ -135,5 +135,7 @@ def test_lightgbm_must_pass_actual_bonferroni_adjusted_p_value_gate():
     )
     for stage in OpeningStage:
         stage_receipt = receipt["stages"][stage.value]
-        assert stage_receipt["bonferroni_test_count"] == 69 * 3
+        assert stage_receipt["bonferroni_test_count"] == 17 * 3
         assert stage_receipt["champion_config"]["kind"] == "logistic"
+        assert stage_receipt["paper_experiment_config"]["kind"] == "lightgbm"
+        assert stage_receipt["paper_experiment_gate_passed"] is True
