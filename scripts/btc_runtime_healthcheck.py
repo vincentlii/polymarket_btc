@@ -49,7 +49,8 @@ def _process_is_alive(pid: object, *, proc_root: Path = Path("/proc")) -> bool:
     status_path = proc_root / str(pid) / "status"
     try:
         state_line = next(
-            line for line in status_path.read_text(encoding="utf-8").splitlines()
+            line
+            for line in status_path.read_text(encoding="utf-8").splitlines()
             if line.startswith("State:")
         )
     except (FileNotFoundError, OSError, StopIteration):

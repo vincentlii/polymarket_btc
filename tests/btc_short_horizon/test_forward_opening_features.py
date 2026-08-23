@@ -423,8 +423,7 @@ def test_bounded_forward_build_matches_all_six_source_path(tmp_path: Path) -> No
     )
     PartitionedRawEventWriter(tmp_path).write(events)
     decisions = tuple(
-        int((T0 + timedelta(seconds=offset)).timestamp() * 1_000_000_000)
-        for offset in (1, 2, 3)
+        int((T0 + timedelta(seconds=offset)).timestamp() * 1_000_000_000) for offset in (1, 2, 3)
     )
     arguments = {
         "raw_data_root": tmp_path,
