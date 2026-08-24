@@ -13,7 +13,7 @@ from pathlib import Path
 from uuid import uuid4
 
 
-_DASHBOARD_SCHEMA_VERSION = 1
+_DASHBOARD_SCHEMA_VERSION = 2
 
 
 class HealthState(StrEnum):
@@ -27,6 +27,7 @@ class StrategyStage(StrEnum):
     RESEARCH = "research"
     CHALLENGE = "challenge"
     SHADOW = "shadow"
+    PAPER = "paper"
     CANARY = "canary"
     LIVE = "live"
 
@@ -104,11 +105,13 @@ class EquityPoint:
 
 
 @dataclass(frozen=True, slots=True)
-class TradePerformance:
+class OrderPerformance:
+    variant_id: str
     order_id: str
     market_slug: str
     side: str
-    status: str
+    execution_status: str
+    settlement_status: str
     placed_at: datetime
     shares: float
     filled_shares: float
@@ -118,13 +121,30 @@ class TradePerformance:
     realized_pnl: float | None = None
     unrealized_pnl: float | None = None
     order_latency_ms: float | None = None
+    terminal_reason: str | None = None
+    execution_route: str = "maker"
+    taker_fees: float = 0.0
+    initial_queue_ahead: float = 0.0
+    remaining_queue_ahead: float = 0.0
+    opportunity_id: str | None = None
+    entry_regime: str | None = None
+    price_bucket: str | None = None
+    go_eligible: bool | None = None
+    decision_best_ask: float | None = None
+    signal_edge_decay: float | None = None
+    model_version: str | None = None
 
     def __post_init__(self) -> None:
+        _require_identifier(self.variant_id, "variant_id")
         _require_text(self.order_id, "order_id")
         _require_text(self.market_slug, "market_slug")
         if self.side not in {"up", "down"}:
             raise ValueError("side must be 'up' or 'down'")
-        _require_text(self.status, "status")
+        _require_text(self.execution_status, "execution_status")
+        _require_text(self.settlement_status, "settlement_status")
+        _require_text(self.execution_route, "execution_route")
+        if self.terminal_reason is not None:
+            _require_text(self.terminal_reason, "terminal_reason")
         object.__setattr__(self, "placed_at", _as_utc(self.placed_at, "placed_at"))
         _nonnegative(self.shares, "shares")
         _nonnegative(self.filled_shares, "filled_shares")
@@ -140,13 +160,29 @@ class TradePerformance:
         _optional_finite(self.realized_pnl, "realized_pnl")
         _optional_finite(self.unrealized_pnl, "unrealized_pnl")
         _optional_nonnegative(self.order_latency_ms, "order_latency_ms")
+        _nonnegative(self.taker_fees, "taker_fees")
+        _nonnegative(self.initial_queue_ahead, "initial_queue_ahead")
+        _nonnegative(self.remaining_queue_ahead, "remaining_queue_ahead")
+        for name in ("opportunity_id", "entry_regime", "price_bucket", "model_version"):
+            value = getattr(self, name)
+            if value is not None:
+                _require_text(value, name)
+        if self.go_eligible is not None and not isinstance(self.go_eligible, bool):
+            raise ValueError("go_eligible must be bool when provided")
+        if self.decision_best_ask is not None and (
+            not isfinite(self.decision_best_ask) or not 0.0 < self.decision_best_ask < 1.0
+        ):
+            raise ValueError("decision_best_ask must be in (0, 1) when provided")
+        _optional_finite(self.signal_edge_decay, "signal_edge_decay")
 
     def to_json(self) -> dict[str, object]:
         return {
+            "variant_id": self.variant_id,
             "order_id": self.order_id,
             "market_slug": self.market_slug,
             "side": self.side,
-            "status": self.status,
+            "execution_status": self.execution_status,
+            "settlement_status": self.settlement_status,
             "placed_at": self.placed_at.isoformat(),
             "shares": self.shares,
             "filled_shares": self.filled_shares,
@@ -156,16 +192,30 @@ class TradePerformance:
             "realized_pnl": self.realized_pnl,
             "unrealized_pnl": self.unrealized_pnl,
             "order_latency_ms": self.order_latency_ms,
+            "terminal_reason": self.terminal_reason,
+            "execution_route": self.execution_route,
+            "taker_fees": self.taker_fees,
+            "initial_queue_ahead": self.initial_queue_ahead,
+            "remaining_queue_ahead": self.remaining_queue_ahead,
+            "opportunity_id": self.opportunity_id,
+            "entry_regime": self.entry_regime,
+            "price_bucket": self.price_bucket,
+            "go_eligible": self.go_eligible,
+            "decision_best_ask": self.decision_best_ask,
+            "signal_edge_decay": self.signal_edge_decay,
+            "model_version": self.model_version,
         }
 
     @classmethod
-    def from_json(cls, raw: object) -> TradePerformance:
-        value = _mapping(raw, "trade performance")
+    def from_json(cls, raw: object) -> OrderPerformance:
+        value = _mapping(raw, "order performance")
         return cls(
+            variant_id=_text(value.get("variant_id"), "variant_id"),
             order_id=_text(value.get("order_id"), "order_id"),
             market_slug=_text(value.get("market_slug"), "market_slug"),
             side=_text(value.get("side"), "side"),
-            status=_text(value.get("status"), "status"),
+            execution_status=_text(value.get("execution_status"), "execution_status"),
+            settlement_status=_text(value.get("settlement_status"), "settlement_status"),
             placed_at=_timestamp(value.get("placed_at"), "placed_at"),
             shares=_float(value.get("shares"), "shares"),
             filled_shares=_float(value.get("filled_shares"), "filled_shares"),
@@ -175,6 +225,697 @@ class TradePerformance:
             realized_pnl=_optional_float(value.get("realized_pnl"), "realized_pnl"),
             unrealized_pnl=_optional_float(value.get("unrealized_pnl"), "unrealized_pnl"),
             order_latency_ms=_optional_float(value.get("order_latency_ms"), "order_latency_ms"),
+            terminal_reason=_optional_text(value.get("terminal_reason"), "terminal_reason"),
+            execution_route=_text(value.get("execution_route"), "execution_route"),
+            taker_fees=_float(value.get("taker_fees", 0.0), "taker_fees"),
+            initial_queue_ahead=_float(
+                value.get("initial_queue_ahead", 0.0), "initial_queue_ahead"
+            ),
+            remaining_queue_ahead=_float(
+                value.get("remaining_queue_ahead", 0.0), "remaining_queue_ahead"
+            ),
+            opportunity_id=_optional_text(value.get("opportunity_id"), "opportunity_id"),
+            entry_regime=_optional_text(value.get("entry_regime"), "entry_regime"),
+            price_bucket=_optional_text(value.get("price_bucket"), "price_bucket"),
+            go_eligible=_optional_bool(value.get("go_eligible"), "go_eligible"),
+            decision_best_ask=_optional_float(value.get("decision_best_ask"), "decision_best_ask"),
+            signal_edge_decay=_optional_float(value.get("signal_edge_decay"), "signal_edge_decay"),
+            model_version=_optional_text(value.get("model_version"), "model_version"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionSegmentPerformance:
+    dimension: str
+    key: str
+    opportunity_count: int
+    resolved_count: int
+    fill_count: int
+    realized_pnl: float
+    resolved_ev_per_opportunity: float | None
+
+    def __post_init__(self) -> None:
+        _require_identifier(self.dimension, "segment dimension")
+        _require_identifier(self.key, "segment key")
+        for name in ("opportunity_count", "resolved_count", "fill_count"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        _finite(self.realized_pnl, "segment realized_pnl")
+        _optional_finite(self.resolved_ev_per_opportunity, "resolved_ev_per_opportunity")
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "dimension": self.dimension,
+            "key": self.key,
+            "opportunity_count": self.opportunity_count,
+            "resolved_count": self.resolved_count,
+            "fill_count": self.fill_count,
+            "realized_pnl": self.realized_pnl,
+            "resolved_ev_per_opportunity": self.resolved_ev_per_opportunity,
+        }
+
+    @classmethod
+    def from_json(cls, raw: object) -> ExecutionSegmentPerformance:
+        value = _mapping(raw, "execution segment performance")
+        return cls(
+            dimension=_text(value.get("dimension"), "segment dimension"),
+            key=_text(value.get("key"), "segment key"),
+            opportunity_count=_integer(value.get("opportunity_count"), "opportunity_count"),
+            resolved_count=_integer(value.get("resolved_count"), "resolved_count"),
+            fill_count=_integer(value.get("fill_count"), "fill_count"),
+            realized_pnl=_float(value.get("realized_pnl"), "segment realized_pnl"),
+            resolved_ev_per_opportunity=_optional_float(
+                value.get("resolved_ev_per_opportunity"), "resolved_ev_per_opportunity"
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DirectionStageSummary:
+    stage: str
+    paired_market_count: int
+    actual_up_count: int
+    actual_down_count: int
+    predicted_up_count: int
+    predicted_down_count: int
+    mean_p_up: float | None
+    calibration_z: float | None
+    bias_state: str
+
+    def __post_init__(self) -> None:
+        _require_identifier(self.stage, "direction stage")
+        _require_identifier(self.bias_state, "direction bias state")
+        for name in (
+            "paired_market_count",
+            "actual_up_count",
+            "actual_down_count",
+            "predicted_up_count",
+            "predicted_down_count",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        if self.actual_up_count + self.actual_down_count != self.paired_market_count:
+            raise ValueError("actual direction counts must equal paired markets")
+        if self.predicted_up_count + self.predicted_down_count != self.paired_market_count:
+            raise ValueError("predicted direction counts must equal paired markets")
+        _optional_probability(self.mean_p_up, "mean_p_up")
+        _optional_finite(self.calibration_z, "calibration_z")
+
+    def to_json(self) -> dict[str, object]:
+        return {name: getattr(self, name) for name in self.__dataclass_fields__}
+
+    @classmethod
+    def from_json(cls, raw: object) -> DirectionStageSummary:
+        value = _mapping(raw, "direction stage summary")
+        return cls(
+            stage=_text(value.get("stage"), "direction stage"),
+            paired_market_count=_integer(value.get("paired_market_count"), "paired_market_count"),
+            actual_up_count=_integer(value.get("actual_up_count"), "actual_up_count"),
+            actual_down_count=_integer(value.get("actual_down_count"), "actual_down_count"),
+            predicted_up_count=_integer(value.get("predicted_up_count"), "predicted_up_count"),
+            predicted_down_count=_integer(
+                value.get("predicted_down_count"), "predicted_down_count"
+            ),
+            mean_p_up=_optional_float(value.get("mean_p_up"), "mean_p_up"),
+            calibration_z=_optional_float(value.get("calibration_z"), "calibration_z"),
+            bias_state=_text(value.get("bias_state"), "direction bias state"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DirectionModelPerformance:
+    """Resolved forward-OOS probability and no-order counterfactual performance."""
+
+    model_role: str
+    model_version: str
+    paired_market_count: int
+    prediction_count: int
+    predicted_up_count: int
+    predicted_down_count: int
+    accuracy: float | None
+    brier: float | None
+    log_loss: float | None
+    counterfactual_opportunity_count: int
+    counterfactual_resolved_count: int
+    counterfactual_up_count: int
+    counterfactual_down_count: int
+    counterfactual_win_count: int
+    counterfactual_pnl: float
+    counterfactual_ev_per_opportunity: float | None
+
+    def __post_init__(self) -> None:
+        _require_identifier(self.model_role, "direction model role")
+        _require_text(self.model_version, "direction model version")
+        for name in (
+            "paired_market_count",
+            "prediction_count",
+            "predicted_up_count",
+            "predicted_down_count",
+            "counterfactual_opportunity_count",
+            "counterfactual_resolved_count",
+            "counterfactual_up_count",
+            "counterfactual_down_count",
+            "counterfactual_win_count",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        if self.predicted_up_count + self.predicted_down_count != self.paired_market_count:
+            raise ValueError("model direction counts must equal paired markets")
+        if (
+            self.counterfactual_up_count + self.counterfactual_down_count
+            != self.counterfactual_opportunity_count
+        ):
+            raise ValueError("counterfactual direction counts must equal opportunities")
+        if self.counterfactual_resolved_count > self.counterfactual_opportunity_count:
+            raise ValueError("resolved counterfactuals cannot exceed opportunities")
+        if self.counterfactual_win_count > self.counterfactual_resolved_count:
+            raise ValueError("counterfactual wins cannot exceed resolved opportunities")
+        for name in ("accuracy", "brier"):
+            value = getattr(self, name)
+            if value is not None and (not isfinite(value) or not 0.0 <= value <= 1.0):
+                raise ValueError(f"{name} must be in [0, 1] when provided")
+        _optional_nonnegative(self.log_loss, "log_loss")
+        _finite(self.counterfactual_pnl, "counterfactual_pnl")
+        _optional_finite(
+            self.counterfactual_ev_per_opportunity,
+            "counterfactual_ev_per_opportunity",
+        )
+
+    def to_json(self) -> dict[str, object]:
+        return {name: getattr(self, name) for name in self.__dataclass_fields__}
+
+    @classmethod
+    def from_json(cls, raw: object) -> DirectionModelPerformance:
+        value = _mapping(raw, "direction model performance")
+        return cls(
+            model_role=_text(value.get("model_role"), "model_role"),
+            model_version=_text(value.get("model_version"), "model_version"),
+            paired_market_count=_integer(value.get("paired_market_count"), "paired_market_count"),
+            prediction_count=_integer(value.get("prediction_count"), "prediction_count"),
+            predicted_up_count=_integer(value.get("predicted_up_count"), "predicted_up_count"),
+            predicted_down_count=_integer(
+                value.get("predicted_down_count"), "predicted_down_count"
+            ),
+            accuracy=_optional_float(value.get("accuracy"), "accuracy"),
+            brier=_optional_float(value.get("brier"), "brier"),
+            log_loss=_optional_float(value.get("log_loss"), "log_loss"),
+            counterfactual_opportunity_count=_integer(
+                value.get("counterfactual_opportunity_count"),
+                "counterfactual_opportunity_count",
+            ),
+            counterfactual_resolved_count=_integer(
+                value.get("counterfactual_resolved_count"),
+                "counterfactual_resolved_count",
+            ),
+            counterfactual_up_count=_integer(
+                value.get("counterfactual_up_count"), "counterfactual_up_count"
+            ),
+            counterfactual_down_count=_integer(
+                value.get("counterfactual_down_count"), "counterfactual_down_count"
+            ),
+            counterfactual_win_count=_integer(
+                value.get("counterfactual_win_count"), "counterfactual_win_count"
+            ),
+            counterfactual_pnl=_float(value.get("counterfactual_pnl"), "counterfactual_pnl"),
+            counterfactual_ev_per_opportunity=_optional_float(
+                value.get("counterfactual_ev_per_opportunity"),
+                "counterfactual_ev_per_opportunity",
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DirectionHealthSnapshot:
+    scope: str
+    coverage_started_at: datetime
+    activated_market_count: int
+    resolved_market_count: int
+    paired_market_count: int
+    prediction_count: int
+    actual_up_count: int
+    actual_down_count: int
+    predicted_up_count: int
+    predicted_down_count: int
+    mean_p_up: float | None
+    calibration_z: float | None
+    bias_state: str
+    stage_summaries: tuple[DirectionStageSummary, ...] = ()
+    model_summaries: tuple[DirectionModelPerformance, ...] = ()
+
+    def __post_init__(self) -> None:
+        _require_identifier(self.scope, "direction health scope")
+        _require_identifier(self.bias_state, "direction bias state")
+        object.__setattr__(
+            self,
+            "coverage_started_at",
+            _as_utc(self.coverage_started_at, "coverage_started_at"),
+        )
+        for name in (
+            "activated_market_count",
+            "resolved_market_count",
+            "paired_market_count",
+            "prediction_count",
+            "actual_up_count",
+            "actual_down_count",
+            "predicted_up_count",
+            "predicted_down_count",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        if self.resolved_market_count > self.activated_market_count:
+            raise ValueError("resolved markets cannot exceed activated markets")
+        if self.paired_market_count > self.resolved_market_count:
+            raise ValueError("paired markets cannot exceed resolved markets")
+        if self.actual_up_count + self.actual_down_count != self.paired_market_count:
+            raise ValueError("actual direction counts must equal paired markets")
+        if self.predicted_up_count + self.predicted_down_count != self.paired_market_count:
+            raise ValueError("predicted direction counts must equal paired markets")
+        _optional_probability(self.mean_p_up, "mean_p_up")
+        _optional_finite(self.calibration_z, "calibration_z")
+        object.__setattr__(self, "stage_summaries", tuple(self.stage_summaries))
+        object.__setattr__(self, "model_summaries", tuple(self.model_summaries))
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "scope": self.scope,
+            "coverage_started_at": self.coverage_started_at.isoformat(),
+            "activated_market_count": self.activated_market_count,
+            "resolved_market_count": self.resolved_market_count,
+            "paired_market_count": self.paired_market_count,
+            "prediction_count": self.prediction_count,
+            "actual_up_count": self.actual_up_count,
+            "actual_down_count": self.actual_down_count,
+            "predicted_up_count": self.predicted_up_count,
+            "predicted_down_count": self.predicted_down_count,
+            "mean_p_up": self.mean_p_up,
+            "calibration_z": self.calibration_z,
+            "bias_state": self.bias_state,
+            "stage_summaries": [item.to_json() for item in self.stage_summaries],
+            "model_summaries": [item.to_json() for item in self.model_summaries],
+        }
+
+    @classmethod
+    def from_json(cls, raw: object) -> DirectionHealthSnapshot:
+        value = _mapping(raw, "direction health snapshot")
+        return cls(
+            scope=_text(value.get("scope"), "direction health scope"),
+            coverage_started_at=_timestamp(value.get("coverage_started_at"), "coverage_started_at"),
+            activated_market_count=_integer(
+                value.get("activated_market_count"), "activated_market_count"
+            ),
+            resolved_market_count=_integer(
+                value.get("resolved_market_count"), "resolved_market_count"
+            ),
+            paired_market_count=_integer(value.get("paired_market_count"), "paired_market_count"),
+            prediction_count=_integer(value.get("prediction_count"), "prediction_count"),
+            actual_up_count=_integer(value.get("actual_up_count"), "actual_up_count"),
+            actual_down_count=_integer(value.get("actual_down_count"), "actual_down_count"),
+            predicted_up_count=_integer(value.get("predicted_up_count"), "predicted_up_count"),
+            predicted_down_count=_integer(
+                value.get("predicted_down_count"), "predicted_down_count"
+            ),
+            mean_p_up=_optional_float(value.get("mean_p_up"), "mean_p_up"),
+            calibration_z=_optional_float(value.get("calibration_z"), "calibration_z"),
+            bias_state=_text(value.get("bias_state"), "direction bias state"),
+            stage_summaries=tuple(
+                DirectionStageSummary.from_json(item)
+                for item in _sequence(value.get("stage_summaries", ()), "stage_summaries")
+            ),
+            model_summaries=tuple(
+                DirectionModelPerformance.from_json(item)
+                for item in _sequence(value.get("model_summaries", ()), "model_summaries")
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DirectionExecutionPerformance:
+    side: str
+    qualified_signal_count: int
+    opportunity_count: int
+    fill_count: int
+    resolved_opportunity_count: int
+    realized_pnl: float
+    mean_fair_probability: float | None
+    realized_accuracy: float | None
+    calibration_gap: float | None
+    resolved_ev_per_opportunity: float | None
+
+    def __post_init__(self) -> None:
+        if self.side not in {"up", "down"}:
+            raise ValueError("direction side must be 'up' or 'down'")
+        for name in (
+            "qualified_signal_count",
+            "opportunity_count",
+            "fill_count",
+            "resolved_opportunity_count",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        if self.fill_count > self.opportunity_count:
+            raise ValueError("direction fills cannot exceed opportunities")
+        if self.resolved_opportunity_count > self.opportunity_count:
+            raise ValueError("resolved direction opportunities cannot exceed opportunities")
+        _finite(self.realized_pnl, "direction realized_pnl")
+        _optional_probability(self.mean_fair_probability, "mean_fair_probability")
+        _optional_probability(self.realized_accuracy, "realized_accuracy")
+        _optional_finite(self.calibration_gap, "calibration_gap")
+        _optional_finite(self.resolved_ev_per_opportunity, "resolved_ev_per_opportunity")
+
+    def to_json(self) -> dict[str, object]:
+        return {name: getattr(self, name) for name in self.__dataclass_fields__}
+
+    @classmethod
+    def from_json(cls, raw: object) -> DirectionExecutionPerformance:
+        value = _mapping(raw, "direction execution performance")
+        return cls(
+            side=_text(value.get("side"), "direction side"),
+            qualified_signal_count=_integer(
+                value.get("qualified_signal_count"), "qualified_signal_count"
+            ),
+            opportunity_count=_integer(value.get("opportunity_count"), "opportunity_count"),
+            fill_count=_integer(value.get("fill_count"), "fill_count"),
+            resolved_opportunity_count=_integer(
+                value.get("resolved_opportunity_count"), "resolved_opportunity_count"
+            ),
+            realized_pnl=_float(value.get("realized_pnl"), "direction realized_pnl"),
+            mean_fair_probability=_optional_float(
+                value.get("mean_fair_probability"), "mean_fair_probability"
+            ),
+            realized_accuracy=_optional_float(value.get("realized_accuracy"), "realized_accuracy"),
+            calibration_gap=_optional_float(value.get("calibration_gap"), "calibration_gap"),
+            resolved_ev_per_opportunity=_optional_float(
+                value.get("resolved_ev_per_opportunity"), "resolved_ev_per_opportunity"
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionVariantPerformance:
+    variant_id: str
+    label: str
+    policy: str
+    primary: bool
+    starting_balance: float
+    equity: float
+    realized_pnl: float
+    order_count: int
+    fill_count: int
+    taker_fees: float
+    enabled: bool = True
+    opportunity_count: int = 0
+    evaluation_count: int = 0
+    qualified_signal_count: int = 0
+    rejection_counts: tuple[tuple[str, int], ...] = ()
+    mean_gross_edge: float | None = None
+    mean_fee_per_share: float | None = None
+    mean_slippage_stress: float | None = None
+    mean_latency_stress: float | None = None
+    mean_net_edge: float | None = None
+    candidate_mean_gross_edge: float | None = None
+    candidate_mean_net_edge: float | None = None
+    resolved_opportunity_count: int = 0
+    core_resolved_opportunity_count: int = 0
+    tail_resolved_opportunity_count: int = 0
+    resolved_ev_per_opportunity: float | None = None
+    core_resolved_ev_per_opportunity: float | None = None
+    tail_resolved_ev_per_opportunity: float | None = None
+    conditional_ev_per_filled_share: float | None = None
+    segment_summaries: tuple[ExecutionSegmentPerformance, ...] = ()
+    direction_summaries: tuple[DirectionExecutionPerformance, ...] = ()
+
+    def __post_init__(self) -> None:
+        _require_identifier(self.variant_id, "variant_id")
+        _require_text(self.label, "variant label")
+        _require_identifier(self.policy, "variant policy")
+        if not isinstance(self.primary, bool):
+            raise ValueError("variant primary must be bool")
+        if not isinstance(self.enabled, bool):
+            raise ValueError("variant enabled must be bool")
+        for name in ("opportunity_count", "evaluation_count", "qualified_signal_count"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"variant {name} must be non-negative")
+        if self.qualified_signal_count > self.evaluation_count:
+            raise ValueError("qualified signals cannot exceed evaluations")
+        rejection_counts = tuple(self.rejection_counts)
+        if len({reason for reason, _ in rejection_counts}) != len(rejection_counts):
+            raise ValueError("rejection reasons must be unique")
+        for reason, count in rejection_counts:
+            _require_identifier(reason, "rejection reason")
+            if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+                raise ValueError("rejection counts must be non-negative integers")
+        object.__setattr__(self, "rejection_counts", rejection_counts)
+        _nonnegative(self.starting_balance, "starting_balance")
+        _nonnegative(self.equity, "equity")
+        _finite(self.realized_pnl, "realized_pnl")
+        _nonnegative(self.taker_fees, "taker_fees")
+        for name, value in (("order_count", self.order_count), ("fill_count", self.fill_count)):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        for name in (
+            "resolved_opportunity_count",
+            "core_resolved_opportunity_count",
+            "tail_resolved_opportunity_count",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        _optional_finite(self.resolved_ev_per_opportunity, "resolved_ev_per_opportunity")
+        _optional_finite(
+            self.core_resolved_ev_per_opportunity,
+            "core_resolved_ev_per_opportunity",
+        )
+        _optional_finite(
+            self.tail_resolved_ev_per_opportunity,
+            "tail_resolved_ev_per_opportunity",
+        )
+        _optional_finite(
+            self.conditional_ev_per_filled_share,
+            "conditional_ev_per_filled_share",
+        )
+        for name in (
+            "mean_gross_edge",
+            "mean_fee_per_share",
+            "mean_slippage_stress",
+            "mean_latency_stress",
+            "mean_net_edge",
+            "candidate_mean_gross_edge",
+            "candidate_mean_net_edge",
+        ):
+            _optional_finite(getattr(self, name), name)
+        object.__setattr__(self, "segment_summaries", tuple(self.segment_summaries))
+        direction_summaries = tuple(self.direction_summaries)
+        if len({item.side for item in direction_summaries}) != len(direction_summaries):
+            raise ValueError("direction summaries must have unique sides")
+        object.__setattr__(self, "direction_summaries", direction_summaries)
+
+    @property
+    def fill_rate(self) -> float | None:
+        return None if self.order_count == 0 else self.fill_count / self.order_count
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "variant_id": self.variant_id,
+            "label": self.label,
+            "policy": self.policy,
+            "primary": self.primary,
+            "enabled": self.enabled,
+            "opportunity_count": self.opportunity_count,
+            "evaluation_count": self.evaluation_count,
+            "qualified_signal_count": self.qualified_signal_count,
+            "rejection_counts": dict(self.rejection_counts),
+            "mean_gross_edge": self.mean_gross_edge,
+            "mean_fee_per_share": self.mean_fee_per_share,
+            "mean_slippage_stress": self.mean_slippage_stress,
+            "mean_latency_stress": self.mean_latency_stress,
+            "mean_net_edge": self.mean_net_edge,
+            "candidate_mean_gross_edge": self.candidate_mean_gross_edge,
+            "candidate_mean_net_edge": self.candidate_mean_net_edge,
+            "starting_balance": self.starting_balance,
+            "equity": self.equity,
+            "realized_pnl": self.realized_pnl,
+            "order_count": self.order_count,
+            "fill_count": self.fill_count,
+            "fill_rate": self.fill_rate,
+            "taker_fees": self.taker_fees,
+            "resolved_opportunity_count": self.resolved_opportunity_count,
+            "core_resolved_opportunity_count": self.core_resolved_opportunity_count,
+            "tail_resolved_opportunity_count": self.tail_resolved_opportunity_count,
+            "resolved_ev_per_opportunity": self.resolved_ev_per_opportunity,
+            "core_resolved_ev_per_opportunity": self.core_resolved_ev_per_opportunity,
+            "tail_resolved_ev_per_opportunity": self.tail_resolved_ev_per_opportunity,
+            "conditional_ev_per_filled_share": self.conditional_ev_per_filled_share,
+            "segment_summaries": [item.to_json() for item in self.segment_summaries],
+            "direction_summaries": [item.to_json() for item in self.direction_summaries],
+        }
+
+    @classmethod
+    def from_json(cls, raw: object) -> ExecutionVariantPerformance:
+        value = _mapping(raw, "execution variant performance")
+        raw_rejections = _mapping(value.get("rejection_counts", {}), "rejection_counts")
+        return cls(
+            variant_id=_text(value.get("variant_id"), "variant_id"),
+            label=_text(value.get("label"), "variant label"),
+            policy=_text(value.get("policy"), "variant policy"),
+            primary=value.get("primary"),
+            starting_balance=_float(value.get("starting_balance"), "starting_balance"),
+            equity=_float(value.get("equity"), "equity"),
+            realized_pnl=_float(value.get("realized_pnl"), "realized_pnl"),
+            order_count=_integer(value.get("order_count"), "order_count"),
+            fill_count=_integer(value.get("fill_count"), "fill_count"),
+            taker_fees=_float(value.get("taker_fees", 0.0), "taker_fees"),
+            enabled=(
+                _optional_bool(value.get("enabled"), "variant enabled")
+                if value.get("enabled") is not None
+                else True
+            ),
+            opportunity_count=_integer(value.get("opportunity_count", 0), "opportunity_count"),
+            evaluation_count=_integer(value.get("evaluation_count", 0), "evaluation_count"),
+            qualified_signal_count=_integer(
+                value.get("qualified_signal_count", 0), "qualified_signal_count"
+            ),
+            rejection_counts=tuple(
+                sorted(
+                    (
+                        _text(reason, "rejection reason"),
+                        _integer(count, "rejection count"),
+                    )
+                    for reason, count in raw_rejections.items()
+                )
+            ),
+            mean_gross_edge=_optional_float(value.get("mean_gross_edge"), "mean_gross_edge"),
+            mean_fee_per_share=_optional_float(
+                value.get("mean_fee_per_share"), "mean_fee_per_share"
+            ),
+            mean_slippage_stress=_optional_float(
+                value.get("mean_slippage_stress"), "mean_slippage_stress"
+            ),
+            mean_latency_stress=_optional_float(
+                value.get("mean_latency_stress"), "mean_latency_stress"
+            ),
+            mean_net_edge=_optional_float(value.get("mean_net_edge"), "mean_net_edge"),
+            candidate_mean_gross_edge=_optional_float(
+                value.get("candidate_mean_gross_edge"), "candidate_mean_gross_edge"
+            ),
+            candidate_mean_net_edge=_optional_float(
+                value.get("candidate_mean_net_edge"), "candidate_mean_net_edge"
+            ),
+            resolved_opportunity_count=_integer(
+                value.get("resolved_opportunity_count", 0), "resolved_opportunity_count"
+            ),
+            core_resolved_opportunity_count=_integer(
+                value.get("core_resolved_opportunity_count", 0),
+                "core_resolved_opportunity_count",
+            ),
+            tail_resolved_opportunity_count=_integer(
+                value.get("tail_resolved_opportunity_count", 0),
+                "tail_resolved_opportunity_count",
+            ),
+            resolved_ev_per_opportunity=_optional_float(
+                value.get("resolved_ev_per_opportunity"), "resolved_ev_per_opportunity"
+            ),
+            core_resolved_ev_per_opportunity=_optional_float(
+                value.get("core_resolved_ev_per_opportunity"),
+                "core_resolved_ev_per_opportunity",
+            ),
+            tail_resolved_ev_per_opportunity=_optional_float(
+                value.get("tail_resolved_ev_per_opportunity"),
+                "tail_resolved_ev_per_opportunity",
+            ),
+            conditional_ev_per_filled_share=_optional_float(
+                value.get("conditional_ev_per_filled_share"),
+                "conditional_ev_per_filled_share",
+            ),
+            segment_summaries=tuple(
+                ExecutionSegmentPerformance.from_json(item)
+                for item in _sequence(value.get("segment_summaries", ()), "segment_summaries")
+            ),
+            direction_summaries=tuple(
+                DirectionExecutionPerformance.from_json(item)
+                for item in _sequence(value.get("direction_summaries", ()), "direction_summaries")
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionFunnelSnapshot:
+    scope: str
+    decision_ticks: int
+    predictions: int
+    evaluations: int
+    qualified_signals: int
+    confirmation_pending: int
+    opportunities: int
+    placements: int
+    working: int
+    rejected: int
+    canceled: int
+    fills: int
+    resolved: int
+
+    def __post_init__(self) -> None:
+        _require_identifier(self.scope, "funnel scope")
+        for name in (
+            "decision_ticks",
+            "predictions",
+            "evaluations",
+            "qualified_signals",
+            "confirmation_pending",
+            "opportunities",
+            "placements",
+            "working",
+            "rejected",
+            "canceled",
+            "fills",
+            "resolved",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        if not (
+            self.decision_ticks
+            >= self.predictions
+            >= self.evaluations
+            >= self.qualified_signals
+            >= self.opportunities
+            >= self.placements
+            >= self.fills
+        ):
+            raise ValueError("decision funnel conversion counts must be monotonic")
+        if self.resolved > self.opportunities:
+            raise ValueError("resolved opportunities cannot exceed confirmed opportunities")
+
+    def to_json(self) -> dict[str, object]:
+        return {name: getattr(self, name) for name in self.__dataclass_fields__}
+
+    @classmethod
+    def from_json(cls, raw: object) -> DecisionFunnelSnapshot:
+        value = _mapping(raw, "decision funnel")
+        return cls(
+            scope=_text(value.get("scope"), "funnel scope"),
+            **{
+                name: _integer(value.get(name), name)
+                for name in (
+                    "decision_ticks",
+                    "predictions",
+                    "evaluations",
+                    "qualified_signals",
+                    "confirmation_pending",
+                    "opportunities",
+                    "placements",
+                    "working",
+                    "rejected",
+                    "canceled",
+                    "fills",
+                    "resolved",
+                )
+            },
         )
 
 
@@ -193,7 +934,12 @@ class PerformanceSnapshot:
     order_count: int = 0
     fill_count: int = 0
     equity_curve: tuple[EquityPoint, ...] = ()
-    recent_trades: tuple[TradePerformance, ...] = ()
+    primary_variant_id: str | None = None
+    variant_summaries: tuple[ExecutionVariantPerformance, ...] = ()
+    recent_orders: tuple[OrderPerformance, ...] = ()
+    paper_execution_epoch: str | None = None
+    decision_funnel: DecisionFunnelSnapshot | None = None
+    direction_health: DirectionHealthSnapshot | None = None
 
     def __post_init__(self) -> None:
         _require_identifier(self.currency, "currency")
@@ -219,11 +965,21 @@ class PerformanceSnapshot:
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"{name} must be a non-negative integer")
         points = tuple(self.equity_curve)
-        trades = tuple(self.recent_trades)
+        if self.primary_variant_id is not None:
+            _require_identifier(self.primary_variant_id, "primary_variant_id")
+        summaries = tuple(self.variant_summaries)
+        orders = tuple(self.recent_orders)
+        if self.paper_execution_epoch is not None:
+            _require_identifier(self.paper_execution_epoch, "paper_execution_epoch")
+        if summaries:
+            primary_ids = {item.variant_id for item in summaries if item.primary}
+            if primary_ids != {self.primary_variant_id}:
+                raise ValueError("variant summaries must identify the configured primary variant")
         if any(right.timestamp < left.timestamp for left, right in zip(points, points[1:])):
             raise ValueError("equity_curve must be ordered by timestamp")
         object.__setattr__(self, "equity_curve", points)
-        object.__setattr__(self, "recent_trades", trades)
+        object.__setattr__(self, "variant_summaries", summaries)
+        object.__setattr__(self, "recent_orders", orders)
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -240,7 +996,16 @@ class PerformanceSnapshot:
             "order_count": self.order_count,
             "fill_count": self.fill_count,
             "equity_curve": [point.to_json() for point in self.equity_curve],
-            "recent_trades": [trade.to_json() for trade in self.recent_trades],
+            "primary_variant_id": self.primary_variant_id,
+            "variant_summaries": [item.to_json() for item in self.variant_summaries],
+            "recent_orders": [order.to_json() for order in self.recent_orders],
+            "paper_execution_epoch": self.paper_execution_epoch,
+            "decision_funnel": (
+                None if self.decision_funnel is None else self.decision_funnel.to_json()
+            ),
+            "direction_health": (
+                None if self.direction_health is None else self.direction_health.to_json()
+            ),
         }
 
     @classmethod
@@ -263,9 +1028,29 @@ class PerformanceSnapshot:
                 EquityPoint.from_json(item)
                 for item in _sequence(value.get("equity_curve", ()), "equity_curve")
             ),
-            recent_trades=tuple(
-                TradePerformance.from_json(item)
-                for item in _sequence(value.get("recent_trades", ()), "recent_trades")
+            primary_variant_id=_optional_text(
+                value.get("primary_variant_id"), "primary_variant_id"
+            ),
+            variant_summaries=tuple(
+                ExecutionVariantPerformance.from_json(item)
+                for item in _sequence(value.get("variant_summaries", ()), "variant_summaries")
+            ),
+            recent_orders=tuple(
+                OrderPerformance.from_json(item)
+                for item in _sequence(value.get("recent_orders", ()), "recent_orders")
+            ),
+            paper_execution_epoch=_optional_text(
+                value.get("paper_execution_epoch"), "paper_execution_epoch"
+            ),
+            decision_funnel=(
+                None
+                if value.get("decision_funnel") is None
+                else DecisionFunnelSnapshot.from_json(value.get("decision_funnel"))
+            ),
+            direction_health=(
+                None
+                if value.get("direction_health") is None
+                else DirectionHealthSnapshot.from_json(value.get("direction_health"))
             ),
         )
 
@@ -514,6 +1299,14 @@ def _optional_text(value: object, name: str) -> str | None:
     return None if value is None else _text(value, name)
 
 
+def _optional_bool(value: object, name: str) -> bool | None:
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be bool")
+    return value
+
+
 def _finite(value: float, name: str) -> None:
     if isinstance(value, bool) or not isinstance(value, int | float) or not isfinite(value):
         raise ValueError(f"{name} must be finite")
@@ -538,6 +1331,13 @@ def _nonnegative(value: float, name: str) -> None:
 def _optional_finite(value: float | None, name: str) -> None:
     if value is not None:
         _finite(value, name)
+
+
+def _optional_probability(value: float | None, name: str) -> None:
+    if value is not None:
+        _finite(value, name)
+        if not 0.0 <= value <= 1.0:
+            raise ValueError(f"{name} must be in [0, 1]")
 
 
 def _optional_nonnegative(value: float | None, name: str) -> None:

@@ -1,0 +1,515 @@
+"""Audit one queued closed market and emit a machine-readable readiness receipt."""
+
+from __future__ import annotations
+
+import argparse
+from datetime import UTC, datetime
+from hashlib import sha256
+import json
+import os
+from pathlib import Path
+import time
+
+if __package__ in {None, ""}:
+    from _script_helpers import ensure_repo_root
+else:
+    from ._script_helpers import ensure_repo_root
+
+ensure_repo_root(__file__)
+
+from btc_short_horizon.config import load_btc_project_config  # noqa: E402
+from btc_short_horizon.data import read_market_catalog  # noqa: E402
+from btc_short_horizon.data.coverage_index import (  # noqa: E402
+    SessionCoverageIndex,
+    coverage_evidence_sha256,
+)
+from btc_short_horizon.data.rule_contract import rule_contract_sha256  # noqa: E402
+from btc_short_horizon.data.readiness import (  # noqa: E402
+    collect_source_window_evidence,
+    current_protocol_receipts,
+)
+from btc_short_horizon.data.session_inventory import (  # noqa: E402
+    PART_STATUS_COMMITTED,
+    SESSION_STATUS_COMPLETE,
+    SessionInventoryRepository,
+)
+from btc_short_horizon.data.storage import write_atomic_json  # noqa: E402
+from btc_short_horizon.live.runtime import RuntimeStatus, RuntimeStatusStore  # noqa: E402
+from scripts.btc_forward_collector import _readiness_protocol  # noqa: E402
+
+_EXIT_TERMINAL_MAX_AGE_SECONDS = 15
+_WATCH_INTERVAL_SECONDS = 60.0
+_RECEIPT_SCHEMA_VERSION = "btc-training-readiness-receipt-v2"
+_READINESS_SCOPE = "raw_capture_integrity_only_feature_materialization_deferred"
+
+
+def _raw_capture_source_summaries(
+    *,
+    evidence_sessions: tuple[object, ...],
+    market: object,
+    ingest_version: str,
+    source_windows_seconds: dict[str, tuple[float, float]],
+) -> tuple[list[dict[str, object]], list[str]]:
+    """Summarize verified immutable manifests without replaying raw payloads."""
+
+    instruments = {
+        "polymarket_clob": (market.up_token_id, market.down_token_id),  # type: ignore[attr-defined]
+        "polymarket_rtds_chainlink": ("btc/usd",),
+        "binance_spot": ("BTCUSDT",),
+        "binance_perp": ("BTCUSDT",),
+        "okx_spot": ("BTC-USDT",),
+        "okx_swap": ("BTC-USDT-SWAP",),
+    }
+    t0_ns = int(market.t0.timestamp() * 1e9)  # type: ignore[attr-defined]
+    summaries: list[dict[str, object]] = []
+    errors: list[str] = []
+    seen_parts: set[str] = set()
+    parts = []
+    for session in evidence_sessions:
+        for part in session.parts:  # type: ignore[attr-defined]
+            identity = part.manifest.data_path
+            if identity in seen_parts:
+                continue
+            seen_parts.add(identity)
+            parts.append(part.manifest)
+
+    for source, offsets in source_windows_seconds.items():
+        expected_instruments = instruments.get(source)
+        if expected_instruments is None:
+            errors.append(f"unsupported_required_source:{source}")
+            continue
+        start_ns = t0_ns + round(offsets[0] * 1_000_000_000)
+        end_ns = t0_ns + round(offsets[1] * 1_000_000_000)
+        for instrument in expected_instruments:
+            matching = tuple(
+                part
+                for part in parts
+                if part.source == source
+                and part.instrument == instrument
+                and part.ingest_version == ingest_version
+                and part.min_available_ts_ns is not None
+                and part.max_available_ts_ns is not None
+                and part.min_available_ts_ns <= end_ns
+                and part.max_available_ts_ns >= start_ns
+            )
+            if not matching:
+                errors.append(f"missing_stream_manifest:{source}:{instrument}")
+                continue
+            gap_count = sum(part.gap_count for part in matching)
+            row_count = sum(part.row_count for part in matching)
+            if gap_count:
+                errors.append(f"stream_manifest_gap:{source}:{instrument}")
+            if row_count <= 0:
+                errors.append(f"empty_stream_manifest:{source}:{instrument}")
+            summaries.append(
+                {
+                    "source": source,
+                    "instrument": instrument,
+                    "part_count": len(matching),
+                    "row_count": row_count,
+                    "gap_count": gap_count,
+                    "part_lineage_sha256": sha256(
+                        json.dumps(
+                            sorted((part.data_path, part.sha256) for part in matching),
+                            separators=(",", ":"),
+                        ).encode()
+                    ).hexdigest(),
+                    "min_available_ts_ns": min(int(part.min_available_ts_ns) for part in matching),
+                    "max_available_ts_ns": max(int(part.max_available_ts_ns) for part in matching),
+                }
+            )
+    return sorted(
+        summaries,
+        key=lambda item: (str(item["source"]), str(item["instrument"])),
+    ), errors
+
+
+def _readiness_runtime_status(
+    *,
+    started_at: datetime,
+    updated_at: datetime,
+    backlog: int,
+    last_candidate: str | None,
+    last_receipt: str | None,
+    last_error: str | None,
+    code_revision: str | None,
+    processing_candidate: str | None = None,
+    process_id: int | None = None,
+) -> RuntimeStatus:
+    return RuntimeStatus(
+        service="training_readiness",
+        mode="offline_incremental",
+        state="running",
+        healthy=last_error is None,
+        started_at=started_at,
+        updated_at=updated_at,
+        details={
+            "backlog": backlog,
+            "last_candidate": last_candidate,
+            "last_receipt": last_receipt,
+            "last_error": last_error,
+            "processing_candidate": processing_candidate,
+            "warming": last_candidate is None,
+            "expected_status_interval_seconds": _WATCH_INTERVAL_SECONDS,
+            "process_id": process_id,
+            "identity": {"code_revision": code_revision},
+        },
+    )
+
+
+def _expected_coverage_evidence(
+    *,
+    index: SessionCoverageIndex,
+    evidence_payload: tuple[dict[str, object], ...],
+    coverage_error: object,
+    source_windows_ns: dict[str, tuple[int, int]],
+) -> tuple[dict[str, object], ...]:
+    if coverage_error:
+        if evidence_payload:
+            raise ValueError("failed coverage candidate must not include evidence sessions")
+        return ()
+    return collect_source_window_evidence(
+        index=index,
+        source_windows_ns=source_windows_ns,
+    )
+
+
+def audit_candidate(
+    candidate_path: Path, *, raw_data_root: Path, config_path: Path
+) -> dict[str, object]:
+    project = load_btc_project_config(config_path)
+    candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+    if candidate.get("schema_version") != "btc-training-readiness-candidate-v1":
+        raise ValueError("unsupported readiness candidate schema")
+    if candidate.get("ingest_version") != project.collection.ingest_version:
+        raise ValueError("readiness candidate does not match project ingest version")
+    expected_protocol = _readiness_protocol(project)
+    if candidate.get("protocol_sha256") != expected_protocol["readiness_protocol_sha256"]:
+        raise ValueError("readiness candidate protocol mismatch")
+    if tuple(candidate.get("decision_offsets_seconds", ())) != tuple(
+        expected_protocol["readiness_decision_offsets_seconds"]
+    ):
+        raise ValueError("readiness candidate decision offsets mismatch")
+    catalog_path = Path(candidate["catalog_path"])
+    if sha256(catalog_path.read_bytes()).hexdigest() != candidate["catalog_sha256"]:
+        raise ValueError("readiness catalog hash mismatch")
+    market = read_market_catalog(catalog_path).require(candidate["market_slug"])
+    if market.t0.isoformat() != candidate["t0"] or market.t1.isoformat() != candidate["t1"]:
+        raise ValueError("readiness candidate market window mismatch")
+    if market.rule_epoch != candidate["rule_epoch"]:
+        raise ValueError("readiness candidate rule epoch mismatch")
+    if candidate.get("rule_contract_sha256") != rule_contract_sha256(market.rule_epoch):
+        raise ValueError("readiness candidate rule contract mismatch")
+    evidence_payload = tuple(candidate.get("evidence_sessions", ()))
+    if coverage_evidence_sha256(evidence_payload) != candidate.get("coverage_evidence_sha256"):
+        raise ValueError("readiness coverage evidence hash mismatch")
+    coverage_index = SessionCoverageIndex(raw_data_root)
+    t0_ns = int(market.t0.timestamp() * 1e9)
+    expected_evidence = _expected_coverage_evidence(
+        index=coverage_index,
+        evidence_payload=evidence_payload,
+        coverage_error=candidate.get("coverage_error"),
+        source_windows_ns={
+            source: (
+                int(t0_ns + offsets[0] * 1_000_000_000),
+                int(t0_ns + offsets[1] * 1_000_000_000),
+            )
+            for source, offsets in expected_protocol[
+                "readiness_source_window_offsets_seconds"
+            ].items()
+        },
+    )
+    if expected_evidence != evidence_payload:
+        raise ValueError("readiness coverage evidence no longer matches persistent index")
+    exit_evidence_payload = tuple(candidate.get("exit_evidence_sessions", ()))
+    if coverage_evidence_sha256(exit_evidence_payload) != candidate.get(
+        "exit_coverage_evidence_sha256"
+    ):
+        raise ValueError("exit coverage evidence hash mismatch")
+    expected_exit_evidence = _expected_coverage_evidence(
+        index=coverage_index,
+        evidence_payload=exit_evidence_payload,
+        coverage_error=candidate.get("exit_coverage_error"),
+        source_windows_ns={"polymarket_clob": (t0_ns, int(market.t1.timestamp() * 1e9))},
+    )
+    if expected_exit_evidence != exit_evidence_payload:
+        raise ValueError("exit coverage evidence no longer matches persistent index")
+    if candidate.get("coverage_error"):
+        errors = [str(candidate["coverage_error"])]
+        exit_errors = (
+            [str(candidate["exit_coverage_error"])]
+            if candidate.get("exit_coverage_error")
+            else ["not_audited_after_model_coverage_failure"]
+        )
+        payload = {
+            "schema_version": _RECEIPT_SCHEMA_VERSION,
+            "market_slug": market.slug,
+            "collector_session_id": candidate["collector_session_id"],
+            "evidence_session_ids": [str(item["session_id"]) for item in evidence_payload],
+            "coverage_evidence_sha256": candidate["coverage_evidence_sha256"],
+            "ingest_version": candidate["ingest_version"],
+            "rule_epoch": candidate["rule_epoch"],
+            "rule_contract_sha256": candidate["rule_contract_sha256"],
+            "protocol_sha256": candidate["protocol_sha256"],
+            "scheduled_decisions": len(candidate["decision_offsets_seconds"]),
+            "materialized_decisions": 0,
+            "source_summaries": [],
+            "errors": errors,
+            "raw_training_evidence_ready": False,
+            "raw_exit_evidence_ready": False,
+            "raw_exit_evidence_errors": exit_errors,
+            "exit_source_summaries": [],
+            "ready": False,
+            "feature_materialization": {
+                "status": "deferred_to_offline_research",
+                "required": True,
+            },
+            "readiness_scope": _READINESS_SCOPE,
+            "integrity_level": "collector_content_addressed_manifest_lineage",
+        }
+        payload["receipt_sha256"] = sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        return payload
+    repository = SessionInventoryRepository(raw_data_root)
+    combined_evidence = {
+        str(entry["session_id"]): entry for entry in (*evidence_payload, *exit_evidence_payload)
+    }
+    evidence_sessions = tuple(
+        repository.read_session(session_id) for session_id in combined_evidence
+    )
+    for session in evidence_sessions:
+        evidence = combined_evidence[session.session_id]
+        if session.status != SESSION_STATUS_COMPLETE:
+            raise ValueError("readiness evidence session is not complete")
+        if session.ingest_version != candidate["ingest_version"]:
+            raise ValueError("readiness session ingest version mismatch")
+        if not session.parts or any(part.status != PART_STATUS_COMMITTED for part in session.parts):
+            raise ValueError("readiness session has no fully committed evidence")
+        inventory_path = repository.inventory_path(session.session_id)
+        if sha256(inventory_path.read_bytes()).hexdigest() != evidence["inventory_sha256"]:
+            raise ValueError("readiness session inventory hash mismatch")
+    errors = [candidate["coverage_error"]] if candidate.get("coverage_error") else []
+    source_summaries, manifest_errors = _raw_capture_source_summaries(
+        evidence_sessions=evidence_sessions,
+        market=market,
+        ingest_version=str(candidate["ingest_version"]),
+        source_windows_seconds={
+            source: tuple(offsets)  # type: ignore[arg-type]
+            for source, offsets in expected_protocol[
+                "readiness_source_window_offsets_seconds"
+            ].items()
+        },
+    )
+    errors.extend(manifest_errors)
+    exit_errors, exit_source_summaries = _audit_raw_exit_evidence(
+        evidence_sessions=evidence_sessions,
+        market=market,
+        ingest_version=str(candidate["ingest_version"]),
+        capture_lead_seconds=project.collection.polymarket_capture_lead_seconds,
+        collection_policy=str(candidate.get("exit_collection_policy")),
+        coverage_error=candidate.get("exit_coverage_error"),
+    )
+    payload = {
+        "schema_version": _RECEIPT_SCHEMA_VERSION,
+        "market_slug": market.slug,
+        "collector_session_id": candidate["collector_session_id"],
+        "evidence_session_ids": [str(item["session_id"]) for item in evidence_payload],
+        "coverage_evidence_sha256": candidate["coverage_evidence_sha256"],
+        "ingest_version": candidate["ingest_version"],
+        "rule_epoch": candidate["rule_epoch"],
+        "rule_contract_sha256": candidate["rule_contract_sha256"],
+        "protocol_sha256": candidate["protocol_sha256"],
+        "scheduled_decisions": len(candidate["decision_offsets_seconds"]),
+        "materialized_decisions": 0,
+        "source_summaries": source_summaries,
+        "errors": errors,
+        "raw_training_evidence_ready": not errors,
+        "raw_exit_evidence_ready": not exit_errors,
+        "raw_exit_evidence_errors": exit_errors,
+        "exit_source_summaries": exit_source_summaries,
+        "ready": not errors,
+        "feature_materialization": {
+            "status": "deferred_to_offline_research",
+            "required": True,
+        },
+        "readiness_scope": _READINESS_SCOPE,
+        "integrity_level": "collector_content_addressed_manifest_lineage",
+    }
+    payload["receipt_sha256"] = sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return payload
+
+
+def _audit_raw_exit_evidence(
+    *,
+    evidence_sessions: tuple[object, ...],
+    market: object,
+    ingest_version: str,
+    capture_lead_seconds: float,
+    collection_policy: str,
+    coverage_error: object,
+) -> tuple[list[str], list[dict[str, object]]]:
+    if collection_policy != "extended_t0_plus_900":
+        return ["not_collected_by_policy"], []
+    if coverage_error:
+        return [str(coverage_error)], []
+    summaries, errors = _raw_capture_source_summaries(
+        evidence_sessions=evidence_sessions,
+        market=market,
+        ingest_version=ingest_version,
+        source_windows_seconds={
+            "polymarket_clob": (-float(capture_lead_seconds), 900.0),
+        },
+    )
+    t0_ns = int(market.t0.timestamp() * 1e9)  # type: ignore[attr-defined]
+    terminal_ns = int(market.t1.timestamp() * 1e9)  # type: ignore[attr-defined]
+    by_instrument = {str(item["instrument"]): item for item in summaries}
+    for token_id in (market.up_token_id, market.down_token_id):  # type: ignore[attr-defined]
+        summary = by_instrument.get(token_id)
+        if summary is None:
+            continue
+        if int(summary["min_available_ts_ns"]) > t0_ns:
+            errors.append(f"missing_preopen_clob_evidence:{token_id}")
+        if int(summary["max_available_ts_ns"]) < (
+            terminal_ns - _EXIT_TERMINAL_MAX_AGE_SECONDS * 1_000_000_000
+        ):
+            errors.append(f"missing_terminal_clob_evidence:{token_id}")
+    return errors, summaries
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--candidate", type=Path)
+    parser.add_argument("--candidate-root", type=Path)
+    parser.add_argument("--watch", action="store_true")
+    parser.add_argument(
+        "--config", type=Path, default=Path("configs/btc_short_horizon/baseline.toml")
+    )
+    parser.add_argument("--raw-data-root", type=Path, required=True)
+    parser.add_argument("--receipt-root", type=Path, required=True)
+    parser.add_argument("--runtime-root", type=Path)
+    args = parser.parse_args()
+    if args.watch:
+        if args.candidate_root is None:
+            parser.error("--watch requires --candidate-root")
+        started_at = datetime.now(UTC)
+        status_store = RuntimeStatusStore(args.runtime_root) if args.runtime_root else None
+
+        def write_watch_status(
+            *,
+            last_candidate: str | None,
+            last_receipt: str | None,
+            last_error: str | None,
+            processing_candidate: str | None = None,
+        ) -> None:
+            if status_store is None:
+                return
+            backlog = sum(
+                not (args.receipt_root / item.name).exists()
+                for item in args.candidate_root.glob("*.json")
+            )
+            status_store.write(
+                _readiness_runtime_status(
+                    started_at=started_at,
+                    updated_at=datetime.now(UTC),
+                    backlog=backlog,
+                    last_candidate=last_candidate,
+                    last_receipt=last_receipt,
+                    last_error=last_error,
+                    code_revision=os.environ.get("BTC_CODE_REVISION"),
+                    processing_candidate=processing_candidate,
+                    process_id=os.getpid(),
+                )
+            )
+
+        write_watch_status(last_candidate=None, last_receipt=None, last_error=None)
+        while True:
+            last_candidate = None
+            last_receipt = None
+            last_error = None
+            for candidate in sorted(args.candidate_root.glob("*.json")):
+                last_candidate = candidate.name
+                receipt_path = args.receipt_root / candidate.name
+                if receipt_path.exists():
+                    continue
+                write_watch_status(
+                    last_candidate=last_candidate,
+                    last_receipt=last_receipt,
+                    last_error=None,
+                    processing_candidate=candidate.name,
+                )
+                try:
+                    receipt = audit_candidate(
+                        candidate, raw_data_root=args.raw_data_root, config_path=args.config
+                    )
+                    write_atomic_json(receipt_path, receipt)
+                    (args.receipt_root / f"error-{candidate.name}").unlink(missing_ok=True)
+                    last_receipt = receipt_path.name
+                except Exception as exc:
+                    last_error = type(exc).__name__
+                    write_atomic_json(
+                        args.receipt_root / f"error-{candidate.name}",
+                        {
+                            "schema_version": "btc-training-readiness-error-v1",
+                            "candidate": candidate.name,
+                            "error": type(exc).__name__,
+                        },
+                    )
+                    write_watch_status(
+                        last_candidate=last_candidate,
+                        last_receipt=last_receipt,
+                        last_error=last_error,
+                        processing_candidate=None,
+                    )
+                else:
+                    write_watch_status(
+                        last_candidate=last_candidate,
+                        last_receipt=last_receipt,
+                        last_error=None,
+                        processing_candidate=None,
+                    )
+            if status_store is not None:
+                write_watch_status(
+                    last_candidate=last_candidate,
+                    last_receipt=last_receipt,
+                    last_error=last_error,
+                    processing_candidate=None,
+                )
+            time.sleep(_WATCH_INTERVAL_SECONDS)
+    if args.candidate is None:
+        parser.error("--candidate is required unless --watch is set")
+    receipt = audit_candidate(
+        args.candidate, raw_data_root=args.raw_data_root, config_path=args.config
+    )
+    receipt_path = args.receipt_root / f"{receipt['market_slug']}.json"
+    if receipt_path.exists():
+        if json.loads(receipt_path.read_text(encoding="utf-8")) != receipt:
+            raise ValueError("immutable readiness receipt conflict")
+    else:
+        write_atomic_json(receipt_path, receipt)
+    print(json.dumps(receipt, sort_keys=True))
+    return 0 if receipt["ready"] else 2
+
+
+def aggregate_receipts(receipt_root: Path, *, limit: int = 96) -> dict[str, object]:
+    paths = sorted(receipt_root.glob("*.json"), key=lambda item: item.name)[-limit:]
+    payloads = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
+    receipts = current_protocol_receipts(payloads)
+    errors = [
+        item for item in payloads if item.get("schema_version") == "btc-training-readiness-error-v1"
+    ]
+    invalid = [item.get("market_slug") for item in receipts if not item.get("ready")]
+    return {
+        "schema_version": "btc-training-readiness-status-v1",
+        "receipt_count": len(receipts),
+        "error_count": len(errors),
+        "ready_count": sum(item.get("ready") is True for item in receipts),
+        "invalid_markets": invalid,
+        "healthy": bool(receipts) and not invalid and not errors,
+    }
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

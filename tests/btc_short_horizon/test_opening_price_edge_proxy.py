@@ -1,17 +1,24 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import json
+from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from btc_short_horizon.data import BTC_15M_MARKET_FAMILY, MarketOutcome, MarketWindow
 from scripts.btc_opening_price_edge_proxy import (
     _build_candidates,
+    _entry_metrics,
+    _load_or_fetch_prices,
+    _price_cache_coverage,
     _select_positive_confidence_threshold,
     _select_one_entry_per_market,
     _select_one_entry_per_market_by_regime,
     _sensitivity_entries,
+    _validate_price_rows,
 )
 
 
@@ -21,12 +28,16 @@ def test_regime_threshold_requires_positive_development_confidence() -> None:
             "threshold": 0.0,
             "entry_count": 200,
             "realized_ev_ci95_lower": -0.001,
+            "selection_adjusted_ev_ci_lower": -0.002,
+            "utc_day_count": 10,
             "realized_ev_per_share": 0.04,
         },
         {
             "threshold": 0.04,
             "entry_count": 150,
             "realized_ev_ci95_lower": 0.012,
+            "selection_adjusted_ev_ci_lower": 0.006,
+            "utc_day_count": 10,
             "realized_ev_per_share": 0.03,
         },
     ]
@@ -165,3 +176,184 @@ def test_regime_thresholds_preserve_the_earliest_qualifying_market_entry() -> No
     assert len(entries) == 1
     assert entries.iloc[0]["decision_ts_ns"] == 70_000_000_000
     assert entries.iloc[0]["regime"] == "price_discovery_35s_to_90s"
+
+
+def test_regime_threshold_persistence_resets_on_an_intervening_failed_signal() -> None:
+    candidates = pd.DataFrame(
+        [
+            {
+                "market_slug": "market-a",
+                "decision_ts_ns": seconds * 1_000_000_000,
+                "side": "up",
+                "predicted_edge": edge,
+                "regime": "early_3s_to_30s",
+            }
+            for seconds, edge in ((10, 0.11), (12, 0.01), (15, 0.12), (20, 0.13))
+        ]
+    )
+
+    entries = _select_one_entry_per_market_by_regime(
+        candidates,
+        thresholds_by_regime={"early_3s_to_30s": 0.10},
+        minimum_consecutive_signals=2,
+        maximum_signal_gap_seconds=5,
+    )
+
+    assert len(entries) == 1
+    assert entries.iloc[0]["decision_ts_ns"] == 20_000_000_000
+
+
+def test_legacy_attempt_manifest_is_not_treated_as_price_evidence(tmp_path: Path) -> None:
+    path = tmp_path / "prices.coverage.json"
+    path.write_text(json.dumps({"attempted_token_ids": ["up", "down"]}), encoding="utf-8")
+
+    assert _price_cache_coverage(path) == set()
+
+
+def test_price_cache_rejects_conflicting_same_timestamp_values() -> None:
+    frame = pd.DataFrame(
+        [
+            {"token_id": "up", "ts_seconds": 1, "price": 0.5},
+            {"token_id": "up", "ts_seconds": 1, "price": 0.6},
+        ]
+    )
+
+    with pytest.raises(ValueError, match="conflicting"):
+        _validate_price_rows(frame)
+
+
+def test_price_cache_rejects_string_encoded_numeric_evidence() -> None:
+    frame = pd.DataFrame([{"token_id": "up", "ts_seconds": "1", "price": "0.5"}])
+
+    with pytest.raises(ValueError, match="numeric dtype"):
+        _validate_price_rows(frame)
+
+
+def test_price_cache_preserves_numeric_schema_when_fetch_returns_no_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    t0 = datetime(2026, 4, 13, tzinfo=UTC)
+    market = MarketWindow(
+        family=BTC_15M_MARKET_FAMILY,
+        slug=BTC_15M_MARKET_FAMILY.slug_for(t0),
+        condition_id="condition",
+        up_token_id="up-token",
+        down_token_id="down-token",
+        t0=t0,
+        t1=t0 + timedelta(minutes=15),
+        rule_epoch="rule-v1",
+        rule_hash="a" * 64,
+        resolution=MarketOutcome.UP,
+        label_available_ts=t0 + timedelta(minutes=16),
+    )
+    cache_path = tmp_path / "prices.parquet"
+    pd.DataFrame(
+        [{"token_id": "up-token", "ts_seconds": int(t0.timestamp()), "price": 0.5}]
+    ).to_parquet(cache_path, index=False)
+
+    async def fetch_no_rows(**_: object) -> tuple[object, ...]:
+        return ()
+
+    monkeypatch.setattr(
+        "scripts.btc_opening_price_edge_proxy._fetch_market_price_batches",
+        fetch_no_rows,
+    )
+
+    prices = _load_or_fetch_prices(
+        cache_path=cache_path,
+        markets=(market,),
+        max_concurrency=1,
+        maximum_prediction_offset_seconds=180,
+    )
+
+    assert prices["ts_seconds"].dtype == np.dtype("int64")
+    assert prices["price"].dtype == np.dtype("float64")
+
+
+def test_entry_metrics_report_contiguous_day_blocks_and_adjusted_selection_bound() -> None:
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    entries = pd.DataFrame(
+        {
+            "decision_ts_ns": [
+                int((start + timedelta(days=day)).timestamp() * 1_000_000_000) for day in range(10)
+            ],
+            "pnl_per_share": np.linspace(-0.1, 0.2, 10),
+            "outcome": [0, 1] * 5,
+            "entry_price": np.full(10, 0.5),
+            "predicted_edge": np.full(10, 0.1),
+        }
+    )
+
+    metrics = _entry_metrics(
+        entries,
+        requested_markets=10,
+        bootstrap_resamples=200,
+        seed=17,
+        selection_alpha=0.05 / 24,
+    )
+
+    assert metrics["utc_day_count"] == 10
+    assert metrics["bootstrap_block_days"] == 5
+    assert metrics["selection_adjusted_ev_ci_lower"] <= metrics["realized_ev_ci95_lower"]
+
+
+def test_entry_metrics_retry_zero_trade_blocks_for_sparse_calendar_days() -> None:
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    entries = pd.DataFrame(
+        {
+            "decision_ts_ns": [
+                int(start.timestamp() * 1_000_000_000),
+                int((start + timedelta(days=99)).timestamp() * 1_000_000_000),
+            ],
+            "pnl_per_share": [0.1, -0.1],
+            "outcome": [1, 0],
+            "entry_price": [0.5, 0.5],
+            "predicted_edge": [0.1, 0.1],
+        }
+    )
+
+    metrics = _entry_metrics(
+        entries,
+        requested_markets=2,
+        bootstrap_resamples=200,
+        seed=17,
+    )
+
+    assert metrics["utc_day_count"] == 2
+    assert np.isfinite(metrics["realized_ev_ci95_lower"])
+
+
+def test_empty_entry_metrics_still_validate_research_controls() -> None:
+    with pytest.raises(ValueError, match="requested_markets"):
+        _entry_metrics(
+            pd.DataFrame(),
+            requested_markets=0,
+            bootstrap_resamples=200,
+            seed=17,
+        )
+
+
+def test_sensitivity_drops_an_entry_whose_stressed_price_is_not_tradeable() -> None:
+    candidates = pd.DataFrame(
+        [
+            {
+                "market_slug": "market-a",
+                "decision_ts_ns": 10_000_000_000,
+                "side": "up",
+                "predicted_edge": 0.01,
+                "price_age_seconds": 1,
+                "entry_price": 0.995,
+                "outcome": 1,
+            }
+        ]
+    )
+
+    entries = _sensitivity_entries(
+        candidates,
+        threshold=0.0,
+        additional_entry_cost=0.01,
+        max_price_age_seconds=15,
+    )
+
+    assert entries.empty

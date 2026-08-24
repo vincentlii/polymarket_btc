@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from nautilus_trader.core.nautilus_pyo3 import FIXED_PRECISION, FIXED_SCALAR
+from nautilus_trader.model.objects import Price
 
 import prediction_market_extensions._native as native
 from prediction_market_extensions.adapters.polymarket.pmxt import PolymarketPMXTDataLoader
@@ -306,8 +308,19 @@ def test_float_seconds_to_ms_string_matches_existing_pmxt_format() -> None:
 
 
 def test_fixed_raw_values_matches_existing_loader_rounding() -> None:
-    assert native.fixed_raw_values([0.105], 2) == [100_000_000]
-    assert native.fixed_raw_values([1009.1234564], 6) == [1_009_123_456_000]
+    cases = [
+        (0.60, 2, "0.60"),
+        (0.105, 2, "0.10"),
+        (1009.1234564, 6, "1009.123456"),
+    ]
+
+    for value, precision, expected in cases:
+        [raw] = native.fixed_raw_values([value], precision)
+        assert raw == int(round(float(expected) * FIXED_SCALAR))
+        assert str(Price.from_raw(raw, precision)) == expected
+        assert Price.from_raw(raw, precision).raw == Price.from_str(expected).raw
+
+    assert FIXED_SCALAR == 10**FIXED_PRECISION
 
 
 def test_pmxt_payload_sort_key_uses_native_timestamp_extraction() -> None:

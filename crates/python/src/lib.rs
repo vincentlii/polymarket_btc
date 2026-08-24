@@ -599,8 +599,14 @@ fn float_seconds_to_ms_string(value: f64) -> String {
 }
 
 #[pyfunction]
-fn fixed_raw_values(values: Vec<f64>, precision: u8) -> PyResult<Vec<i128>> {
-    core_fixed_raw_values(&values, precision).map_err(PyValueError::new_err)
+fn fixed_raw_values(
+    values: Vec<f64>,
+    precision: u8,
+    fixed_precision: u8,
+    fixed_scalar: i128,
+) -> PyResult<Vec<i128>> {
+    core_fixed_raw_values(&values, precision, fixed_precision, fixed_scalar)
+        .map_err(PyValueError::new_err)
 }
 
 #[pyfunction]

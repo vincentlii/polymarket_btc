@@ -4,7 +4,20 @@ from pathlib import Path
 
 import pytest
 
+from prediction_market_extensions.adapters.prediction_market import (
+    replay_records_sha256,
+    verify_replay_records_sha256,
+)
 from scripts.btc_pmxt_coverage_audit import _validate_token_mapping, parse_args
+
+
+class _SerializableRecord:
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+    @staticmethod
+    def to_dict(record: _SerializableRecord) -> dict[str, int]:
+        return {"value": record.value}
 
 
 def test_pmxt_coverage_audit_parses_explicit_window_and_output_directory() -> None:
@@ -36,3 +49,13 @@ def test_pmxt_coverage_audit_rejects_unverified_token_index_mapping() -> None:
             actual_up_token_id="down",
             actual_down_token_id="up",
         )
+
+
+def test_replay_record_digest_binds_content_without_merge_order_noise() -> None:
+    records = (_SerializableRecord(1), _SerializableRecord(2))
+    digest = replay_records_sha256(records)
+
+    assert replay_records_sha256(tuple(reversed(records))) == digest
+    assert verify_replay_records_sha256(records, digest.upper()) == digest
+    with pytest.raises(ValueError, match="mismatch"):
+        verify_replay_records_sha256((_SerializableRecord(3),), digest)

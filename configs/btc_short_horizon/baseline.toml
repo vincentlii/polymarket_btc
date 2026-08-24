@@ -1,8 +1,19 @@
+rule_epoch = "chainlink-btc-usd-twap-60s-v1"
+model_rule_epoch = "chainlink-btc-usd-point-v1"
+allow_rule_epoch_transition_proxy = true
+paper_execution_epoch = "paper-v11-profitability-early-only"
+
 data_sources = [
   "local:../../data/pmxt_raw",
   "archive:r2v2.pmxt.dev",
   "archive:r2.pmxt.dev",
 ]
+
+[paper_research]
+tail_entry_price_threshold = 0.35
+evidence_target_markets = 300
+market_relative_feature_profile = "core"
+sealed_forward_start = 2026-08-20T00:00:00Z
 
 [paths]
 raw_data_root = "../../data/btc_short_horizon"
@@ -29,56 +40,183 @@ entry_end_seconds = 180
 training_snapshot_seconds = 5
 max_feature_lookback_seconds = 3600
 
+[stage_policy]
+tolerance_seconds = 0.25
+
+[[stage_policy.rules]]
+id = "early_3s_to_30s"
+start_seconds = 3.0
+end_seconds = 30.0
+minimum_net_edge = 0.04
+minimum_price = 0.20
+maximum_price = 0.80
+enabled = true
+
+[[stage_policy.rules]]
+id = "price_discovery_35s_to_90s"
+start_seconds = 35.0
+end_seconds = 90.0
+minimum_net_edge = 0.035
+minimum_price = 0.20
+maximum_price = 0.80
+enabled = false
+
+[[stage_policy.rules]]
+id = "mid_early_95s_to_180s"
+start_seconds = 95.0
+end_seconds = 180.0
+minimum_net_edge = 0.03
+minimum_price = 0.20
+maximum_price = 0.80
+enabled = false
+
 [collection]
 flush_size = 50000
 flush_interval_seconds = 60.0
+shutdown_flush_timeout_seconds = 30.0
+max_pending_events = 100000
+max_pending_bytes = 67108864
 rotation_poll_seconds = 2.0
-opening_handoff_delay_seconds = 180.0
-ingest_version = "btc-short-horizon-v6"
+polymarket_capture_lead_seconds = 90.0
+opening_handoff_delay_seconds = 900.0
+binance_spot_depth_snapshot_limit = 1000
+binance_futures_depth_snapshot_limit = 1000
+binance_depth_snapshot_retry_initial_seconds = 0.5
+binance_depth_snapshot_retry_max_seconds = 30.0
+polymarket_source_timestamp_regression_tolerance_seconds = 1.0
+binance_spot_streams = [
+  "btcusdt@kline_1s",
+  "btcusdt@aggTrade",
+  "btcusdt@depth20@100ms",
+]
+binance_futures_market_streams = ["btcusdt@aggTrade"]
+binance_futures_public_streams = ["btcusdt@depth20@100ms"]
+okx_subscriptions = [
+  { channel = "books5", inst_id = "BTC-USDT" },
+  { channel = "trades", inst_id = "BTC-USDT" },
+  { channel = "books5", inst_id = "BTC-USDT-SWAP" },
+  { channel = "trades", inst_id = "BTC-USDT-SWAP" },
+]
+disk_warning_free_gib = 20.0
+disk_optional_feeds_free_gib = 15.0
+disk_extended_capture_free_gib = 10.0
+ingest_version = "btc-short-horizon-v17"
 
 [maker]
 structure = "single"
-max_shares = 1.0
+max_shares = 5.0
 safety_buffer = 0.01
 minimum_edge = 0.10
-maker_fee_per_share = 0.0
 entry_start_seconds = 3.0
 entry_end_seconds = 180.0
-edge_persistence_seconds = 5.0
+confirmation_signals = 2
+signal_cadence_seconds = 5.0
+signal_cadence_tolerance_seconds = 0.25
 max_work_seconds = 15.0
 stale_after_seconds = 1.0
 cancel_probability_drop = 0.03
-price_level_tick_offsets = [0, 1, 2]
+max_visible_depth_fraction = 0.05
+price_level_tick_offsets = [0]
+improve_inside_spread = true
+
+[[paper_execution_variants]]
+id = "independent_fak_1x5s"
+label = "Independent FAK 1x5s Legacy"
+mode = "immediate_fak"
+maker_work_seconds = 0.0
+primary = false
+enabled = false
+minimum_taker_net_edge = 0.03
+slippage_buffer = 0.005
+model_uncertainty_buffer = 0.03
+opportunity_policy = "independent_taker"
+confirmation_policy = "side_only"
+confirmation_signals = 1
+maximum_edge_decay = 0.0
+
+[[paper_execution_variants]]
+id = "independent_fak_1x5s_2_0"
+label = "Independent FAK 1x5s 2.0 No-Go Paper"
+mode = "immediate_fak"
+maker_work_seconds = 0.0
+primary = true
+enabled = true
+minimum_taker_net_edge = 0.03
+slippage_buffer = 0.005
+model_uncertainty_buffer = 0.0
+opportunity_policy = "robust_independent_taker"
+confirmation_policy = "side_only"
+confirmation_signals = 1
+maximum_edge_decay = 0.0
 
 [[execution_scenarios]]
 name = "zero"
+formal_grid_component = false
 queue_position = true
+maker_rebates_enabled = false
+trade_execution_size_multiplier = 1.0
+same_timestamp_priority = "book_before_trade"
 base_latency_ms = 0.0
 insert_latency_ms = 0.0
 update_latency_ms = 0.0
 cancel_latency_ms = 0.0
-prob_fill_on_limit = 0.25
-min_synthetic_book_size = 10.0
-synthetic_book_depth_multiplier = 1.0
 
 [[execution_scenarios]]
 name = "p95"
+formal_grid_component = false
 queue_position = true
+maker_rebates_enabled = false
+trade_execution_size_multiplier = 1.0
+same_timestamp_priority = "book_before_trade"
 base_latency_ms = 75.0
 insert_latency_ms = 20.0
 update_latency_ms = 10.0
 cancel_latency_ms = 40.0
-prob_fill_on_limit = 0.25
-min_synthetic_book_size = 10.0
-synthetic_book_depth_multiplier = 1.0
 
 [[execution_scenarios]]
-name = "p99_pessimistic"
+name = "p99_half_volume_book_first"
+formal_grid_component = true
 queue_position = true
+maker_rebates_enabled = false
+trade_execution_size_multiplier = 0.5
+same_timestamp_priority = "book_before_trade"
 base_latency_ms = 150.0
 insert_latency_ms = 50.0
 update_latency_ms = 25.0
 cancel_latency_ms = 100.0
-prob_fill_on_limit = 0.10
-min_synthetic_book_size = 10.0
-synthetic_book_depth_multiplier = 1.0
+
+[[execution_scenarios]]
+name = "p99_half_volume_trade_first"
+formal_grid_component = true
+queue_position = true
+maker_rebates_enabled = false
+trade_execution_size_multiplier = 0.5
+same_timestamp_priority = "trade_before_book"
+base_latency_ms = 150.0
+insert_latency_ms = 50.0
+update_latency_ms = 25.0
+cancel_latency_ms = 100.0
+
+[[execution_scenarios]]
+name = "p99_full_volume_book_first"
+formal_grid_component = true
+queue_position = true
+maker_rebates_enabled = false
+trade_execution_size_multiplier = 1.0
+same_timestamp_priority = "book_before_trade"
+base_latency_ms = 150.0
+insert_latency_ms = 50.0
+update_latency_ms = 25.0
+cancel_latency_ms = 100.0
+
+[[execution_scenarios]]
+name = "p99_full_volume_trade_first"
+formal_grid_component = true
+queue_position = true
+maker_rebates_enabled = false
+trade_execution_size_multiplier = 1.0
+same_timestamp_priority = "trade_before_book"
+base_latency_ms = 150.0
+insert_latency_ms = 50.0
+update_latency_ms = 25.0
+cancel_latency_ms = 100.0

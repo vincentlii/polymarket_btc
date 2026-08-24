@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -128,12 +128,18 @@ class RuntimeStatusStore:
         except FileNotFoundError:
             return None
 
-    def all(self) -> tuple[RuntimeStatus, ...]:
+    def all(self, services: Sequence[str] | None = None) -> tuple[RuntimeStatus, ...]:
         directory = self.root / "status"
         if not directory.exists():
             return ()
+        selected = None if services is None else frozenset(services)
+        if selected is not None:
+            for service in selected:
+                _require_identifier(service, "service")
         statuses: list[RuntimeStatus] = []
         for path in sorted(directory.glob("*.json")):
+            if selected is not None and path.stem not in selected:
+                continue
             try:
                 statuses.append(_read_status(path))
             except FileNotFoundError:

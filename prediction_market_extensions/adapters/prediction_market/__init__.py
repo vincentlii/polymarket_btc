@@ -30,6 +30,8 @@ from prediction_market_extensions.adapters.prediction_market.replay import (
     ReplayEngineProfile,
     ReplayLoadRequest,
     ReplayWindow,
+    replay_records_sha256,
+    verify_replay_records_sha256,
 )
 
 __all__ = [
@@ -41,4 +43,6 @@ __all__ = [
     "ReplayEngineProfile",
     "ReplayLoadRequest",
     "ReplayWindow",
+    "replay_records_sha256",
+    "verify_replay_records_sha256",
 ]

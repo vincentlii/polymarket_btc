@@ -58,6 +58,10 @@ from btc_short_horizon.research.opening_runtime import (  # noqa: E402
 )
 
 
+class ShadowEvidenceUnavailableError(ValueError):
+    """Raised when a closed window has no causal CLOB evidence in the selected epoch."""
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -134,6 +138,8 @@ async def run_async(args: argparse.Namespace) -> dict[str, object]:
     market = read_market_catalog(args.market_catalog).require(args.market_slug)
     if market.family != config.primary_family:
         raise ValueError("market must belong to the configured BTC 15m primary family")
+    if market.rule_epoch != config.rule_epoch:
+        raise ValueError("market rule epoch must match the configured current rule epoch")
     if args.output_directory.exists():
         raise FileExistsError(f"output directory already exists: {args.output_directory}")
     if args.book_lookback_seconds < 0:
@@ -160,6 +166,7 @@ async def run_async(args: argparse.Namespace) -> dict[str, object]:
     model, metadata = ModelArtifactStore.load(
         directory=args.model_directory,
         expected_schema_hash=schema.hash,
+        expected_rule_epoch=market.rule_epoch,
     )
     protocol = opening_proxy_protocol(
         entry_start_seconds=timing.entry_start_seconds,
@@ -178,6 +185,9 @@ async def run_async(args: argparse.Namespace) -> dict[str, object]:
         start_time=book_start,
         end_time=book_end,
         ingest_version=config.collection.ingest_version,
+        expected_source_timestamp_regression_tolerance_seconds=(
+            config.collection.polymarket_source_timestamp_regression_tolerance_seconds
+        ),
     )
     down = load_forward_polymarket_book_events(
         raw_data_root=raw_root,
@@ -185,7 +195,15 @@ async def run_async(args: argparse.Namespace) -> dict[str, object]:
         start_time=book_start,
         end_time=book_end,
         ingest_version=config.collection.ingest_version,
+        expected_source_timestamp_regression_tolerance_seconds=(
+            config.collection.polymarket_source_timestamp_regression_tolerance_seconds
+        ),
     )
+    if (
+        up.polymarket_source_timestamp_regression_tolerance_seconds
+        != down.polymarket_source_timestamp_regression_tolerance_seconds
+    ):
+        raise ValueError("Up/Down raw manifests use different Polymarket timestamp tolerances")
     observations = build_opening_market_observations(
         market=market,
         up_events=up.events,
@@ -193,7 +211,9 @@ async def run_async(args: argparse.Namespace) -> dict[str, object]:
         decision_ts_ns=decisions,
     )
     if not observations:
-        raise ValueError("forward CLOB data produced no causal shadow observations")
+        raise ShadowEvidenceUnavailableError(
+            "forward CLOB data produced no causal shadow observations"
+        )
 
     availability_delay = timedelta(seconds=args.availability_delay_seconds)
     required_start, required_end = shadow_bootstrap_window(

@@ -4,6 +4,7 @@ import asyncio
 from decimal import Decimal
 from types import SimpleNamespace
 
+import pytest
 from nautilus_trader.core.rust.model import OrderType
 from nautilus_trader.model.currencies import pUSD
 from nautilus_trader.model.enums import LiquiditySide
@@ -94,11 +95,20 @@ def test_infer_maker_rebate_rate_uses_crypto_rate() -> None:
 
 def test_infer_maker_rebate_rate_uses_default_fee_enabled_rate() -> None:
     rate = infer_maker_rebate_rate(
-        market_info={"tags": ["Sports", "All"]},
-        fee_rate_bps=Decimal(30),
+        market_info={"tags": ["Finance", "All"]},
+        fee_rate_bps=Decimal(400),
     )
 
     assert rate == Decimal("0.25")
+
+
+def test_infer_maker_rebate_rate_uses_current_sports_rate() -> None:
+    rate = infer_maker_rebate_rate(
+        market_info={"tags": ["Sports", "All"]},
+        fee_rate_bps=Decimal(500),
+    )
+
+    assert rate == Decimal("0.15")
 
 
 def test_infer_maker_rebate_rate_zero_when_fee_free() -> None:
@@ -130,22 +140,22 @@ def test_infer_maker_rebate_rate_can_use_documented_fee_rate() -> None:
 
 def test_limit_orders_receive_polymarket_maker_rebate_credit() -> None:
     commission = PolymarketFeeModel().get_commission(
-        SimpleNamespace(order_type=OrderType.LIMIT),
+        SimpleNamespace(order_type=OrderType.LIMIT, post_only=True),
         fill_qty=100,
         fill_px=0.5,
         instrument=SimpleNamespace(
             info={"tags": ["Sports"]},
-            taker_fee=Decimal("0.003"),
+            taker_fee=Decimal("0.05"),
             quote_currency=pUSD,
         ),
     )
 
-    assert commission.as_double() == -0.01875
+    assert commission.as_double() == -0.1875
 
 
 def test_limit_order_maker_rebates_can_be_disabled() -> None:
     commission = PolymarketFeeModel(maker_rebates_enabled=False).get_commission(
-        SimpleNamespace(order_type=OrderType.LIMIT),
+        SimpleNamespace(order_type=OrderType.LIMIT, post_only=True),
         fill_qty=100,
         fill_px=0.5,
         instrument=SimpleNamespace(
@@ -156,6 +166,68 @@ def test_limit_order_maker_rebates_can_be_disabled() -> None:
     )
 
     assert commission.as_double() == 0.0
+
+
+def test_fee_model_rejects_non_boolean_rebate_switch() -> None:
+    with pytest.raises(TypeError, match="maker_rebates_enabled"):
+        PolymarketFeeModel(maker_rebates_enabled="false")  # type: ignore[arg-type]
+
+
+def test_marketable_limit_order_is_charged_as_taker_not_credited_as_maker() -> None:
+    commission = PolymarketFeeModel().get_commission(
+        SimpleNamespace(
+            order_type=OrderType.LIMIT,
+            post_only=False,
+            liquidity_side=LiquiditySide.TAKER,
+        ),
+        fill_qty=100,
+        fill_px=0.5,
+        instrument=SimpleNamespace(
+            info={"tags": ["Crypto"]},
+            taker_fee=Decimal("0.07"),
+            quote_currency=pUSD,
+        ),
+    )
+
+    assert commission.as_double() == 1.75
+
+
+def test_realized_taker_side_overrides_an_inconsistent_post_only_flag() -> None:
+    commission = PolymarketFeeModel().get_commission(
+        SimpleNamespace(
+            order_type=OrderType.LIMIT,
+            post_only=True,
+            liquidity_side=LiquiditySide.TAKER,
+        ),
+        fill_qty=100,
+        fill_px=0.5,
+        instrument=SimpleNamespace(
+            info={"tags": ["Crypto"]},
+            taker_fee=Decimal("0.07"),
+            quote_currency=pUSD,
+        ),
+    )
+
+    assert commission.as_double() == 1.75
+
+
+def test_realized_maker_liquidity_side_takes_priority_for_non_post_only_limit() -> None:
+    commission = PolymarketFeeModel().get_commission(
+        SimpleNamespace(
+            order_type=OrderType.LIMIT,
+            post_only=False,
+            liquidity_side=LiquiditySide.MAKER,
+        ),
+        fill_qty=100,
+        fill_px=0.5,
+        instrument=SimpleNamespace(
+            info={"tags": ["Crypto"]},
+            taker_fee=Decimal("0.07"),
+            quote_currency=pUSD,
+        ),
+    )
+
+    assert commission.as_double() == -0.35
 
 
 def test_market_orders_still_pay_polymarket_taker_fee() -> None:

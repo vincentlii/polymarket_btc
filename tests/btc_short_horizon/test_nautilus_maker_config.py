@@ -10,6 +10,7 @@ from btc_short_horizon.backtest.strategy import (
     BtcOpeningMispricingStrategy,
 )
 from btc_short_horizon.strategy import LayerStructure
+from btc_short_horizon.strategy import TokenSide
 
 
 def test_nautilus_maker_config_converts_to_pure_planning_config() -> None:
@@ -20,6 +21,7 @@ def test_nautilus_maker_config_converts_to_pure_planning_config() -> None:
         max_shares=Decimal("12"),
         layer_structure=LayerStructure.TWO_LEVEL.value,
         safety_buffer=0.02,
+        price_level_tick_offsets=(0, 1),
     )
 
     maker_config = config.maker_config()
@@ -61,3 +63,32 @@ def test_strategy_reset_preserves_completed_run_order_audit() -> None:
     strategy.on_reset()
 
     assert strategy.order_audit_events[0]["client_order_id"] == "client-1"
+
+
+def test_strategy_requires_consecutive_cadence_aligned_model_signals() -> None:
+    strategy = BtcOpeningMispricingStrategy(
+        BtcOpeningMispricingConfig(
+            market_slug="btc-updown-15m-1776038400",
+            up_instrument_id=InstrumentId.from_str("UP.POLYMARKET"),
+            down_instrument_id=InstrumentId.from_str("DOWN.POLYMARKET"),
+        )
+    )
+
+    assert not strategy._confirm_candidate(  # type: ignore[attr-defined]
+        side=TokenSide.UP,
+        signal_ts_ns=5_000_000_000,
+    )
+    assert strategy._confirm_candidate(  # type: ignore[attr-defined]
+        side=TokenSide.UP,
+        signal_ts_ns=10_000_000_000,
+    )
+
+    strategy._reset_candidate()  # type: ignore[attr-defined]
+    assert not strategy._confirm_candidate(  # type: ignore[attr-defined]
+        side=TokenSide.UP,
+        signal_ts_ns=5_000_000_000,
+    )
+    assert not strategy._confirm_candidate(  # type: ignore[attr-defined]
+        side=TokenSide.UP,
+        signal_ts_ns=15_000_000_000,
+    )

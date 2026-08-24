@@ -5,6 +5,9 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from hashlib import sha256
+import json
+from numbers import Integral
 
 import numpy as np
 
@@ -12,9 +15,11 @@ from btc_short_horizon.data import BTC_15M_MARKET_FAMILY, MarketOutcome, MarketW
 from btc_short_horizon.features import OpeningFeatureObservation, opening_feature_schema
 from btc_short_horizon.research.pipeline import DirectionDataset
 from btc_short_horizon.research.walk_forward import ResearchSample
+from btc_short_horizon.strategy import OpeningStage, StagePolicyConfig
 
 
 _NANOS_PER_SECOND = 1_000_000_000
+MARKET_STAGE_WEIGHTING_PROTOCOL = "one-market-one-weight-equal-three-stages-v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +32,7 @@ class OpeningDirectionDatasetBuild:
     excluded_unresolved_markets: int
     excluded_void_markets: int
     excluded_incomplete_markets: int
+    excluded_missing_stage_markets: int
     excluded_ineligible_markets: int
     snapshots_per_market: int
 
@@ -68,6 +74,7 @@ def build_opening_direction_dataset(
     excluded_unresolved = 0
     excluded_void = 0
     excluded_incomplete = 0
+    excluded_missing_stage = 0
     excluded_ineligible = 0
 
     for market in ordered_markets:
@@ -77,7 +84,8 @@ def build_opening_direction_dataset(
         if market.resolution is MarketOutcome.VOID:
             excluded_void += 1
             continue
-        assert market.label_available_ts is not None
+        if market.label_available_ts is None:
+            raise ValueError(f"resolved market {market.slug!r} is missing label availability")
         market_start_ns = _datetime_to_ns(market.t0)
         observations = tuple(observations_by_market.get(market.slug, ()))
         indexed = _index_market_observations(
@@ -96,9 +104,22 @@ def build_opening_direction_dataset(
             excluded_ineligible += 1
             continue
 
-        per_snapshot_weight = 1.0 / len(selected)
+        try:
+            market_weights = market_stage_sample_weights(
+                tuple(
+                    StagePolicyConfig.default()
+                    .rule_for((observation.ts_init - market_start_ns) / _NANOS_PER_SECOND)
+                    .stage
+                    for observation in selected
+                )
+            )
+        except ValueError as exc:
+            if "missing required opening stages" not in str(exc):
+                raise
+            excluded_missing_stage += 1
+            continue
         label = 1 if market.resolution is MarketOutcome.UP else 0
-        for observation in selected:
+        for observation, sample_weight in zip(selected, market_weights, strict=True):
             samples.append(
                 ResearchSample(
                     sample_id=f"{market.slug}@{observation.ts_init}",
@@ -109,7 +130,7 @@ def build_opening_direction_dataset(
                 )
             )
             vectors.append(observation.values)
-            weights.append(per_snapshot_weight)
+            weights.append(sample_weight)
         included_markets += 1
 
     if not samples:
@@ -126,9 +147,50 @@ def build_opening_direction_dataset(
         excluded_unresolved_markets=excluded_unresolved,
         excluded_void_markets=excluded_void,
         excluded_incomplete_markets=excluded_incomplete,
+        excluded_missing_stage_markets=excluded_missing_stage,
         excluded_ineligible_markets=excluded_ineligible,
         snapshots_per_market=len(offsets),
     )
+
+
+def market_stage_sample_weights(
+    stages: Sequence[OpeningStage | str],
+    *,
+    require_all_stages: bool = True,
+) -> tuple[float, ...]:
+    """Give one market weight 1 with equal thirds across required stages."""
+
+    normalized = tuple(OpeningStage(stage) for stage in stages)
+    required = tuple(OpeningStage)
+    missing = tuple(stage.value for stage in required if stage not in normalized)
+    if missing and require_all_stages:
+        raise ValueError(f"missing required opening stages: {missing!r}")
+    counts = {stage: normalized.count(stage) for stage in required if stage in normalized}
+    weights = tuple((1.0 / len(required)) / counts[stage] for stage in normalized)
+    expected_total = len(counts) / len(required)
+    if not np.isclose(sum(weights), expected_total, rtol=0.0, atol=1e-12):
+        raise RuntimeError("market sample weights do not sum to the represented stage mass")
+    for stage in counts:
+        stage_total = sum(
+            weight
+            for weight, candidate in zip(weights, normalized, strict=True)
+            if candidate is stage
+        )
+        if not np.isclose(stage_total, 1.0 / len(required), rtol=0.0, atol=1e-12):
+            raise RuntimeError(f"stage {stage.value!r} weights do not sum to one third")
+    return weights
+
+
+def market_stage_weighting_hash() -> str:
+    payload = {
+        "protocol": MARKET_STAGE_WEIGHTING_PROTOCOL,
+        "market_total_weight": 1.0,
+        "stages": [stage.value for stage in OpeningStage],
+        "stage_weight": 1.0 / len(OpeningStage),
+    }
+    return sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 def _index_market_observations(
@@ -158,11 +220,14 @@ def _index_market_observations(
 def _snapshot_offsets(
     *, snapshot_seconds: int, entry_start_seconds: int, entry_end_seconds: int
 ) -> tuple[int, ...]:
-    if (
+    if any(
+        isinstance(value, bool) or not isinstance(value, Integral)
+        for value in (snapshot_seconds, entry_start_seconds, entry_end_seconds)
+    ) or (
         snapshot_seconds < 1
         or entry_start_seconds < 0
         or entry_end_seconds < entry_start_seconds
-        or entry_end_seconds >= BTC_15M_MARKET_FAMILY.window_seconds
+        or entry_end_seconds > 180
     ):
         raise ValueError("opening training snapshot timing is invalid")
     first = ((entry_start_seconds + snapshot_seconds - 1) // snapshot_seconds) * snapshot_seconds
@@ -173,11 +238,22 @@ def _snapshot_offsets(
 
 
 def _datetime_to_ns(value: datetime) -> int:
-    return int(value.timestamp() * _NANOS_PER_SECOND)
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("datetime must be timezone-aware")
+    utc = value.astimezone(UTC)
+    epoch = datetime(1970, 1, 1, tzinfo=UTC)
+    delta = utc - epoch
+    return ((delta.days * 86_400 + delta.seconds) * 1_000_000 + delta.microseconds) * 1_000
 
 
 def _datetime_from_ns(value: int) -> datetime:
     return datetime.fromtimestamp(value / _NANOS_PER_SECOND, tz=UTC)
 
 
-__all__ = ["OpeningDirectionDatasetBuild", "build_opening_direction_dataset"]
+__all__ = [
+    "OpeningDirectionDatasetBuild",
+    "build_opening_direction_dataset",
+    "market_stage_sample_weights",
+    "market_stage_weighting_hash",
+    "MARKET_STAGE_WEIGHTING_PROTOCOL",
+]

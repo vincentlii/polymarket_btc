@@ -97,6 +97,9 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         start_time=collection_start,
         end_time=analysis_end,
         ingest_version=config.collection.ingest_version,
+        expected_source_timestamp_regression_tolerance_seconds=(
+            config.collection.polymarket_source_timestamp_regression_tolerance_seconds
+        ),
     )
     down = load_forward_polymarket_book_events(
         raw_data_root=raw_data_root,
@@ -104,7 +107,15 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         start_time=collection_start,
         end_time=analysis_end,
         ingest_version=config.collection.ingest_version,
+        expected_source_timestamp_regression_tolerance_seconds=(
+            config.collection.polymarket_source_timestamp_regression_tolerance_seconds
+        ),
     )
+    if (
+        up.polymarket_source_timestamp_regression_tolerance_seconds
+        != down.polymarket_source_timestamp_regression_tolerance_seconds
+    ):
+        raise ValueError("Up/Down raw manifests use different Polymarket timestamp tolerances")
     decisions = tuple(
         _ns(market.t0) + offset_ms * 1_000_000
         for offset_ms in opening_proxy_decision_offsets_ms(
@@ -122,7 +133,17 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     output = args.output_directory
     output.mkdir(parents=True)
     pq.write_table(
-        pa.Table.from_pylist([asdict(observation) for observation in observations]),
+        pa.Table.from_pylist(
+            [
+                {
+                    **asdict(observation),
+                    "opening_feature_quality_flags": sorted(
+                        observation.opening_feature_quality_flags
+                    ),
+                }
+                for observation in observations
+            ]
+        ),
         output / "opening_market_observations.parquet",
         compression="zstd",
     )

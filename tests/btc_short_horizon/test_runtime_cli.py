@@ -1,18 +1,25 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
+import time
 from types import SimpleNamespace
 
 import pytest
 
 from btc_short_horizon.live.runtime import RuntimeControl, RuntimeStatus, RuntimeStatusStore
 from scripts.btc_forward_runtime import (
+    _captured_market,
     _effective_market,
+    _refresh_required_clob_feeds,
     parse_args as parse_forward_runtime_args,
 )
 from scripts.btc_runtime_control import main as runtime_control_main
 from scripts.btc_runtime_dashboard import parse_args as parse_dashboard_args
 from scripts.btc_runtime_healthcheck import main as runtime_healthcheck_main
+from scripts.btc_runtime_healthcheck import _process_is_alive
+from scripts.btc_vps_preflight import main as vps_preflight_main
+from scripts.btc_vps_preflight import _compose_revision, _git_revision
 
 
 def test_forward_runtime_cli_requires_a_verified_rule_epoch() -> None:
@@ -40,6 +47,85 @@ def test_forward_runtime_reports_lookahead_as_active_after_handoff() -> None:
     window = SimpleNamespace(market=current, lookahead=lookahead)
 
     assert _effective_market(window, now=handoff).slug == "lookahead"
+
+
+def test_forward_runtime_only_requires_clob_during_capture_window() -> None:
+    t0 = datetime(2026, 7, 16, 15, 0, tzinfo=UTC)
+    current = SimpleNamespace(slug="current", t0=t0)
+    lookahead = SimpleNamespace(slug="lookahead", t0=t0.replace(minute=15))
+    window = SimpleNamespace(market=current, lookahead=lookahead)
+
+    assert (
+        _captured_market(
+            window,
+            now=t0.replace(minute=14),
+            lead_seconds=90.0,
+            handoff_seconds=180.0,
+        ).slug
+        == "lookahead"
+    )
+
+    assert (
+        _captured_market(
+            window,
+            now=t0.replace(minute=8),
+            lead_seconds=90.0,
+            handoff_seconds=180.0,
+        )
+        is None
+    )
+
+
+def test_forward_runtime_uses_core_capture_window_when_extended_capture_is_disabled() -> None:
+    t0 = datetime(2026, 7, 16, 15, 0, tzinfo=UTC)
+    current = SimpleNamespace(
+        slug="current",
+        t0=t0,
+        up_token_id="current-up",
+        down_token_id="current-down",
+    )
+    lookahead = SimpleNamespace(
+        slug="lookahead",
+        t0=t0.replace(minute=15),
+        up_token_id="lookahead-up",
+        down_token_id="lookahead-down",
+    )
+
+    class Collector:
+        def __init__(self) -> None:
+            self.required: tuple[str, ...] | None = None
+
+        def configure_required_polymarket_tokens(self, token_ids: tuple[str, ...]) -> None:
+            self.required = token_ids
+
+    collector = Collector()
+    window = SimpleNamespace(market=current, lookahead=lookahead, collector=collector)
+    capture_enabled = asyncio.Event()
+
+    captured = _refresh_required_clob_feeds(
+        window,
+        now=t0.replace(minute=10),
+        lead_seconds=90.0,
+        handoff_seconds=900.0,
+        core_capture_seconds=180.0,
+        extended_capture_enabled=capture_enabled,
+    )
+
+    assert captured is None
+    assert collector.required == ()
+
+    capture_enabled.set()
+    captured = _refresh_required_clob_feeds(
+        window,
+        now=t0.replace(minute=10),
+        lead_seconds=90.0,
+        handoff_seconds=900.0,
+        core_capture_seconds=180.0,
+        extended_capture_enabled=capture_enabled,
+    )
+
+    assert captured is current
+    assert collector.required == ("current-up", "current-down")
 
 
 def test_dashboard_cli_defaults_to_loopback_only() -> None:
@@ -75,3 +161,175 @@ def test_runtime_healthcheck_cli_fails_closed_then_accepts_fresh_status(tmp_path
     )
 
     assert runtime_healthcheck_main(["--runtime-root", root]) == 0
+
+
+def test_process_liveness_rejects_missing_and_zombie_processes(tmp_path) -> None:
+    proc_root = tmp_path / "proc"
+    alive_status = proc_root / "123" / "status"
+    alive_status.parent.mkdir(parents=True)
+    alive_status.write_text("Name:\tworker\nState:\tR (running)\n", encoding="utf-8")
+    zombie_status = proc_root / "124" / "status"
+    zombie_status.parent.mkdir(parents=True)
+    zombie_status.write_text("Name:\tworker\nState:\tZ (zombie)\n", encoding="utf-8")
+
+    assert _process_is_alive(123, proc_root=proc_root)
+    assert not _process_is_alive(124, proc_root=proc_root)
+    assert not _process_is_alive(125, proc_root=proc_root)
+
+
+def test_runtime_healthcheck_can_require_a_live_service_process(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime.now(UTC)
+    RuntimeStatusStore(tmp_path).write(
+        RuntimeStatus(
+            service="training_readiness",
+            mode="offline_incremental",
+            state="running",
+            healthy=True,
+            started_at=now,
+            updated_at=now,
+            details={"process_id": 123},
+        )
+    )
+    monkeypatch.setattr("scripts.btc_runtime_healthcheck._process_is_alive", lambda _pid: False)
+    args = [
+        "--runtime-root",
+        str(tmp_path),
+        "--service",
+        "training_readiness",
+        "--require-process",
+    ]
+    assert runtime_healthcheck_main(args) == 1
+
+    monkeypatch.setattr("scripts.btc_runtime_healthcheck._process_is_alive", lambda _pid: True)
+    assert runtime_healthcheck_main(args) == 0
+
+
+def test_vps_preflight_cli_persists_target_host_evidence(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_root = tmp_path / "data"
+    output_root = tmp_path / "output"
+    runtime_root = tmp_path / "runtime"
+    data_root.mkdir()
+    output_root.mkdir()
+
+    class Response:
+        def __init__(self, payload: object) -> None:
+            self.payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> object:
+            return self.payload
+
+    class Client:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def get(self, url: str, **_kwargs: object) -> Response:
+            if url.endswith("/api/geoblock"):
+                return Response({"blocked": False, "country": "KR", "region": "11", "ip": "secret"})
+            if "binance" in url:
+                return Response({"serverTime": int(time.time() * 1_000)})
+            if url.endswith("/time"):
+                return Response(time.time())
+            return Response([{"id": "market"}])
+
+    revision = "a" * 40
+    compose_env = tmp_path / ".env"
+    compose_env.write_text(f"BTC_CODE_REVISION={revision}\n", encoding="utf-8")
+    monkeypatch.setattr("scripts.btc_vps_preflight.httpx.Client", Client)
+    monkeypatch.setattr("scripts.btc_vps_preflight._git_revision", lambda: revision)
+    monkeypatch.setattr("scripts.btc_vps_preflight._host_ntp_synchronized", lambda: True)
+
+    result = vps_preflight_main(
+        [
+            "--code-revision",
+            revision,
+            "--rule-epoch",
+            "btc-15m-current-v1",
+            "--compose-env-file",
+            str(compose_env),
+            "--data-root",
+            str(data_root),
+            "--output-root",
+            str(output_root),
+            "--runtime-root",
+            str(runtime_root),
+            "--minimum-free-gib",
+            "0.000000001",
+            "--latency-samples",
+            "1",
+        ]
+    )
+
+    assert result == 0
+    assert (runtime_root / "preflight" / "latest.json").is_file()
+
+
+def test_vps_preflight_rejects_stale_compose_revision(tmp_path) -> None:
+    compose_env = tmp_path / ".env"
+    old_revision = "a" * 40
+    new_revision = "b" * 40
+    compose_env.write_text(f"BTC_CODE_REVISION={old_revision}\n", encoding="utf-8")
+
+    assert _compose_revision(compose_env) == old_revision
+    with pytest.raises(RuntimeError, match="does not match release revision"):
+        vps_preflight_main(
+            [
+                "--code-revision",
+                new_revision,
+                "--rule-epoch",
+                "btc-15m-current-v1",
+                "--compose-env-file",
+                str(compose_env),
+            ]
+        )
+
+
+def test_vps_preflight_rejects_abbreviated_release_revision(tmp_path) -> None:
+    compose_env = tmp_path / ".env"
+    compose_env.write_text("BTC_CODE_REVISION=abcdef0\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="full 40-character Git SHA"):
+        vps_preflight_main(
+            [
+                "--code-revision",
+                "abcdef0",
+                "--rule-epoch",
+                "btc-15m-current-v1",
+                "--compose-env-file",
+                str(compose_env),
+            ]
+        )
+
+
+def test_vps_preflight_rejects_dirty_tracked_release(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def run(command, **_kwargs):  # type: ignore[no-untyped-def]
+        calls.append(tuple(command))
+        if command[1] == "rev-parse":
+            return SimpleNamespace(stdout="a" * 40 + "\n")
+        return SimpleNamespace(stdout=" M btc_short_horizon/live/service.py\n")
+
+    monkeypatch.setattr("scripts.btc_vps_preflight.subprocess.run", run)
+
+    with pytest.raises(RuntimeError, match="tracked changes"):
+        _git_revision()
+
+    assert calls == [
+        ("git", "rev-parse", "HEAD"),
+        ("git", "status", "--porcelain", "--untracked-files=no"),
+    ]

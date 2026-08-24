@@ -10,6 +10,12 @@
 
 主页面保持一屏可读，不把原始 JSON、完整日志、模型特征和 L2 深度图塞入首页。Grafana 官方建议看板围绕明确问题、按“整体到细节”的顺序组织，并降低认知负担；Google SRE 同样强调监控与告警链路应简单、可理解，而不是要求人持续盯屏。[Grafana dashboard best practices](https://grafana.com/docs/grafana/latest/visualizations/dashboards/build-dashboards/best-practices/)、[Google SRE: Monitoring Distributed Systems](https://sre.google/sre-book/monitoring-distributed-systems/)
 
+当前 VPS 阶段允许 `Research Paper` 写入一套严格标为“模拟”的绩效投影：
+虚拟余额、模拟成交、逐市场盈亏和资金曲线均来自独立 Paper ledger，不得显示为
+真实账户或实盘成交。首页必须同时显示其固定假设（P99 latency、完整可见 queue、
+50% seller-initiated trade volume）以及 `Research Proxy / Maker Gate No-Go`；这样可
+观察策略与运行链路，但不会把 L2 heuristic 误包装成可实现利润。
+
 ## 第一手产品与规范中可直接借鉴的做法
 
 | 官方来源 | 可直接借鉴 | 本项目的定制推断 |
@@ -84,7 +90,7 @@ FreqUI 官方明确区分 cumulative profit 与实际 wallet balance，并提醒
 生命周期使用一条短时间线：
 
 ```text
-Research → Challenge → Shadow → Canary → Live
+Research → Challenge → Shadow → Paper → Canary → Live
                 ↑ 当前阶段高亮
 ```
 
@@ -103,6 +109,11 @@ Research → Challenge → Shadow → Canary → Live
 #### 第四行：最近交易
 
 首页只展示最近 8–10 个市场级交易：时间、市场、方向、状态、成本、净 PnL。点击后打开交易抽屉；完整列表进入“交易”页。
+
+在 `research_paper` 模式中，状态使用 `simulated_*` 或明确的 Paper 生命周期；
+未成交但已结算的订单不计入胜负交易，partial fill 只按实际模拟成交份额计 PnL，
+working notional 按各层真实挂单价冻结，而不是按模型 `p_fair` 估算。看板聚合任一
+runtime service 的失败：Paper 失败会显示故障，但不会把仍健康的原始采集器停掉。
 
 ### 视图二：交易
 
@@ -166,6 +177,7 @@ Polymarket User channel 官方分别定义 placement/update/cancellation 与 tra
 展示可验证事实，不合成不透明分数：
 
 - 24h expected / observed / eligible market windows；
+- 因 ingest epoch 切换或缺少因果观察而跳过的 Shadow window 数量与明确原因；
 - 36 个 opening decision 的完整覆盖率；
 - stale、gap、duplicate、out-of-order、invalid payload 数；
 - 每个 required source 的最新 `available_ts`；
@@ -248,6 +260,10 @@ Grafana 官方建议避免不必要刷新、堆叠误导与无目标图表；Fre
 - 运维状态、活动订单：5 秒刷新；WebSocket 原始 heartbeat 继续按协议独立运行。
 - PnL、权益、交易表：15–30 秒刷新；结算后事件驱动更新。
 - 生命周期与模型治理：5 分钟或事件驱动刷新。
+- 服务新鲜度不能统一套用一个固定秒数。生产者必须声明
+  `expected_status_interval_seconds`；看板只对该服务使用带余量的阈值，未声明的
+  collector/Paper 继续使用严格默认值，避免 60 秒 Shadow 调度器被 30 秒阈值周期性
+  误报为故障。
 - 深色与浅色均可，但主色保持中性；绿色只用于正常，橙色用于降级，红色只用于需要行动的故障/亏损。
 - 金额统一 USDC，概率统一百分比或 0–1 其中一种，延迟统一毫秒。
 - 所有数值显示 `as_of`、口径和数据状态：`observed / reconstructed / proxy`。
@@ -257,9 +273,60 @@ Grafana建议刷新频率应匹配数据变化速度，并为 panel 添加说明
 
 ## 推荐实施顺序
 
+### 当前 v6 Research Paper 边界
+
+`paper-v6-1x5s-v2` 的当前看板快照只包含两张启用中的执行卡：
+`independent_fak_1x5s`（当前 primary）和 `independent_fak_1x5s_2_0`（challenger）。
+两者都是单信号 immediate-FAK 策略并使用隔离账本。maker、2x5 和 3x5 仅保留为
+rollback/history 代码，不进入当前快照。
+
+分页 `/api/orders` 历史读取保持只读，并继续发现旧 execution epoch；不同 epoch 的
+余额和资金曲线不得与 v6 primary 曲线合并。
+
 1. 先完成概览：真实权益/PnL、资金曲线、关键链路健康、生命周期、最近交易、活跃告警。
 2. 再完成交易页：市场级主表、订单/fill 展开、实际与 Proxy 口径隔离。
 3. 最后完成运维页：分阶段延迟、数据质量、告警历史和诊断链接。
 4. 所有运行阶段共用同一 UI；缺失能力显示 `N/A by mode`，不维护多套看板。
 
 这一顺序优先满足“打开后几秒内知道是否正常、是否赚钱、是否该行动”，同时为后续 Shadow、Canary 和 Live 逐步补齐真实数据留出稳定接口。
+
+Research Paper 的首页默认只显示启用中的两张策略卡：首次合格信号立即提交的
+`independent_fak_1x5s` 当前主策略，以及 `independent_fak_1x5s_2_0` challenger。
+两者共享当前模型和执行假设，但订单、成交与 PnL 账本完全隔离。maker、2x5 和 3x5
+只保留为 rollback/history 代码，不会进入当前 runtime snapshot。历史 execution epoch
+仍可通过只读订单 API 按 epoch 筛选；不同 epoch 的 starting balance 与资金曲线不得合并。
+在 2.0 通过开发 Gate 并发布可加载 artifact 前，主资金曲线继续采用 Legacy 1x5s；
+不得仅因代码路径存在就提前切换 primary。卡片显示
+全样本 PnL、核心与全样本已结算机会 EV、按已成交份额计算的 conditional EV、
+成交率、评估/合格信号、核心/尾部样本和 taker fee，并按 3--30 秒、35--90 秒、
+95--180 秒及价格区间分层。Promotion 只读取核心样本 EV；尾部研究样本不能靠较大
+的偶然 PnL 抬高 Go 指标。
+
+策略卡下方显示主策略本进程的决策漏斗：decision tick、有效预测、候选信号、独立
+机会、提交、拒绝、成交、结算。该漏斗只用于解释为什么没有订单或没有成交，不能跨重启
+拼接为伪精确转化率。首页订单仍固定为最近 15 条；完整历史通过只读、分页、可按
+variant 筛选的 `/api/orders` 显式加载。历史读取递归发现各 execution epoch 的账本，
+但任一账本结构、路径身份或 schema 校验失败时整次请求 fail closed，不返回看似完整
+的残缺结果，也不暴露本地路径或 token ID。
+
+订单表必须显示策略、执行状态与结算状态，未成交订单的 PnL 显示 `—`，不能把
+“已结算但未成交”显示成一笔收益为零的交易。完整历史保留 opportunity、执行阶段、
+core/tail、Go eligibility、decision ask 以及最多三次 fair/VWAP/fee/net-edge 观察；
+终止原因、queue ahead、可消费卖盘量、执行路径和 taker fee 继续保留供逐单诊断。
+看板必须区分四个不同口径：`evaluation` 是一次 planner 计算，`qualified signal`
+是通过 edge/价格/数据 gate 的信号，`opportunity` 是完成确认并创建不可变交易记录，
+`fill` 是正成交份额。用户可见的“机会 / 成交”只能使用后两者；被拒绝的五秒评估
+不得进入机会分母。跨 execution epoch 的账本可在完整历史中筛选和汇总，但不同
+策略版本的 starting balance 与资金曲线不得拼接为同一账户曲线。
+
+方向健康使用独立的市场级证据口径，自首次部署该能力起记录所有激活市场、共享模型的
+`p_up` 以及最终结果。模型预测不会按并行 execution variant 重复计数，也不会把每个 5 秒
+tick 当成独立市场样本：先在每个 `3--30s`、`35--90s`、`95--180s` 阶段内求均值，再按市场
+聚合。实际 UP/DOWN 比例只与“有预测且已结算”的同一批市场配对；没有机会的市场仍须保存
+结果。旧账本缺少无机会市场与完整 `p_up`，不得推测回填，页面必须显示 coverage start。
+
+方向偏向不要求接近 50/50。首页同时显示实际 UP/DOWN、模型硬方向、平均 `p_up`、配对样本数
+和分阶段摘要；只有配对市场至少 100 个且 calibration-in-the-large 的标准化残差
+`|z| > 1.96` 时提示检查。样本不足只显示积累中。各 variant 另显示合格信号、确认机会、成交、
+准确率和 PnL 的 UP/DOWN 拆分，用于区分模型偏向、筛选偏向与执行偏向，但不替代 Brier、
+calibration、净 EV 或 sealed holdout。

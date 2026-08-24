@@ -3,6 +3,9 @@ site_url: https://evan-kolberg.github.io/prediction-market-backtesting/
 repo_url: https://github.com/evan-kolberg/prediction-market-backtesting
 repo_name: evan-kolberg/prediction-market-backtesting
 
+exclude_docs: |
+  superpowers/
+
 theme:
   name: shadcn
   custom_dir: docs_overrides
@@ -30,7 +33,14 @@ nav:
       - Research And Optimizers: research.md
       - Polymarket Account Ledger Replay: account-ledger-replay.md
       - BTC Short-Horizon Architecture: btc-short-horizon-architecture.md
+      - BTC Chainlink 60-second TWAP Evidence: btc-chainlink-twap-research.md
+      - BTC Model Validation Research: btc-model-validation-research.md
+      - BTC Data Durability And Recovery: btc-data-durability-research.md
+      - BTC Market-Data Protocol Boundaries: btc-market-data-protocol-research.md
       - BTC Execution And Latency Research: btc-execution-latency-research.md
+      - BTC Strategy Profitability Research: btc-strategy-profitability-research.md
+      - BTC Stage-Aware Taker Challenger v2: btc-stage-aware-taker-v2.md
+      - BTC Stage Challenger Results 2026-08-05: btc-stage-challenger-results-20260805.md
   - Project:
       - Project Status: project-status.md
       - BTC VPS Operations: btc-vps-operations.md

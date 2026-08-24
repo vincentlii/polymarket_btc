@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import pytest
 from btc_short_horizon.data import BTC_15M_MARKET_FAMILY, MarketOutcome, MarketWindow
 from btc_short_horizon.research.binance_history import BinanceKlineHistory
 from btc_short_horizon.research.opening_proxy import (
+    CausalFeatureUnavailableError,
     OpeningRegime,
     build_opening_proxy_dataset,
     opening_proxy_protocol,
@@ -23,6 +25,26 @@ from scripts import btc_opening_mispricing_proxy as proxy_script
 
 
 _SECOND = 1_000_000_000
+
+
+def test_proxy_cli_keeps_sealed_holdout_closed_by_default(tmp_path: Path) -> None:
+    args = proxy_script.parse_args(
+        (
+            "--start-date",
+            "2026-01-01",
+            "--end-date",
+            "2026-02-01",
+            "--rule-epoch",
+            "rule-v1",
+            "--binance-parquet-directory",
+            str(tmp_path / "parquet"),
+            "--output-directory",
+            str(tmp_path / "output"),
+        )
+    )
+
+    assert args.consume_sealed_holdout is False
+    assert args.binance_parquet_directory == tmp_path / "parquet"
 
 
 def test_opening_decisions_align_to_market_cadence_not_entry_window_start() -> None:
@@ -42,8 +64,9 @@ def test_opening_regimes_cover_the_frozen_three_minute_protocol() -> None:
         OpeningRegime.MID_EARLY,
         OpeningRegime.MID_EARLY,
     ]
-    with pytest.raises(ValueError, match="three-minute"):
-        opening_regime_for_elapsed_seconds(181)
+    for gap_value in (31, 34.999, 90.001, 94.999, 181):
+        with pytest.raises(ValueError, match="three-minute"):
+            opening_regime_for_elapsed_seconds(gap_value)
 
 
 def test_opening_proxy_protocol_rejects_an_early_30_second_artifact() -> None:
@@ -67,6 +90,21 @@ def test_opening_proxy_protocol_rejects_an_early_30_second_artifact() -> None:
             {"opening_proxy_protocol": early_30},
             expected=expected,
         )
+
+
+def test_opening_proxy_protocol_records_actual_cadence_regime_boundaries() -> None:
+    protocol = opening_proxy_protocol(
+        entry_start_seconds=3,
+        entry_end_seconds=180,
+        snapshot_seconds=10,
+    )
+
+    assert protocol["version"] == 2
+    assert protocol["regimes"] == [
+        {"name": "early_3s_to_30s", "start_seconds": 10, "end_seconds": 30},
+        {"name": "price_discovery_35s_to_90s", "start_seconds": 40, "end_seconds": 90},
+        {"name": "mid_early_95s_to_180s", "start_seconds": 100, "end_seconds": 180},
+    ]
 
 
 def _market(start: datetime) -> MarketWindow:
@@ -118,6 +156,9 @@ def test_opening_proxy_generates_evenly_weighted_causal_snapshots_per_market() -
         f"@{int((start + timedelta(seconds=5)).timestamp() * _SECOND)}"
     )
     assert np.sum(build.dataset.sample_weights) == pytest.approx(1.0)
+    assert np.sum(build.dataset.sample_weights[:6]) == pytest.approx(1.0 / 3.0)
+    assert np.sum(build.dataset.sample_weights[6:18]) == pytest.approx(1.0 / 3.0)
+    assert np.sum(build.dataset.sample_weights[18:]) == pytest.approx(1.0 / 3.0)
     assert values["elapsed_seconds"] == pytest.approx(5.0)
     assert values["remaining_seconds"] == pytest.approx(895.0)
     assert values["p_boundary_up"] > 0.5
@@ -129,14 +170,10 @@ def test_opening_proxy_never_reads_a_kline_unavailable_at_decision_time() -> Non
     baseline = build_opening_proxy_dataset(
         markets=(_market(start),),
         klines=_history(start),
-        entry_start_seconds=5,
-        entry_end_seconds=5,
     )
     mutated = build_opening_proxy_dataset(
         markets=(_market(start),),
         klines=_history(start, mutate_unavailable_tail=True),
-        entry_start_seconds=5,
-        entry_end_seconds=5,
     )
 
     assert mutated.dataset.vectors[0] == pytest.approx(baseline.dataset.vectors[0])
@@ -148,8 +185,6 @@ def test_single_runtime_feature_vector_matches_the_training_dataset() -> None:
     build = build_opening_proxy_dataset(
         markets=(_market(start),),
         klines=history,
-        entry_start_seconds=5,
-        entry_end_seconds=5,
     )
 
     values = opening_proxy_feature_values_at(
@@ -159,6 +194,91 @@ def test_single_runtime_feature_vector_matches_the_training_dataset() -> None:
     )
 
     assert build.dataset.schema.vector_from(values) == pytest.approx(build.dataset.vectors[0])
+
+
+def test_runtime_feature_vector_rejects_a_stale_tail_without_a_shortest_window_bar() -> None:
+    start = datetime(2026, 1, 1, 2, tzinfo=UTC)
+    complete = _history(start)
+    end = int(
+        np.searchsorted(
+            complete.open_ts_ns,
+            int((start - timedelta(seconds=2)).timestamp() * _SECOND),
+            side="left",
+        )
+    )
+    history = BinanceKlineHistory(
+        open_ts_ns=complete.open_ts_ns[:end],
+        close=complete.close[:end],
+        volume=complete.volume[:end],
+        quote_volume=complete.quote_volume[:end],
+        taker_buy_volume=complete.taker_buy_volume[:end],
+    )
+
+    with pytest.raises(CausalFeatureUnavailableError, match="5s feature window"):
+        opening_proxy_feature_values_at(
+            klines=history,
+            market_start=start,
+            decision_time=start + timedelta(seconds=5),
+        )
+
+
+def test_runtime_feature_vector_accepts_the_boundary_with_one_shortest_window_bar() -> None:
+    start = datetime(2026, 1, 1, 2, tzinfo=UTC)
+    complete = _history(start)
+    end = int(
+        np.searchsorted(
+            complete.open_ts_ns,
+            int((start - timedelta(seconds=1)).timestamp() * _SECOND),
+            side="right",
+        )
+    )
+    history = BinanceKlineHistory(
+        open_ts_ns=complete.open_ts_ns[:end],
+        close=complete.close[:end],
+        volume=complete.volume[:end],
+        quote_volume=complete.quote_volume[:end],
+        taker_buy_volume=complete.taker_buy_volume[:end],
+    )
+
+    values = opening_proxy_feature_values_at(
+        klines=history,
+        market_start=start,
+        decision_time=start + timedelta(seconds=5),
+    )
+
+    assert np.isfinite(values["binance_spot_return_5s"])
+
+
+def test_runtime_feature_vector_rejects_a_stale_minute_tail_with_window_context() -> None:
+    start = datetime(2026, 1, 1, 2, tzinfo=UTC)
+    minute = 60 * _SECOND
+    opens = np.arange(
+        int((start - timedelta(hours=2)).timestamp() * _SECOND),
+        int((start - timedelta(minutes=1)).timestamp() * _SECOND),
+        minute,
+        dtype=np.int64,
+    )
+    close = 100_000.0 + np.arange(len(opens), dtype=float)
+    history = BinanceKlineHistory(
+        open_ts_ns=opens,
+        close=close,
+        volume=np.ones(len(opens)),
+        quote_volume=close,
+        taker_buy_volume=np.full(len(opens), 0.6),
+        interval_seconds=60,
+    )
+
+    with pytest.raises(CausalFeatureUnavailableError, match="60s feature window") as exc:
+        opening_proxy_feature_values_at(
+            klines=history,
+            market_start=start,
+            decision_time=start + timedelta(seconds=5),
+        )
+
+    assert f"decision_ts_ns={int((start + timedelta(seconds=5)).timestamp() * _SECOND)}" in str(
+        exc.value
+    )
+    assert "available_tail_ts_ns=" in str(exc.value)
 
 
 def test_opening_proxy_excludes_a_market_with_a_lookback_gap() -> None:
@@ -175,6 +295,24 @@ def test_opening_proxy_excludes_a_market_with_a_lookback_gap() -> None:
 
     with pytest.raises(ValueError, match="no resolved markets"):
         build_opening_proxy_dataset(markets=(_market(start),), klines=gapped)
+
+
+def test_opening_proxy_rejects_duplicate_markets_and_mixed_rule_epochs() -> None:
+    start = datetime(2026, 1, 1, 2, tzinfo=UTC)
+    market = _market(start)
+    with pytest.raises(ValueError, match="unique"):
+        build_opening_proxy_dataset(markets=(market, market), klines=_history(start))
+    with pytest.raises(ValueError, match="rule epochs"):
+        build_opening_proxy_dataset(
+            markets=(
+                market,
+                replace(
+                    _market(start + timedelta(minutes=15)),
+                    rule_epoch="rule-v2",
+                ),
+            ),
+            klines=_history(start),
+        )
 
 
 def test_minute_proxy_schema_only_uses_resolvable_windows() -> None:
@@ -223,7 +361,7 @@ def test_materialized_proxy_loader_filters_entry_window_and_reweights_markets(
     assert [sample.group_id for sample in dataset.samples] == [
         "market-0",
     ] * 6 + ["market-1"] * 6
-    assert dataset.sample_weights == pytest.approx([1.0 / 6.0] * 12)
+    assert dataset.sample_weights == pytest.approx([1.0 / 18.0] * 12)
 
 
 def test_materialized_proxy_loader_rejects_unordered_parts(tmp_path: Path) -> None:
@@ -296,7 +434,7 @@ def test_materialized_proxy_loader_does_not_bulk_materialize_with_pandas(
     )
 
     assert len(dataset.samples) == 2
-    assert dataset.sample_weights == pytest.approx([0.5, 0.5])
+    assert dataset.sample_weights == pytest.approx([1.0 / 6.0, 1.0 / 6.0])
 
 
 def test_materialized_proxy_loader_applies_a_deterministic_market_stride(
@@ -340,4 +478,41 @@ def test_materialized_proxy_loader_applies_a_deterministic_market_stride(
         "market-2",
         "market-2",
     ]
-    assert dataset.sample_weights == pytest.approx([0.5] * 4)
+    assert dataset.sample_weights == pytest.approx([1.0 / 6.0] * 4)
+
+    with pytest.raises(ValueError, match="study catalog"):
+        proxy_script.load_materialized_opening_proxy_dataset(
+            path=path,
+            interval_seconds=1,
+            snapshot_seconds=5,
+            entry_start_seconds=3,
+            entry_end_seconds=10,
+            market_stride=2,
+            expected_market_group_ids=("market-0", "wrong-market"),
+        )
+
+
+def test_materialized_proxy_loader_rejects_fractional_integer_fields(tmp_path: Path) -> None:
+    schema = opening_proxy_feature_schema(1)
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    row = {name: 0.0 for name in schema.names}
+    row.update(
+        {
+            "sample_id": f"market@{int((start + timedelta(seconds=5)).timestamp() * _SECOND)}",
+            "feature_ts": start + timedelta(seconds=5),
+            "label_available_ts": start + timedelta(minutes=16),
+            "label": 0.5,
+            "elapsed_seconds": 5.0,
+        }
+    )
+    path = tmp_path / "fractional.parquet"
+    pd.DataFrame([row]).to_parquet(path, index=False)
+
+    with pytest.raises(ValueError, match="label.*integers"):
+        proxy_script.load_materialized_opening_proxy_dataset(
+            path=path,
+            interval_seconds=1,
+            snapshot_seconds=5,
+            entry_start_seconds=5,
+            entry_end_seconds=5,
+        )
